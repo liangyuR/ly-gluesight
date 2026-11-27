@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::fs::{self, Metadata, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::fs::{self, File, Metadata, OpenOptions};
+use std::io::{BufWriter, ErrorKind, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -229,17 +229,22 @@ impl Comparisons {
             .comparison_cycle(history_id)?
             .ok_or("历史记录已清理")?;
         let path = directory(root, history_id, false)?.join(format!("{id}.json"));
-        let bytes = read_comparison_bytes(&path)?;
-        if let Some(entry) = cache
-            .decoded
-            .as_ref()
-            .filter(|entry| entry.path == path && entry.bytes == bytes)
-        {
-            if entry.saved.cycle_id != cycle {
-                return Err("历史工件身份已改变".into());
+        let bytes = if let Some(entry) = cache.decoded.as_ref().filter(|entry| entry.path == path) {
+            check_comparison_file(&path)?;
+            let mut file = File::open(&path).map_err(error)?;
+            if file_matches(&mut file, &entry.bytes).map_err(error)? {
+                if entry.saved.cycle_id != cycle {
+                    return Err("历史工件身份已改变".into());
+                }
+                return Ok(Arc::clone(&entry.saved));
             }
-            return Ok(Arc::clone(&entry.saved));
-        }
+            file.rewind().map_err(error)?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).map_err(error)?;
+            bytes
+        } else {
+            read_comparison_bytes(&path)?
+        };
         let saved = Arc::new(decode_comparison(&path, history_id, &bytes, true)?);
         if saved.cycle_id != cycle {
             return Err("历史工件身份已改变".into());
@@ -403,13 +408,39 @@ fn read_comparison(
 }
 
 fn read_comparison_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    check_comparison_file(path)?;
+    fs::read(path).map_err(error)
+}
+
+fn check_comparison_file(path: &Path) -> Result<(), String> {
     checked_directory(path.parent().ok_or("复测文件没有父目录")?, false)?;
     let metadata = fs::symlink_metadata(path).map_err(error)?;
     plain(&metadata)?;
     if !metadata.is_file() {
         return Err("复测记录不是普通文件".into());
     }
-    fs::read(path).map_err(error)
+    Ok(())
+}
+
+fn file_matches(file: &mut File, expected: &[u8]) -> std::io::Result<bool> {
+    if file.metadata()?.len() != expected.len() as u64 {
+        return Ok(false);
+    }
+    let mut buffer = [0; 64 * 1024];
+    for expected_chunk in expected.chunks(buffer.len()) {
+        let chunk = &mut buffer[..expected_chunk.len()];
+        match file.read_exact(chunk) {
+            Ok(()) if chunk == expected_chunk => {}
+            Ok(()) => return Ok(false),
+            Err(error) if error.kind() == ErrorKind::UnexpectedEof => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
+    match file.read_exact(&mut buffer[..1]) {
+        Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok(true),
+        Ok(()) => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 fn decode_comparison(
@@ -588,24 +619,42 @@ mod tests {
 
     #[test]
     fn comparison_reads_current_content_when_file_metadata_does_not_change() {
+        const PREFIX_BYTES: usize = 64 * 1024;
         let (root, store, comparisons, mut saved) = saved_comparison();
+        saved.id = format!("{}-2", saved.history_id);
+        saved.measurements = vec![serde_json::json!({
+            "camera": 0, "seq": 1, "widths": vec![4.0; 20_000]
+        })];
+        comparisons.save(&root.0, &store, &saved).unwrap();
         let file = directory(&root.0, saved.history_id, false)
             .unwrap()
             .join(format!("{}.json", saved.id));
         let read = || comparisons.get(&root.0, &store, saved.history_id, &saved.id);
-        assert_eq!(read().unwrap().candidate_revision, 1);
-        let metadata = fs::metadata(&file).unwrap();
-        saved.candidate_revision = 2;
+        assert_eq!(read().unwrap().created_at, 1);
+        let original = fs::read(&file).unwrap();
+        assert!(original.len() > PREFIX_BYTES);
+        let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        saved.created_at = 2;
         let updated = serde_json::to_vec(&saved).unwrap();
-        assert_eq!(metadata.len(), updated.len() as u64);
+        assert_eq!(original.len(), updated.len());
+        assert_eq!(&original[..PREFIX_BYTES], &updated[..PREFIX_BYTES]);
         fs::write(&file, updated).unwrap();
         OpenOptions::new()
             .write(true)
             .open(&file)
             .unwrap()
-            .set_modified(metadata.modified().unwrap())
+            .set_modified(modified)
             .unwrap();
-        assert_eq!(read().unwrap().candidate_revision, 2);
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), modified);
+        assert_eq!(read().unwrap().created_at, 2);
+
+        OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap()
+            .write_all(b"!")
+            .unwrap();
+        assert!(read().is_err());
 
         fs::write(&file, b"{").unwrap();
         assert!(read().is_err());
