@@ -3,6 +3,7 @@
 //! 录制原图 `X.pgm` 空闲压缩后是同目录同主名的 `X.gsr`（[`gsr`]），记录里的文件名不变：这里的读取入口在 `X.pgm` 不在时读
 //! `X.gsr` 并还原出原始字节，两者都在时用 `X.pgm`。
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 pub mod gsr;
@@ -183,19 +184,44 @@ fn open_stored(path: &Path, checked: bool) -> Result<(std::fs::File, bool), Stri
     }
 }
 
-/// 原图文件的原始字节（未压缩时的全部字节）：`path` 是 `.pgm` 而文件已压缩成同名 `.gsr`，或 `path` 本身就是 `.gsr` 时
-/// 还原后返回；压缩文件损坏时报错。
-pub fn read_original(path: &Path) -> Result<Vec<u8>, String> {
+#[derive(PartialEq, Eq)]
+pub(crate) struct StoredOriginal {
+    compressed: bool,
+    pub(crate) bytes: Vec<u8>,
+}
+
+impl StoredOriginal {
+    fn expand(&self, path: &Path) -> Result<Vec<u8>, String> {
+        gsr::decode(&self.bytes).map_err(|e| format!("读取 {} 失败：{e}", path.display()))
+    }
+
+    pub(crate) fn original(&self, path: &Path) -> Result<Cow<'_, [u8]>, String> {
+        if self.compressed {
+            self.expand(path).map(Cow::Owned)
+        } else {
+            Ok(Cow::Borrowed(&self.bytes))
+        }
+    }
+}
+
+pub(crate) fn read_stored_original(path: &Path) -> Result<StoredOriginal, String> {
     use std::io::Read;
     crate::raw_compress::activity().touch();
     let (mut file, compressed) = open_stored(path, true)?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
-    if compressed {
-        gsr::decode(&bytes).map_err(|e| format!("读取 {} 失败：{e}", path.display()))
+    Ok(StoredOriginal { compressed, bytes })
+}
+
+/// 原图文件的原始字节（未压缩时的全部字节）：`path` 是 `.pgm` 而文件已压缩成同名 `.gsr`，或 `path` 本身就是 `.gsr` 时
+/// 还原后返回；压缩文件损坏时报错。
+pub fn read_original(path: &Path) -> Result<Vec<u8>, String> {
+    let stored = read_stored_original(path)?;
+    if stored.compressed {
+        stored.expand(path)
     } else {
-        Ok(bytes)
+        Ok(stored.bytes)
     }
 }
 

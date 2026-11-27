@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::burst_judge::FrameState;
 use crate::frame::FrameImage;
+use crate::image_file::StoredOriginal;
 use crate::store::FrameRecord;
 
 const METADATA_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -79,13 +80,13 @@ struct CachedRecording {
 
 struct CachedFrame {
     name: String,
-    original: Vec<u8>,
+    stored: StoredOriginal,
     image: Arc<FrameImage>,
 }
 
 impl CachedFrame {
     fn bytes(&self) -> usize {
-        self.original.capacity() + self.image.pixels.capacity()
+        self.stored.bytes.capacity() + self.image.pixels.capacity()
     }
 }
 
@@ -121,23 +122,30 @@ impl FrameMetadataCache {
         let index = self.read_index(path, cycle_id, bytes)?;
         let entry = index.entry(&name)?;
         let size = recorded_dimensions(cycle_id, camera_id, frame, entry)?;
-        let original = original_bytes(&root, relative)?;
-        if let Some(image) = self.cached_image(&index, &name, &original) {
+        let busy = crate::raw_compress::activity().busy();
+        let source = checked_original_source(&root, relative)?;
+        let stored =
+            crate::image_file::read_stored_original(&source).map_err(original_read_error)?;
+        if let Some(image) = self.cached_image(&index, &name, &stored) {
             return Ok(image);
         }
-        let image = Arc::new(decode_image(
-            relative,
-            camera_id,
-            size,
-            &original,
-            entry,
-            &index.devices,
-        )?);
+        let image = {
+            let original = stored.original(&source).map_err(original_read_error)?;
+            drop(busy);
+            Arc::new(decode_image(
+                relative,
+                camera_id,
+                size,
+                &original,
+                entry,
+                &index.devices,
+            )?)
+        };
         self.cache_image(
             &index,
             CachedFrame {
                 name,
-                original,
+                stored,
                 image: Arc::clone(&image),
             },
         );
@@ -148,7 +156,7 @@ impl FrameMetadataCache {
         &self,
         index: &Arc<RecordingIndex>,
         name: &str,
-        original: &[u8],
+        stored: &StoredOriginal,
     ) -> Option<Arc<FrameImage>> {
         let cached = self.0.lock().unwrap();
         let recording = cached
@@ -157,7 +165,7 @@ impl FrameMetadataCache {
         recording
             .images
             .iter()
-            .find(|frame| frame.name == name && frame.original == original)
+            .find(|frame| frame.name == name && &frame.stored == stored)
             .map(|frame| Arc::clone(&frame.image))
     }
 
@@ -424,11 +432,8 @@ fn decode_image(
     Ok(image)
 }
 
-fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {
+fn checked_original_source(root: &Path, relative: &Path) -> Result<PathBuf, String> {
     let source = root.join(relative);
-    // 核对实际文件到读完之间不让空闲压缩把 .pgm 换成 .gsr
-    let _busy = crate::raw_compress::activity().busy();
-    // 空闲压缩过的原图在盘上是同名的 .gsr，读出的仍是原始 PGM 字节
     let stored = crate::image_file::stored_path(&source)
         .ok_or_else(|| "原图未保留或已按保留策略清理".to_string())?;
     crate::image_file::checked_source_path(&stored)?;
@@ -438,7 +443,17 @@ fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {
     if !path.starts_with(root) || !path.is_file() {
         return Err("原图路径越过录制目录或不是文件".into());
     }
-    crate::image_file::read_original(&source).map_err(|error| format!("原图读取失败：{error}"))
+    Ok(source)
+}
+
+fn original_read_error(error: String) -> String {
+    format!("原图读取失败：{error}")
+}
+
+fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {
+    let _busy = crate::raw_compress::activity().busy();
+    let source = checked_original_source(root, relative)?;
+    crate::image_file::read_original(&source).map_err(original_read_error)
 }
 
 fn checked_dimensions(bytes: &[u8], expected: Option<[u32; 2]>, file: &str) -> Result<(), String> {
@@ -592,6 +607,37 @@ mod tests {
         let updated = read();
         assert_eq!(updated.pixels, previous.pixels);
         assert_eq!(updated.capture.as_ref().unwrap().white_balance.red, 2.0);
+    }
+
+    #[test]
+    fn cached_gsr_requires_the_current_recording_format_and_intact_file() {
+        let (root, directory, frame, entry) = recorded_frame();
+        std::fs::write(directory.join("part.json"), manifest(vec![entry])).unwrap();
+        let pgm = directory.join("cam1_s000007.pgm");
+        let gsr = pgm.with_extension("gsr");
+        let cache = FrameMetadataCache::default();
+        let read = || cache.load(&root.0, "record-1", "cam1", &frame);
+        let original = read().unwrap();
+
+        let mut encoded = crate::image_file::gsr::encode(&std::fs::read(&pgm).unwrap()).unwrap();
+        std::fs::write(&gsr, &encoded).unwrap();
+        std::fs::remove_file(&pgm).unwrap();
+        assert_eq!(read().unwrap().pixels, original.pixels);
+
+        std::fs::write(&pgm, &encoded).unwrap();
+        assert!(read().is_err());
+        std::fs::remove_file(&pgm).unwrap();
+
+        let modified = std::fs::metadata(&gsr).unwrap().modified().unwrap();
+        *encoded.last_mut().unwrap() ^= 1;
+        std::fs::write(&gsr, encoded).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&gsr)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert!(read().is_err());
     }
 
     #[test]
