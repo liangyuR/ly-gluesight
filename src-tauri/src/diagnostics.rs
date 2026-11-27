@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::BufWriter;
+use std::io::{self, BufWriter, Seek, Write};
 use std::path::{Component, Path};
 
 use chrono::Local;
@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::applog;
 use crate::judge::Verdict;
-use crate::store::{HistoryQuery, HistoryScope, PartDetail, Store};
+use crate::store::{HistoryQuery, HistoryScope, PartDetail, RecordingEvidence, Store};
 use crate::ziparchive::ZipWriter;
 
 const MAX_RANGE_MS: i64 = 31 * 86_400_000;
@@ -90,27 +90,64 @@ fn ok_class(verdict: Verdict) -> bool {
     matches!(verdict, Verdict::Ok | Verdict::OkWithExcursion)
 }
 
-/// 按时段导出时，输入已按时间和编号倒序，原图按该顺序取异常件或全部。
-pub fn image_parts(
-    parts: &[(i64, Verdict)],
-    explicit: bool,
-    mode: ImageMode,
-    max: usize,
-) -> Vec<i64> {
-    if mode == ImageMode::None {
-        return Vec::new();
+struct ImagePart {
+    id: i64,
+    cycle_id: Option<String>,
+    project_id: String,
+    recording: RecordingEvidence,
+    files: Vec<(String, String)>,
+}
+
+impl From<PartDetail> for ImagePart {
+    fn from(detail: PartDetail) -> Self {
+        let files = detail
+            .burst
+            .into_iter()
+            .flat_map(|burst| {
+                let cameras = burst.cameras;
+                burst.frames.into_iter().filter_map(move |frame| {
+                    let file = frame.raw_file?;
+                    let camera = cameras.get(frame.camera).map_or("?", String::as_str);
+                    Some((format!("相机 {camera} 第 {} 帧", frame.seq), file))
+                })
+            })
+            .collect();
+        Self {
+            id: detail.summary.id,
+            cycle_id: detail.summary.cycle_id,
+            project_id: detail.summary.project_id,
+            recording: detail.recording,
+            files,
+        }
     }
-    let candidates = parts
-        .iter()
-        .filter(|(_, v)| explicit || mode == ImageMode::All || !ok_class(*v))
-        .map(|(id, _)| *id);
-    if !explicit {
-        return candidates.take(max).collect();
+}
+
+fn offer_image(
+    candidates: &mut Vec<(usize, ImagePart)>,
+    request: &ExportRequest,
+    order: usize,
+    detail: PartDetail,
+) {
+    let limit = request.max_image_parts.min(MAX_IMAGE_PARTS);
+    let explicit = !request.history_ids.is_empty();
+    if request.images == ImageMode::None
+        || limit == 0
+        || (!explicit && request.images == ImageMode::Abnormal && ok_class(detail.summary.verdict))
+    {
+        return;
     }
-    let mut chosen: Vec<_> = candidates.collect();
-    chosen.sort_unstable_by(|a, b| b.cmp(a));
-    chosen.truncate(max);
-    chosen
+    if candidates.len() < limit {
+        candidates.push((order, detail.into()));
+    } else if explicit {
+        if let Some(last) = candidates
+            .iter_mut()
+            .min_by_key(|(order, part)| (part.id, std::cmp::Reverse(*order)))
+        {
+            if detail.summary.id > last.1.id {
+                *last = (order, detail.into());
+            }
+        }
+    }
 }
 
 fn relative(file: &str) -> Option<&Path> {
@@ -145,13 +182,32 @@ struct PackedFile {
     sha256: String,
 }
 
-struct Package<W: std::io::Write> {
+struct EntryHash<'a> {
+    out: &'a mut dyn Write,
+    bytes: &'a mut u64,
+    digest: &'a mut Sha256,
+}
+
+impl Write for EntryHash<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let n = self.out.write(bytes)?;
+        *self.bytes += n as u64;
+        self.digest.update(&bytes[..n]);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
+struct Package<W: Write + Seek> {
     zip: ZipWriter<W>,
     notes: Vec<String>,
     files: Vec<PackedFile>,
 }
 
-impl<W: std::io::Write> Package<W> {
+impl<W: Write + Seek> Package<W> {
     fn new(out: W) -> Self {
         Self {
             zip: ZipWriter::new(out),
@@ -168,6 +224,32 @@ impl<W: std::io::Write> Package<W> {
             path: name.to_string(),
             bytes: data.len() as u64,
             sha256: format!("{:x}", Sha256::digest(data)),
+        });
+        Ok(())
+    }
+
+    fn add_stream(
+        &mut self,
+        name: &str,
+        write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+    ) -> Result<(), String> {
+        let mut bytes = 0;
+        let mut digest = Sha256::new();
+        self.zip
+            .add_stream(name, |out| {
+                let mut writer = BufWriter::new(EntryHash {
+                    out,
+                    bytes: &mut bytes,
+                    digest: &mut digest,
+                });
+                write(&mut writer)?;
+                writer.flush()
+            })
+            .map_err(|e| e.to_string())?;
+        self.files.push(PackedFile {
+            path: name.to_string(),
+            bytes,
+            sha256: format!("{:x}", digest.finalize()),
         });
         Ok(())
     }
@@ -232,20 +314,18 @@ fn plc_jsonl(mut entries: Vec<ly_plc::LogEntry>) -> Vec<u8> {
     out
 }
 
-fn collect_parts(
+fn collect_part_ids(
     store: &Store,
     request: &ExportRequest,
     notes: &mut Vec<String>,
-) -> Result<Vec<PartDetail>, String> {
+) -> Result<Vec<i64>, String> {
     if !request.history_ids.is_empty() {
-        let mut parts = Vec::new();
-        for &id in request.history_ids.iter().take(MAX_PARTS) {
-            match store.detail(id) {
-                Ok(detail) => parts.push(detail),
-                Err(error) => notes.push(format!("记录 #{id}：{error}")),
-            }
-        }
-        return Ok(parts);
+        return Ok(request
+            .history_ids
+            .iter()
+            .take(MAX_PARTS)
+            .copied()
+            .collect());
     }
     let query = HistoryQuery {
         from: Some(request.from),
@@ -260,7 +340,55 @@ fn collect_parts(
         ));
         ids.truncate(MAX_PARTS);
     }
-    ids.into_iter().map(|id| store.detail(id)).collect()
+    Ok(ids)
+}
+
+struct PartEntries {
+    count: usize,
+    revisions: BTreeSet<(String, String)>,
+    images: Vec<ImagePart>,
+}
+
+fn write_part_entries<W: Write + Seek>(
+    package: &mut Package<W>,
+    store: &Store,
+    request: &ExportRequest,
+) -> Result<PartEntries, String> {
+    let ids = collect_part_ids(store, request, &mut package.notes)?;
+    let mut count = 0;
+    let mut csv = crate::history::CSV_HEADER.as_bytes().to_vec();
+    let mut revisions = BTreeSet::new();
+    let mut candidates = Vec::new();
+    let mut notes = Vec::new();
+    package.add_stream("records/parts.jsonl", |out| {
+        for (order, id) in ids.into_iter().enumerate() {
+            let detail = match store.detail(id) {
+                Ok(detail) => detail,
+                Err(error) if !request.history_ids.is_empty() => {
+                    notes.push(format!("记录 #{id}：{error}"));
+                    continue;
+                }
+                Err(error) => return Err(io::Error::other(error)),
+            };
+            serde_json::to_writer(&mut *out, &detail).map_err(io::Error::other)?;
+            out.write_all(b"\n")?;
+            csv.extend_from_slice(crate::history::csv_row(&detail.summary).as_bytes());
+            if let Some(revision) = &detail.summary.recipe_revision {
+                revisions.insert((detail.summary.project_id.clone(), revision.clone()));
+            }
+            offer_image(&mut candidates, request, order, detail);
+            count += 1;
+        }
+        Ok(())
+    })?;
+    package.notes.extend(notes);
+    package.add("records/parts.csv", &csv)?;
+    candidates.sort_unstable_by_key(|(order, _)| *order);
+    Ok(PartEntries {
+        count,
+        revisions,
+        images: candidates.into_iter().map(|(_, part)| part).collect(),
+    })
 }
 
 fn plc_logs(app: &AppHandle, from: i64, to: i64, notes: &mut Vec<String>) -> Vec<ly_plc::LogEntry> {
@@ -303,14 +431,14 @@ fn plc_logs(app: &AppHandle, from: i64, to: i64, notes: &mut Vec<String>) -> Vec
     entries
 }
 
-fn part_images<W: std::io::Write>(
+fn part_images<W: Write + Seek>(
     app: &AppHandle,
     package: &mut Package<W>,
-    detail: &PartDetail,
+    part: &ImagePart,
     budget: &mut u64,
 ) -> Result<usize, String> {
-    let id = detail.summary.id;
-    let Some(cycle_id) = detail.summary.cycle_id.as_deref() else {
+    let id = part.id;
+    let Some(cycle_id) = part.cycle_id.as_deref() else {
         package
             .notes
             .push(format!("记录 #{id} 没有 cycleId，无法确定原图"));
@@ -318,8 +446,8 @@ fn part_images<W: std::io::Write>(
     };
     let root = match crate::project::records::record_root_of(
         &crate::storage::root(app),
-        &detail.summary.project_id,
-        detail.recording.directory.as_deref(),
+        &part.project_id,
+        part.recording.directory.as_deref(),
     ) {
         Ok(root) => root,
         Err(error) => {
@@ -332,18 +460,7 @@ fn part_images<W: std::io::Write>(
     let folder = format!("records/{id}_{cycle_id}");
     let mut count = 0;
     let mut directory = None;
-    // 原图按 (相机, seq) 记在帧记录里（FrameRecord.raw_file）
-    let frame_files = detail.burst.iter().flat_map(|burst| {
-        burst.frames.iter().filter_map(move |frame| {
-            let camera = burst.cameras.get(frame.camera).map_or("?", String::as_str);
-            frame
-                .raw_file
-                .as_deref()
-                .map(|file| (format!("相机 {camera} 第 {} 帧", frame.seq), file))
-        })
-    });
-    let files: Vec<(String, &str)> = frame_files.collect();
-    for (label, file) in &files {
+    for (label, file) in &part.files {
         let Some(path) = relative(file) else {
             package
                 .notes
@@ -378,10 +495,10 @@ fn part_images<W: std::io::Write>(
             package.add(&format!("{folder}/part.json"), &bytes)?;
         }
     }
-    if count == 0 && files.is_empty() {
+    if count == 0 && part.files.is_empty() {
         package.notes.push(format!(
             "记录 #{id} 没有保留原图（录制状态：{:?}）",
-            detail.recording.state
+            part.recording.state
         ));
     }
     let comparisons = crate::storage::project(app)
@@ -454,7 +571,7 @@ pub fn export(app: &AppHandle, request: ExportRequest) -> Result<ExportResult, S
     })
 }
 
-fn build<W: std::io::Write>(
+fn build<W: Write + Seek>(
     app: &AppHandle,
     request: &ExportRequest,
     package: &mut Package<W>,
@@ -493,21 +610,8 @@ fn build<W: std::io::Write>(
     let state = crate::storage::state(app);
     package.copy_dir(&state, "state", &[])?;
     let store = app.state::<Store>();
-    let parts = collect_parts(&store, request, &mut package.notes)?;
-    let mut csv = crate::history::CSV_HEADER.as_bytes().to_vec();
-    let mut details = Vec::new();
-    let mut revisions = BTreeSet::new();
-    for detail in &parts {
-        csv.extend_from_slice(crate::history::csv_row(&detail.summary).as_bytes());
-        serde_json::to_writer(&mut details, detail).map_err(|e| e.to_string())?;
-        details.push(b'\n');
-        if let Some(revision) = &detail.summary.recipe_revision {
-            revisions.insert((detail.summary.project_id.clone(), revision.clone()));
-        }
-    }
-    package.add("records/parts.csv", &csv)?;
-    package.add("records/parts.jsonl", &details)?;
-    for (project, revision) in &revisions {
+    let records = write_part_entries(package, &store, request)?;
+    for (project, revision) in &records.revisions {
         match store.recipe_snapshot(project, revision) {
             Ok(Some(recipe)) => package.add(
                 &format!("recipes/{project}/{revision}.json"),
@@ -519,23 +623,14 @@ fn build<W: std::io::Write>(
                 .push(format!("配方快照 {revision} 读取失败：{error}")),
         }
     }
-    let chosen = image_parts(
-        &parts
-            .iter()
-            .map(|p| (p.summary.id, p.summary.verdict))
-            .collect::<Vec<_>>(),
-        !request.history_ids.is_empty(),
-        request.images,
-        request.max_image_parts.min(MAX_IMAGE_PARTS),
-    );
     let mut budget = MAX_IMAGE_BYTES;
     let mut images = 0;
     let mut image_parts = 0;
-    for detail in parts.iter().filter(|p| chosen.contains(&p.summary.id)) {
+    for part in &records.images {
         if budget == 0 {
             break;
         }
-        let added = part_images(app, package, detail, &mut budget)?;
+        let added = part_images(app, package, part, &mut budget)?;
         if added > 0 {
             image_parts += 1;
         }
@@ -546,7 +641,7 @@ fn build<W: std::io::Write>(
         bytes: 0,
         logs,
         plc_logs,
-        parts: parts.len(),
+        parts: records.count,
         image_parts,
         images,
         notes: Vec::new(),
@@ -578,19 +673,5 @@ pub async fn diagnostics_export(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn time_range_images_prefer_recent_abnormal_parts_over_newly_imported_older_parts() {
-        let by_detection_time = [
-            (4, Verdict::OkWithExcursion),
-            (2, Verdict::NgWidth),
-            (8, Verdict::ErrInspect),
-        ];
-        assert_eq!(
-            image_parts(&by_detection_time, false, ImageMode::Abnormal, 1),
-            [2]
-        );
-    }
-}
+#[path = "diagnostics/record_stream_tests.rs"]
+mod record_stream_tests;
