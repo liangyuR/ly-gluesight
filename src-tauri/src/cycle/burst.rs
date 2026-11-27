@@ -830,11 +830,11 @@ impl Part {
 
     pub(super) fn published_view(&self, phase: Phase) -> Arc<PartView> {
         if matches!(phase, Phase::Idle | Phase::Fault) && self.burst.judgement.is_some() {
-            Arc::clone(
-                self.burst
-                    .settled_view
-                    .get_or_init(|| Arc::new(self.view())),
-            )
+            Arc::clone(self.burst.settled_view.get_or_init(|| {
+                let mut view = self.view();
+                view.settled_json = Some(OnceLock::new());
+                Arc::new(view)
+            }))
         } else {
             Arc::new(self.view())
         }

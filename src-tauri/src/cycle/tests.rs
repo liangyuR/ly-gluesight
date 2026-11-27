@@ -690,6 +690,30 @@ fn sparse_snapshot_preserves_a_later_frames_camera_and_verdict() {
 }
 
 #[test]
+fn snapshot_part_json_preserves_null_active_and_settled_views() {
+    #[derive(Serialize)]
+    struct PartJson {
+        #[serde(serialize_with = "serialize_snapshot_part")]
+        part: Option<Arc<PartView>>,
+    }
+
+    let mut part = burst_part("snapshot-json", &Ledgers::default());
+    part.sn = "SN \"引号\" \\ 行\n二".into();
+    deliver_groups(&mut part, 4);
+    let active = part.published_view(Phase::Acquire);
+    end(&mut part, Some(4), true);
+    judge_burst(&mut part);
+    let settled = part.published_view(Phase::Idle);
+
+    for part in [None, Some(active), Some(settled)] {
+        let expected = format!("{{\"part\":{}}}", serde_json::to_string(&part).unwrap());
+        let snapshot = PartJson { part };
+        assert_eq!(serde_json::to_string(&snapshot).unwrap(), expected);
+        assert_eq!(serde_json::to_string(&snapshot).unwrap(), expected);
+    }
+}
+
+#[test]
 fn unjudged_part_snapshot_still_reflects_the_drain_deadline() {
     let mut part = burst_part("unjudged-snapshot", &Ledgers::default());
     part.drain_timeout = Duration::from_secs(1);

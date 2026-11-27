@@ -7,13 +7,13 @@ pub mod readiness;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::{Local, NaiveDate};
 use ly_plc::{now_ms, PlcEngine};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, value::RawValue};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, UnboundedReceiver, UnboundedSender};
 
@@ -116,6 +116,8 @@ pub struct FrameView {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PartView {
+    #[serde(skip)]
+    settled_json: Option<OnceLock<Option<Box<RawValue>>>>,
     pub cycle_id: String,
     pub bundle_id: Option<String>,
     pub sn: String,
@@ -296,6 +298,7 @@ pub struct Snapshot {
     pub product_source: ProductSource,
     pub active_recipe_id: Option<String>,
     pub trigger_mode: Option<TriggerMode>,
+    #[serde(serialize_with = "serialize_snapshot_part")]
     pub part: Option<Arc<PartView>>,
     pub result: Option<ResultView>,
     pub stats: Stats,
@@ -307,6 +310,22 @@ pub struct Snapshot {
     pub collection: Vec<crate::store::CollectionProgress>,
     /// 维护试判统计，按配方（最新正式版本）
     pub trial: Vec<crate::store::TrialProgress>,
+}
+
+fn serialize_snapshot_part<S: serde::Serializer>(
+    part: &Option<Arc<PartView>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let raw = part.as_deref().and_then(|view| {
+        view.settled_json
+            .as_ref()?
+            .get_or_init(|| serde_json::value::to_raw_value(view).ok())
+            .as_deref()
+    });
+    match raw {
+        Some(raw) => serializer.serialize_some(raw),
+        None => part.serialize(serializer),
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -928,6 +947,7 @@ impl Part {
     fn view(&self) -> PartView {
         let burst = self.burst_view();
         PartView {
+            settled_json: None,
             cycle_id: self.cycle_id.clone(),
             bundle_id: self.bundle_id.clone(),
             sn: self.sn.clone(),
