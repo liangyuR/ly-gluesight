@@ -1026,6 +1026,7 @@ impl Store {
         .map_err(db_err)?;
         add_part_tags(&conn)?;
         retired::migrate(&mut conn)?;
+        history_edit::ensure_tag_index(&mut conn)?;
         if !defer_recovery {
             fail_interrupted_recordings(&mut conn)?;
         }
@@ -1473,13 +1474,12 @@ impl Store {
     fn filter(q: &HistoryQuery, prefix: &str) -> (String, Vec<SqlValue>) {
         let mut clauses = vec![q.scope.clause(prefix)];
         let mut args = Vec::new();
-        if let Some(from) = q.from {
-            clauses.push(format!("{prefix}ts >= ?"));
-            args.push(SqlValue::Integer(from));
-        }
-        if let Some(to) = q.to {
-            clauses.push(format!("{prefix}ts < ?"));
-            args.push(SqlValue::Integer(to));
+        let date_bounds = [(">=", q.from), ("<", q.to)];
+        for (cmp, ts) in date_bounds {
+            if let Some(ts) = ts {
+                clauses.push(format!("{prefix}ts {cmp} ?"));
+                args.push(SqlValue::Integer(ts));
+            }
         }
         if !q.verdicts.is_empty() {
             clauses.push(format!(
@@ -1498,10 +1498,18 @@ impl Store {
             )));
         }
         if let Some(tag) = q.tag.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            clauses.push(format!(
-                "EXISTS (SELECT 1 FROM json_each({prefix}tags) WHERE value = ?)"
-            ));
+            let mut lookup = vec!["tag = ?".to_owned()];
             args.push(SqlValue::Text(tag.to_string()));
+            for (cmp, ts) in date_bounds {
+                if let Some(ts) = ts {
+                    lookup.push(format!("ts {cmp} ?"));
+                    args.push(SqlValue::Integer(ts));
+                }
+            }
+            clauses.push(format!(
+                "{prefix}id IN (SELECT part_id FROM part_tags WHERE {})",
+                lookup.join(" AND ")
+            ));
         }
         if let Some(id) = q.recipe_id.as_deref().filter(|s| !s.is_empty()) {
             clauses.push(format!("{prefix}recipe_id = ?"));

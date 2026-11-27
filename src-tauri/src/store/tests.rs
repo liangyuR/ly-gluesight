@@ -58,8 +58,22 @@ fn manual_tags_survive_reopen_and_keep_history_filter_counts_neighbors_and_rejud
         ["故障件", "参考件"]
     );
     drop(store);
+    let legacy = Connection::open(db.path()).unwrap();
+    legacy
+        .execute_batch(
+            "DROP TRIGGER IF EXISTS part_tags_insert;
+             DROP TRIGGER IF EXISTS part_tags_update;
+             DROP TABLE IF EXISTS part_tags;",
+        )
+        .unwrap();
+    legacy
+        .execute("UPDATE parts SET tags = '[' WHERE id = ?1", [ids[1]])
+        .unwrap();
+    drop(legacy);
     let store = Store::open(&db.path()).unwrap();
     let query = HistoryQuery {
+        from: Some(1234),
+        to: Some(1235),
         tag: Some("故障件".into()),
         ..Default::default()
     };
@@ -92,6 +106,17 @@ fn manual_tags_survive_reopen_and_keep_history_filter_counts_neighbors_and_rejud
     assert!(crate::history::csv_row(&detail.summary).contains("故障件、参考件"));
     store.set_history_tags(&[ids[0]], &[]).unwrap();
     assert_eq!(store.query(&query).unwrap().total, 1);
+    Connection::open(db.path())
+        .unwrap()
+        .execute("UPDATE parts SET ts = 1235 WHERE id = ?1", [ids[2]])
+        .unwrap();
+    assert_eq!(store.query(&query).unwrap().total, 0);
+    let following = HistoryQuery {
+        from: Some(1235),
+        to: Some(1236),
+        ..query
+    };
+    assert_eq!(store.query(&following).unwrap().items[0].id, ids[2]);
 }
 
 #[test]
@@ -576,6 +601,10 @@ fn manually_deleted_history_stays_absent_and_explicit_reimport_uses_a_fresh_nonr
     let record = burst_part(&recipe, "delete-restore", &judgement, &burst);
     let id = store.insert(&record).unwrap();
     store.set_history_tags(&[id], &["故障件".into()]).unwrap();
+    let tagged = HistoryQuery {
+        tag: Some("故障件".into()),
+        ..Default::default()
+    };
     assert!(store.delete_history(&[id]).is_err());
     assert!(store.detail(id).is_ok());
     store
@@ -593,6 +622,7 @@ fn manually_deleted_history_stays_absent_and_explicit_reimport_uses_a_fresh_nonr
     assert!(store.detail(id).is_ok());
     store.delete_history(&[id]).unwrap();
     assert!(store.detail(id).is_err());
+    assert_eq!(store.query(&tagged).unwrap().total, 0);
     assert!(store.burst_frames(id).unwrap().is_empty());
     assert!(store.insert(&record).is_err());
     assert!(store.history_cycle_deleted("delete-restore").unwrap());
@@ -600,6 +630,9 @@ fn manually_deleted_history_stays_absent_and_explicit_reimport_uses_a_fresh_nonr
     let restored = merged.ids[&id];
     assert!(restored > id);
     assert_eq!(store.detail(restored).unwrap().summary.tags, ["故障件"]);
+    let page = store.query(&tagged).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, restored);
     assert!(store.history_cycle_deleted("delete-restore").unwrap());
     store.delete_history(&[restored]).unwrap();
     drop(store);
@@ -628,8 +661,13 @@ fn legacy_history_without_tags_upgrades_in_place_and_imports_without_losing_exis
     drop(store);
     for path in [&package, &db.path()] {
         let conn = Connection::open(path).unwrap();
-        conn.execute_batch("ALTER TABLE parts DROP COLUMN tags")
-            .unwrap();
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS part_tags_insert;
+             DROP TRIGGER IF EXISTS part_tags_update;
+             DROP TABLE IF EXISTS part_tags;
+             ALTER TABLE parts DROP COLUMN tags;",
+        )
+        .unwrap();
     }
     let store = Store::open(&db.path()).unwrap();
     assert!(store.backup_path().is_none());
