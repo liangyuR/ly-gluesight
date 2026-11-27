@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type Event as TauriEvent } from "@tauri-apps/api/event";
 import { SnackbarProvider } from "qing-steel";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { WorkspaceProvider } from "../src/features/workspace/context";
 import type { HistoryDetailState, PartDetail } from "../src/features/history/types";
@@ -26,11 +26,17 @@ function emit(event: string, payload: unknown) {
   listeners.get(event)?.forEach(handler => handler({ event, id: 1, payload }));
 }
 
+function TrialDestination() {
+  const location = useLocation();
+  const recordId = (location.state as { focusRecordId?: number } | null)?.focusRecordId;
+  return <><p>试测页</p>{recordId != null && <p>试测件 #{recordId}</p>}</>;
+}
+
 function show(state?: HistoryDetailState) {
   return render(<SnackbarProvider><WorkspaceProvider><MemoryRouter initialEntries={[{ pathname: "/history/1", state }]}><Routes>
     <Route path="/history/:id" element={<HistoryDetailPage />} />
     <Route path="/history" element={<p>历史列表页</p>} />
-    <Route path="/recipe/calibration" element={<p>试测页</p>} />
+    <Route path="/recipe/calibration" element={<TrialDestination />} />
   </Routes></MemoryRouter></WorkspaceProvider></SnackbarProvider>);
 }
 
@@ -66,6 +72,38 @@ beforeEach(() => {
       default: throw new Error(`Unexpected native command: ${command}`);
     }
   });
+});
+
+it("历史详情仍在读取 → 可以带着原上下文返回试测", async () => {
+  const pending = deferred<PartDetail>();
+  overview = () => pending.promise;
+  show({ returnTo: { path: "/recipe/calibration", label: "返回试测", state: { focusRecordId: 7 } } });
+
+  await userEvent.click(screen.getByRole("button", { name: "返回试测" }));
+  expect(screen.getByText("试测件 #7")).toBeVisible();
+  await act(async () => pending.resolve(detail));
+  expect(screen.getByText("试测件 #7")).toBeVisible();
+});
+
+it("历史详情首次读取失败 → 原地重试打开同一件", async () => {
+  const pending = deferred<PartDetail>();
+  const readOverview = vi.fn<(id: number) => Promise<PartDetail>>()
+    .mockRejectedValueOnce(new Error("暂时无法读取记录"))
+    .mockReturnValueOnce(pending.promise);
+  overview = readOverview;
+  const readNeighbors = vi.fn(neighbors);
+  neighbors = readNeighbors;
+  show();
+  expect(await screen.findByText("暂时无法读取记录")).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "重试" }));
+  expect(screen.getByText("正在读取历史详情…")).toHaveAttribute("role", "status");
+  expect(screen.queryByText("暂时无法读取记录")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+  await act(async () => pending.resolve(detail));
+  expect(await screen.findByText("SN SN-101")).toBeVisible();
+  expect(readOverview.mock.calls).toEqual([[1], [1]]);
+  expect(readNeighbors).toHaveBeenCalledOnce();
 });
 
 it.each([

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
-import { Alert, Card, IconButton, Stack, StatusBadge, Text } from "qing-steel";
+import { Alert, Button, Card, IconButton, Stack, StatusBadge, Text } from "qing-steel";
 import { displayReason, formatTime, HistoryRecordActions, historyApi, partVerdict, triggerModeLabel, type HistoryDetailState, type HistoryListState, type PartDetail } from "../features/history";
 import BurstHistoryDetail from "../features/history/components/BurstDetail";
 import { subscribe } from "../features/plc";
@@ -107,7 +107,14 @@ export default function HistoryDetailPage() {
       navigate("/history/" + target, { state: partState });
     }
   };
-  if (!detail || detail.summary.id !== Number(id)) return error ? <div className="stack"><IconButton onClick={back.onBack} aria-label={back.backLabel}><ArrowLeft size={18} /></IconButton><Alert tone="ng">{error}</Alert></div> : <Text muted>加载中…</Text>;
+  if (!detail || detail.summary.id !== Number(id)) return <div className="stack hist-detail">
+    <div className="wp-actions">
+      <Button variant="tonal" size="sm" leadingIcon={<ArrowLeft size={16} aria-hidden="true" />} onClick={back.onBack}>{back.backLabel}</Button>
+    </div>
+    {error ? <Alert tone="ng" title="历史详情读取失败"
+      action={<Button size="sm" onClick={() => { setError(""); reload(); }}>重试</Button>}>{error}</Alert>
+      : <Text muted role="status">正在读取历史详情…</Text>}
+  </div>;
   const foreignProject = foreignProjectNote(detail.summary.projectId, projects);
   const actions = <HistoryRecordActions key={detail.summary.id} id={detail.summary.id} tags={detail.summary.tags ?? []}
       onBusyChange={setMutationBusy}
