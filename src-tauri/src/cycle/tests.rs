@@ -1,7 +1,7 @@
 use chrono::{Local, NaiveDate, TimeZone};
 
 use super::daily_stats::DailyStats;
-use super::maintenance_progress::{MaintenanceProgress, ProgressData};
+use super::maintenance_progress::MaintenanceProgress;
 use super::*;
 use crate::frame::CounterSource;
 use crate::offline::Scenario;
@@ -71,12 +71,12 @@ async fn maintenance_reentry_waits_for_the_old_read_and_publishes_only_fresh_pro
     use tokio::sync::oneshot;
 
     use crate::settings::Maintenance;
-    use crate::store::{CollectionProgress, TrialProgress};
+    use crate::store::{CollectionProgress, MaintenanceStatistics, TrialProgress};
 
     const TIMEOUT: Duration = Duration::from_secs(5);
 
-    fn data(recorded: u32) -> ProgressData {
-        ProgressData {
+    fn data(recorded: u32) -> MaintenanceStatistics {
+        MaintenanceStatistics {
             collection: vec![CollectionProgress {
                 recipe_id: "test".into(),
                 recorded,
@@ -132,15 +132,15 @@ async fn maintenance_reentry_waits_for_the_old_read_and_publishes_only_fresh_pro
         .await
         .unwrap()
         .unwrap();
-    progress.poll(None, later, ProgressData::default);
-    assert!(progress.snapshot(None) == ProgressData::default());
+    progress.poll(None, later, MaintenanceStatistics::default);
+    assert!(progress.snapshot(None) == MaintenanceStatistics::default());
 
     let (overlap, observed_overlap) = channel();
     progress.poll(Some(&new_mode), later, move || {
         overlap.send(()).unwrap();
         data(3)
     });
-    assert!(progress.snapshot(Some(&new_mode)) == ProgressData::default());
+    assert!(progress.snapshot(Some(&new_mode)) == MaintenanceStatistics::default());
     assert_eq!(observed_overlap.try_recv(), Err(TryRecvError::Disconnected));
 
     release.send(()).unwrap();
@@ -151,7 +151,7 @@ async fn maintenance_reentry_waits_for_the_old_read_and_publishes_only_fresh_pro
             assert!(changed);
             true
         } else {
-            assert!(snapshot == ProgressData::default());
+            assert!(snapshot == MaintenanceStatistics::default());
             false
         }
     })

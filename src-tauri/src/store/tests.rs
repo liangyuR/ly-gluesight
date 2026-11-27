@@ -258,6 +258,73 @@ fn production_counts_keep_the_date_and_project_scope_when_latest_tags_are_invali
 }
 
 #[test]
+fn maintenance_statistics_read_committed_trial_counts_during_an_import() {
+    use std::sync::mpsc::channel;
+    use std::thread;
+
+    const WAIT: Duration = Duration::from_secs(5);
+
+    let db = TestDb::new();
+    let target = Store::open_for(&db.path(), "line-a").unwrap();
+    let other = Store::open_for(&db.path(), "line-b").unwrap();
+    let source = Store::open_for(&db.0.join("source.sqlite"), "line-a").unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let insert_trial = |store: &Store, cycle| {
+        store
+            .insert(&PartRecord {
+                mode: PartMode::MaintenanceShadow,
+                ..burst_part(&recipe, cycle, &judgement, &burst)
+            })
+            .unwrap()
+    };
+    insert_trial(&target, "committed-trial");
+    insert_trial(&other, "other-project-trial");
+    let incoming = insert_trial(&source, "incoming-trial");
+    let package = db.0.join("trial-package.sqlite");
+    source.export_parts(&[incoming], &package).unwrap();
+
+    let (entered, wait_for_import) = channel();
+    let (release, wait_for_release) = channel();
+    let (read, imported) = thread::scope(|threads| {
+        let store = &target;
+        let import = threads.spawn(move || {
+            store.import_parts(&package, "line-a", |_| {
+                entered.send(()).map_err(|e| e.to_string())?;
+                wait_for_release
+                    .recv_timeout(Duration::from_secs(15))
+                    .map_err(|e| e.to_string())
+            })
+        });
+        let read = wait_for_import.recv_timeout(WAIT).and_then(|()| {
+            let (result, wait_for_read) = channel();
+            threads.spawn(move || {
+                let _ = result.send(store.maintenance_statistics(HistoryScope::Real));
+            });
+            wait_for_read.recv_timeout(WAIT)
+        });
+        let _ = release.send(());
+        (read, import.join().unwrap())
+    });
+    assert_eq!(imported.unwrap().inserted, 1);
+    let result_during_import = read.expect("维护统计在导入提交前未返回").unwrap();
+
+    let expected_trial = |ok| TrialProgress {
+        recipe_id: recipe.id.clone(),
+        recipe_version: recipe.version,
+        counts: VerdictCounts {
+            ok,
+            ..Default::default()
+        },
+        ng: Vec::new(),
+    };
+    assert_eq!(result_during_import.trial, [expected_trial(1)]);
+    let after_commit = target.maintenance_statistics(HistoryScope::Real).unwrap();
+    assert_eq!(after_commit.trial, [expected_trial(2)]);
+}
+
+#[test]
 fn invalid_or_stale_history_tag_selection_leaves_every_selected_record_unchanged() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

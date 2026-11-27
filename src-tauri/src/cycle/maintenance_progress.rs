@@ -3,23 +3,17 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot::{self, error::TryRecvError};
 
 use crate::settings::Maintenance;
-use crate::store::{CollectionProgress, TrialProgress};
+use crate::store::MaintenanceStatistics;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-
-#[derive(Clone, Default, PartialEq)]
-pub(super) struct ProgressData {
-    pub(super) collection: Vec<CollectionProgress>,
-    pub(super) trial: Vec<TrialProgress>,
-}
 
 #[derive(Default)]
 pub(super) struct MaintenanceProgress {
     mode: Option<Maintenance>,
     generation: u64,
-    data: ProgressData,
+    data: MaintenanceStatistics,
     completed_at: Option<Instant>,
-    in_flight: Option<(u64, oneshot::Receiver<ProgressData>)>,
+    in_flight: Option<(u64, oneshot::Receiver<MaintenanceStatistics>)>,
 }
 
 impl MaintenanceProgress {
@@ -27,13 +21,13 @@ impl MaintenanceProgress {
         &mut self,
         mode: Option<&Maintenance>,
         now: Instant,
-        load: impl FnOnce() -> ProgressData + Send + 'static,
+        load: impl FnOnce() -> MaintenanceStatistics + Send + 'static,
     ) -> bool {
         let mut changed = self.mode.as_ref() != mode;
         if changed {
             self.mode = mode.cloned();
             self.generation = self.generation.wrapping_add(1);
-            self.data = ProgressData::default();
+            self.data = MaintenanceStatistics::default();
             self.completed_at = None;
         }
 
@@ -67,11 +61,11 @@ impl MaintenanceProgress {
         changed
     }
 
-    pub(super) fn snapshot(&self, mode: Option<&Maintenance>) -> ProgressData {
+    pub(super) fn snapshot(&self, mode: Option<&Maintenance>) -> MaintenanceStatistics {
         if self.mode.as_ref() == mode {
             self.data.clone()
         } else {
-            ProgressData::default()
+            MaintenanceStatistics::default()
         }
     }
 }

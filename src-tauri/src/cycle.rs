@@ -42,7 +42,7 @@ use crate::store::{
     VerdictCounts,
 };
 use daily_stats::DailyStats;
-use maintenance_progress::{MaintenanceProgress, ProgressData};
+use maintenance_progress::MaintenanceProgress;
 
 pub enum Input {
     /// 段配方一台相机一帧的测量结果（FramePool 交来）
@@ -2194,13 +2194,10 @@ impl Machine {
             settings.maintenance.as_ref(),
             Instant::now(),
             move || {
-                let store = progress_app.state::<Store>();
-                ProgressData {
-                    collection: store
-                        .collection_progress(HistoryScope::Real)
-                        .unwrap_or_default(),
-                    trial: store.trial_progress(HistoryScope::Real).unwrap_or_default(),
-                }
+                progress_app
+                    .state::<Store>()
+                    .maintenance_statistics(HistoryScope::Real)
+                    .unwrap_or_default()
             },
         );
         self.s7.set_maintenance(settings.maintenance.is_some());

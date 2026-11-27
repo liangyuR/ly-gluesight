@@ -4,7 +4,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{
+    params, params_from_iter, Connection, OpenFlags, OptionalExtension, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::burst_judge::{BurstJudgement, Flags, FrameMetrics, FrameState};
@@ -294,6 +296,12 @@ pub struct TrialProgress {
     pub ng: Vec<VerdictCount>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MaintenanceStatistics {
+    pub collection: Vec<CollectionProgress>,
+    pub trial: Vec<TrialProgress>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct VerdictCount {
     pub verdict: Verdict,
@@ -371,6 +379,7 @@ pub struct StoredMeasurement {
 
 pub struct Store {
     conn: Mutex<Connection>,
+    path: PathBuf,
     backup_path: Option<PathBuf>,
     /// 当前项目：新记录归它，统计与候选实例按它
     project: String,
@@ -1018,6 +1027,7 @@ impl Store {
         }
         Ok(Self {
             conn: Mutex::new(conn),
+            path: path.to_path_buf(),
             backup_path,
             project: project.into(),
         })
@@ -2009,11 +2019,27 @@ impl Store {
         rows.collect::<Result<_, _>>().map_err(db_err)
     }
 
-    pub fn collection_progress(
+    pub fn maintenance_statistics(
         &self,
         scope: HistoryScope,
+    ) -> Result<MaintenanceStatistics, String> {
+        let mut conn = open_read_only(&self.path)?;
+        let snapshot = conn.transaction().map_err(db_err)?;
+        let data = MaintenanceStatistics {
+            collection: self
+                .collection_progress(&snapshot, scope)
+                .unwrap_or_default(),
+            trial: self.trial_progress(&snapshot, scope).unwrap_or_default(),
+        };
+        snapshot.commit().map_err(db_err)?;
+        Ok(data)
+    }
+
+    fn collection_progress(
+        &self,
+        conn: &Connection,
+        scope: HistoryScope,
     ) -> Result<Vec<CollectionProgress>, String> {
-        let conn = self.conn.lock().unwrap();
         let sql = format!("SELECT recipe_id, recording_available, camera_frames FROM parts WHERE project_id = ?1 AND {} AND mode = 'maintenanceCollect' \
             AND recipe_id IS NOT NULL AND recording_directory IS NOT NULL ORDER BY recipe_id", scope.clause(""));
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
@@ -2029,13 +2055,15 @@ impl Store {
         let mut progress: Vec<CollectionProgress> = Vec::new();
         for row in rows {
             let (recipe_id, available, frames) = row.map_err(db_err)?;
-            let frames: Vec<u32> = frames
-                .and_then(|text| serde_json::from_str(&text).ok())
-                .unwrap_or_default();
             let usable = available
                 && frames
-                    .first()
-                    .is_some_and(|&n| n > 0 && frames.iter().all(|&m| m == n));
+                    .as_deref()
+                    .and_then(|text| serde_json::from_str::<Vec<u32>>(text).ok())
+                    .is_some_and(|frames| {
+                        frames
+                            .first()
+                            .is_some_and(|&n| n > 0 && frames.iter().all(|&m| m == n))
+                    });
             if progress
                 .last()
                 .is_none_or(|last| last.recipe_id != recipe_id)
@@ -2052,8 +2080,11 @@ impl Store {
         Ok(progress)
     }
 
-    pub fn trial_progress(&self, scope: HistoryScope) -> Result<Vec<TrialProgress>, String> {
-        let conn = self.conn.lock().unwrap();
+    fn trial_progress(
+        &self,
+        conn: &Connection,
+        scope: HistoryScope,
+    ) -> Result<Vec<TrialProgress>, String> {
         let sql = format!(
             "SELECT recipe_id, recipe_version, verdict, COUNT(*) FROM parts WHERE project_id = ?1 AND {} AND mode = 'maintenanceShadow' \
              AND recipe_id IS NOT NULL AND recipe_version IS NOT NULL GROUP BY recipe_id, recipe_version, verdict \
@@ -2288,18 +2319,23 @@ impl Store {
     }
 }
 
+fn open_read_only(path: &Path) -> Result<Connection, String> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(db_err)?;
+    conn.busy_timeout(Duration::from_secs(2)).map_err(db_err)?;
+    Ok(conn)
+}
+
 /// 本机记录库里出现过的项目编号（只读打开；库还不存在时为空）。新建、导入、复制项目时编号不能与它们重复，
 /// 否则已删除项目的历史会被算到新项目名下。
 pub fn recorded_projects(path: &Path) -> Result<BTreeSet<String>, String> {
     if !path.is_file() {
         return Ok(BTreeSet::new());
     }
-    let conn = Connection::open_with_flags(
-        path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(db_err)?;
-    conn.busy_timeout(Duration::from_secs(2)).map_err(db_err)?;
+    let conn = open_read_only(path)?;
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(db_err)?;
