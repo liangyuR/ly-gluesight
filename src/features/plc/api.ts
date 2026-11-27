@@ -2,6 +2,7 @@ import { useCycleControl, type CycleControlState } from "../cycle/control";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
+import { createSharedSnapshot } from "../../lib/desktopSnapshot";
 import type {
   ConnectionConfig,
   DataType,
@@ -123,12 +124,11 @@ export function subscribe<T>(event: string, cb: (payload: T) => void, onError?: 
   };
 }
 
+const subscribePlcStatus = createSharedSnapshot<PlcStatus>("plc://status", () => plcApi.getStatus(), { readOnListenFailure: true });
+
 export function usePlcStatus() {
   const [status, setStatus] = useState<PlcStatus | null>(null);
-  useEffect(() => {
-    plcApi.getStatus().then(setStatus).catch(() => setStatus(null));
-    return subscribe<PlcStatus>("plc://status", setStatus);
-  }, []);
+  useEffect(() => subscribePlcStatus(setStatus), []);
   return status;
 }
 
