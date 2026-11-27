@@ -61,8 +61,8 @@ pub struct FrameClock {
     tracks: Vec<Track>,
     /// 各门控的槽数
     slots: Vec<u64>,
-    /// [0, frozen) 的门控已冻结
-    frozen: usize,
+    /// 冻结的各门控的累计槽数，长度即已冻结门控数
+    frozen_ends: Vec<u64>,
 }
 
 /// 接件时一台计划相机的编号起点。
@@ -97,7 +97,7 @@ impl FrameClock {
                 })
                 .collect(),
             slots: Vec::new(),
-            frozen: 0,
+            frozen_ends: Vec::new(),
         }
     }
 
@@ -172,15 +172,21 @@ impl FrameClock {
             (None, Some(last)) => infer(last),
         };
         let i = index(origin);
-        self.frozen = self.frozen.max(gate);
         if self.slots.len() <= gate {
             self.slots.resize(gate + 1, 0);
         }
-        let stamp = if gate < self.frozen && i + 1 > self.slots[gate] {
+        if gate > self.frozen_ends.len() {
+            let mut end = self.frozen_ends.last().copied().unwrap_or_default();
+            for &slots in &self.slots[self.frozen_ends.len()..gate] {
+                end += slots;
+                self.frozen_ends.push(end);
+            }
+        }
+        let stamp = if gate < self.frozen_ends.len() && i + 1 > self.slots[gate] {
             Stamp::Late
         } else {
             self.slots[gate] = self.slots[gate].max(i + 1);
-            Stamp::Seq(self.slots[..gate].iter().sum::<u64>() + i + 1)
+            Stamp::Seq(Self::slots_before(&self.frozen_ends, gate) + i + 1)
         };
         track.last = Some(Last {
             ts,
@@ -189,6 +195,23 @@ impl FrameClock {
             stamp,
         });
         stamp
+    }
+
+    fn slots_before(frozen_ends: &[u64], gate: usize) -> u64 {
+        gate.checked_sub(1)
+            .map_or(0, |previous| frozen_ends[previous])
+    }
+
+    /// 相机上一帧的门控下标和门控内槽位（从 1 起），仅成功编号时有值。
+    pub fn last_gate_slot(&self, cam: usize) -> Option<(usize, u64)> {
+        let last = self.tracks.get(cam)?.last?;
+        let Stamp::Seq(seq) = last.stamp else {
+            return None;
+        };
+        Some((
+            last.gate,
+            seq - Self::slots_before(&self.frozen_ends, last.gate),
+        ))
     }
 
     #[cfg(test)]
@@ -264,6 +287,24 @@ mod tests {
 
         assert_eq!(stamp(first_arrival), Stamp::Seq(3));
         assert_eq!(stamp(second_open + delay_ns), Stamp::Seq(4));
+    }
+
+    #[test]
+    fn skipped_and_frozen_gates_preserve_the_offsets_of_later_frames() {
+        let mut clock = clock(3, false);
+        let opens = e(&[1_010 * T, 1_020 * T, 1_030 * T, 1_040 * T]);
+        let stamp = |clock: &mut FrameClock, cam, gate: usize, slot| {
+            clock.stamp(cam, at(opens[gate].0, slot), Some(&opens))
+        };
+
+        assert_eq!(stamp(&mut clock, 0, 0, 1), Stamp::Seq(2));
+        assert_eq!(stamp(&mut clock, 0, 2, 0), Stamp::Seq(3));
+        assert_eq!(stamp(&mut clock, 1, 0, 1), Stamp::Seq(2));
+        assert_eq!(stamp(&mut clock, 2, 0, 2), Stamp::Late);
+        assert_eq!(stamp(&mut clock, 0, 2, 1), Stamp::Seq(4));
+        assert_eq!(stamp(&mut clock, 0, 3, 0), Stamp::Seq(5));
+        assert_eq!(stamp(&mut clock, 1, 2, 1), Stamp::Seq(4));
+        assert_eq!(clock.gate_slots(), [2, 0, 2, 1]);
     }
 
     /// 防的回归（D-SB-55）：按 SDK 帧号配组时，相机检测中重开（帧号从 1 重数）只能整件判 ERR；改按时间戳后，

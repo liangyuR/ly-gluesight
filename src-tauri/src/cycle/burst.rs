@@ -90,6 +90,7 @@ pub(super) struct BurstPart {
     pass_skip: crate::passes::PassSkip,
     /// 示教件的笔结构（D-SB-62）
     pass_frames: Option<Vec<u32>>,
+    taught_pass_offsets: Vec<u64>,
     /// 本件采集期间因图像内存预算满被丢弃、没收进来的帧数（D-SB-60）
     pub(super) budget_dropped: u64,
     /// 收尾补测开始等录制原图写完的时刻（D-SB-60）
@@ -155,6 +156,16 @@ impl BurstPart {
                     .filter_map(move |s| s.sector_deg.map(|deg| ((camera, s.segment), deg)))
             })
             .collect();
+        let taught_pass_offsets = recipe
+            .pass_frames
+            .iter()
+            .flatten()
+            .scan(0u64, |offset, frames| {
+                let start = *offset;
+                *offset += u64::from(*frames);
+                Some(start)
+            })
+            .collect();
         Self {
             grouper: Grouper::with_limit(vec![0; cams.len()], limit),
             clock: FrameClock::new(starts),
@@ -173,6 +184,7 @@ impl BurstPart {
             boundary_guard: recipe.boundary_guard,
             pass_skip: recipe.pass_skip,
             pass_frames: recipe.pass_frames.clone(),
+            taught_pass_offsets,
             budget_dropped: 0,
             post_wait: None,
             post_started: false,
@@ -194,20 +206,15 @@ impl BurstPart {
 
     /// 到达时按笔预测段（D-SB-62）：这一帧在本件第 j 笔第 i 帧，换成示教件第 j 笔的第 i 帧（超出示教件这一笔取它的末帧）
     /// 再按累计 N_exp 预测；配方没有笔结构或本件笔数已超过示教件时照旧用 seq。
-    fn taught_seq(&self, seq: u64) -> u64 {
+    fn taught_seq(&self, camera: usize, seq: u64) -> u64 {
         let Some(taught) = self.pass_frames.as_deref() else {
             return seq;
         };
-        let slots: Vec<u32> = self
-            .clock
-            .gate_slots()
-            .iter()
-            .map(|&n| u32::try_from(n).unwrap_or(u32::MAX))
-            .collect();
-        crate::passes::locate(&slots, seq)
+        self.clock
+            .last_gate_slot(camera)
             .and_then(|(j, offset)| {
-                let n = *taught.get(j)?;
-                Some(crate::passes::first_seq(taught, j) + u64::from(offset.min(n)) - 1)
+                let frames = u64::from(*taught.get(j)?);
+                Some(self.taught_pass_offsets[j] + offset.min(frames))
             })
             .unwrap_or(seq)
     }
@@ -543,7 +550,7 @@ impl Part {
                     &burst.segments,
                     &burst.cameras,
                     camera,
-                    burst.taught_seq(seq),
+                    burst.taught_seq(camera, seq),
                 );
                 let measuring = !burst.collect && corridor.is_some();
                 let metrics = (!burst.collect && corridor.is_none()).then(|| {

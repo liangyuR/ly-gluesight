@@ -737,3 +737,53 @@ fn production_splits_passes_by_gate_pause_and_skips_each_pass_head() {
         );
     }
 }
+
+#[test]
+fn arrival_corridor_uses_taught_pass_when_live_pass_lengths_differ() {
+    use crate::plan::{new_segment, PathSegment, SegmentKind};
+
+    let mut doc = crate::recipe::samples_burst();
+    doc.segments = (1..=3)
+        .map(|index| PathSegment {
+            expected_frames: Some(3),
+            ..new_segment(index, SegmentKind::Straight, &doc.segment_defaults)
+        })
+        .collect();
+    doc.pass_frames = Some(vec![3, 3, 3]);
+    let mut part = armed_part_with(
+        doc.build().unwrap(),
+        "taught-pass-prediction",
+        &Ledgers::default(),
+        Some(CounterSource::Synthetic),
+        Policy::burst_offline(None),
+    );
+    let period = crate::frame_clock::SYNTH_PERIOD_NS;
+    let mut counter = 0;
+    let mut corridors = Vec::new();
+    for (start, count) in [(period, 2), (9 * period + period / 2, 4), (19 * period, 1)] {
+        for slot in 0..count {
+            counter += 1;
+            let frame = Frame {
+                dev_ts: Some(start + slot * period),
+                ..burst_frame(0, counter)
+            };
+            let Some(burst::Arrival::Accepted { camera, seq }) = part.receive_burst(&frame) else {
+                panic!("帧 {counter} 应被接受");
+            };
+            corridors.push(part.burst.arrival_corridor(camera, seq));
+        }
+    }
+
+    assert_eq!(
+        corridors,
+        [
+            Some(1),
+            Some(1),
+            Some(2),
+            Some(2),
+            Some(2),
+            Some(2),
+            Some(3)
+        ]
+    );
+}
