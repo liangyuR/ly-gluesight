@@ -174,6 +174,15 @@ fn measure(
 }
 
 #[test]
+fn corridor_roi_includes_the_endpoint_and_uses_sampled_extrema_at_turns() {
+    let mut doc = burst_doc();
+    doc.inspect[0].segments[0].corridor = vec![[40.0, 80.0], [40.0, 91.0], [40.0, 79.0]];
+
+    let graph = corridor_of(doc, 0);
+    assert_eq!(graph.params["roi"], json!([4, 43, 73, 84]));
+}
+
+#[test]
 fn bent_corridor_with_repeated_vertices_accepts_stations_through_the_rounded_endpoint() {
     let mut doc = burst_doc();
     let endpoint = 50.9999;

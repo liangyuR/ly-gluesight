@@ -180,13 +180,7 @@ fn taught_bbox(points: &[[f64; 2]]) -> Option<[f64; 4]> {
     if q.len() < 2 || !(total > 0.0) {
         return None;
     }
-    let mut targets = Vec::new();
-    let mut t = 0.0;
-    while t < total - 1e-9 {
-        targets.push(t);
-        t += 2.0;
-    }
-    targets.push(total);
+    let last_regular = ((total - 1e-9) / 2.0).ceil() * 2.0 - 2.0;
     let round3 = |v: f64| (v * 1000.0).round() / 1000.0;
     let mut bbox = [
         f64::INFINITY,
@@ -194,28 +188,39 @@ fn taught_bbox(points: &[[f64; 2]]) -> Option<[f64; 4]> {
         f64::NEG_INFINITY,
         f64::NEG_INFINITY,
     ];
-    let mut seg = 0;
-    for t in targets {
-        while seg + 2 < q.len() && arc[seg + 1] < t {
-            seg += 1;
-        }
-        let span = arc[seg + 1] - arc[seg];
-        let f = if span > 1e-12 {
-            ((t - arc[seg]) / span).clamp(0.0, 1.0)
-        } else {
-            0.0
+    let mut next_regular = 0.0;
+    for (edge, range) in q.windows(2).zip(arc.windows(2)) {
+        let (a, b) = (edge[0], edge[1]);
+        let (start, end) = (range[0], range[1]);
+        let span = end - start;
+        let mut include = |t: f64| {
+            let f = if span > 1e-12 {
+                ((t - start) / span).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let x = round3(a[0] + (b[0] - a[0]) * f);
+            let y = round3(a[1] + (b[1] - a[1]) * f);
+            bbox = [
+                bbox[0].min(x),
+                bbox[1].min(y),
+                bbox[2].max(x),
+                bbox[3].max(y),
+            ];
         };
-        let (a, b) = (q[seg], q[seg + 1]);
-        let (x, y) = (
-            round3(a[0] + (b[0] - a[0]) * f),
-            round3(a[1] + (b[1] - a[1]) * f),
-        );
-        bbox = [
-            bbox[0].min(x),
-            bbox[1].min(y),
-            bbox[2].max(x),
-            bbox[3].max(y),
-        ];
+        let last = last_regular.min((end / 2.0).floor() * 2.0);
+        if next_regular <= last {
+            // 舍入后的坐标在线段内仍单调，首尾两个采样点决定该段的极值。
+            include(next_regular);
+            if next_regular < last {
+                include(last);
+            }
+            next_regular = last + 2.0;
+        }
+        if end == total {
+            include(total);
+            break;
+        }
     }
     Some(bbox)
 }
