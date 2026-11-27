@@ -79,6 +79,7 @@ pub struct Prepared {
     pub bundle: ReleaseBundle,
     pub recipe: Arc<Recipe>,
     engine: Arc<Engine>,
+    acquisition: Vec<Option<Value>>,
     /// 按（计划相机下标, 段号）的走廊测量图（D-SB-45）
     corridors: vision::CorridorSet,
     /// 预热时在自己的示教帧上没测成的（计划相机下标, 段号）与原因：生产不测，落在里面的帧记未测（D-SB-59）
@@ -118,6 +119,7 @@ impl Prepared {
         }
         let mut sizes = Vec::with_capacity(recipe.inspect.len());
         let mut channels = Vec::with_capacity(recipe.inspect.len());
+        let mut acquisition = Vec::with_capacity(recipe.inspect.len());
         for (idx, inspect) in recipe.inspect.iter().enumerate() {
             let resource = bundle.camera(idx)?;
             sizes.push(resource.size);
@@ -129,6 +131,7 @@ impl Prepared {
                 &crate::fsio::read_text(&resource.calibration).map_err(|e| e.to_string())?,
             )
             .map_err(|e| format!("发布包标定无效：{e}"))?;
+            acquisition.push(calibration.get("acquisition").cloned());
             let scale = calibration["mmPerPx"]
                 .as_f64()
                 .ok_or("发布包标定没有有效像素当量")?;
@@ -156,10 +159,22 @@ impl Prepared {
             bundle,
             recipe,
             engine,
+            acquisition,
             corridors,
             untested: BTreeMap::new(),
             measurable: 0,
         })
+    }
+
+    pub fn check_configured_acquisition(
+        &self,
+        configs: &[crate::camera::CameraConfig],
+    ) -> Result<(), String> {
+        for (inspect, expected) in self.recipe.inspect.iter().zip(&self.acquisition) {
+            let config = configured_camera(configs, &inspect.camera)?;
+            check_acquisition_tag(config, expected.as_ref())?;
+        }
+        Ok(())
     }
 
     /// 这一（相机, 段）预热没测成、生产不测时的原因。
@@ -587,11 +602,12 @@ impl ProductionHost {
     }
 }
 
-/// 已预热好的发布包里不测的段（D-SB-59）：部分不测返回说明；一段都测不了返回 Err；没预热好或全部能测为 Ok(None)。
-pub fn coverage(app: &AppHandle, recipe: &Recipe) -> Result<Option<String>, String> {
-    let Some(prepared) = app.state::<ProductionHost>().prepared(&warmup_key(recipe)) else {
-        return Ok(None);
-    };
+pub fn prepared_recipe(app: &AppHandle, recipe: &Recipe) -> Option<Arc<Prepared>> {
+    app.state::<ProductionHost>().prepared(&warmup_key(recipe))
+}
+
+/// 已预热好的发布包里不测的段（D-SB-59）：部分不测返回说明；一段都测不了返回 Err。
+pub fn coverage(prepared: &Prepared) -> Result<Option<String>, String> {
     let untested = prepared.untested_reasons();
     if untested.is_empty() {
         Ok(None)
@@ -639,26 +655,41 @@ pub fn acquisition_tag(config: &crate::camera::CameraConfig) -> Value {
     serde_json::json!({ "triggerSource": config.trigger_source, "triggerActivation": config.trigger_activation, "frameRate": config.frame_rate })
 }
 
+fn configured_camera<'a>(
+    configs: &'a [crate::camera::CameraConfig],
+    id: &str,
+) -> Result<&'a crate::camera::CameraConfig, String> {
+    configs
+        .iter()
+        .find(|c| c.id == id)
+        .ok_or_else(|| format!("相机 {id} 不存在"))
+}
+
+fn check_acquisition_tag(
+    config: &crate::camera::CameraConfig,
+    expected: Option<&Value>,
+) -> Result<(), String> {
+    if expected != Some(&acquisition_tag(config)) {
+        return Err(format!(
+            "相机 {} 的触发方式或帧率与发布标定不一致，请恢复参数或重新标定、验证并发布",
+            config.id
+        ));
+    }
+    Ok(())
+}
+
 fn check_acquisition(
     bundle: &ReleaseBundle,
     configs: &[crate::camera::CameraConfig],
 ) -> Result<(), String> {
     for (index, inspect) in bundle.recipe.inspect.iter().enumerate() {
-        let config = configs
-            .iter()
-            .find(|c| c.id == inspect.camera)
-            .ok_or_else(|| format!("相机 {} 不存在", inspect.camera))?;
+        let config = configured_camera(configs, &inspect.camera)?;
         let calibration: Value = serde_json::from_str(
             &crate::fsio::read_text(&bundle.camera(index)?.calibration)
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        if calibration.get("acquisition") != Some(&acquisition_tag(config)) {
-            return Err(format!(
-                "相机 {} 的触发方式或帧率与发布标定不一致，请恢复参数或重新标定、验证并发布",
-                inspect.camera
-            ));
-        }
+        check_acquisition_tag(config, calibration.get("acquisition"))?;
     }
     Ok(())
 }

@@ -241,7 +241,7 @@ fn production_recipe_item(f: &Facts) -> ReadinessItem {
                     "配方 {id} 不能开工：{}",
                     r.reason.as_deref().unwrap_or("原因未知")
                 ),
-                Some(CREATE.into()),
+                (r.target != Some(Target::Camera)).then(|| CREATE.into()),
                 r.target,
             ),
             Some(RecipeOption {
@@ -281,10 +281,11 @@ fn production_recipe_item(f: &Facts) -> ReadinessItem {
                     r.reason.as_deref().unwrap_or("原因未知")
                 ),
             };
+            let target = first.and_then(|r| r.target).or(Some(Target::Workspace));
             blocked(
                 detail,
-                Some(CREATE.into()),
-                first.and_then(|r| r.target).or(Some(Target::Workspace)),
+                (target != Some(Target::Camera)).then(|| CREATE.into()),
+                target,
             )
         }
         Product::Plc if runnable.iter().all(|r| r.waiting.is_some()) => item(
@@ -507,6 +508,7 @@ static BUNDLE_CHECKS: LazyLock<BundleChecks> = LazyLock::new(BundleChecks::defau
 /// 已发布版本能否在当前站点运行，生产预热进度与预热后不测的段（只读查询，不触发预热）：返回（等待原因, 部分段不测的说明）。
 fn production_state(
     app: &AppHandle,
+    host: &CycleHost,
     recipe: &Recipe,
 ) -> Result<(Option<String>, Option<String>), (String, Target)> {
     use crate::production::Warmup;
@@ -519,9 +521,17 @@ fn production_state(
         .map_err(workspace)?;
     crate::production::site_admits(manifest.validation_site).map_err(workspace)?;
     match crate::production::warmup(app, recipe) {
-        Warmup::Ready => crate::production::coverage(app, recipe)
-            .map(|note| (None, note))
-            .map_err(workspace),
+        Warmup::Ready => {
+            let Some(prepared) = crate::production::prepared_recipe(app, recipe) else {
+                return Ok((Some("等待生产预热".into()), None));
+            };
+            prepared
+                .check_configured_acquisition(&host.camera.configs())
+                .map_err(|error| (error, Target::Camera))?;
+            crate::production::coverage(&prepared)
+                .map(|note| (None, note))
+                .map_err(workspace)
+        }
         Warmup::Pending => Ok((Some("等待生产预热".into()), None)),
         Warmup::Preparing => Ok((Some("发布资源与图像引擎预热中".into()), None)),
         Warmup::Retryable(error) => Err((error, Target::Settings)),
@@ -538,7 +548,7 @@ fn recipe_problem(
     let workspace = |e: String| (e, Target::Workspace);
     let production = run_kind(recipe, maintenance).map_err(workspace)? == RunKind::Production;
     let (waiting, note) = if production {
-        production_state(app, recipe)?
+        production_state(app, host, recipe)?
     } else {
         (None, None)
     };
