@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FolderOpen, PackageOpen } from "lucide-react";
 import { Alert, Button, Card, Stack, Text } from "qing-steel";
+import { OperationStatus, useOperation, type OperationLabels } from "../features/workspace/operation";
 import { desktopAvailable, desktopCall } from "../lib/desktop";
 import { errorText } from "../lib/errors";
 import "./app-log.css";
@@ -8,6 +9,13 @@ import "./app-log.css";
 type DiagnosticsResult = { path: string; notes: string[] };
 type LogBatch = { cursor: number; lines: string[]; skipped: boolean };
 const MAX_LINES = 200;
+const diagnosticsLabels: OperationLabels = {
+  preparing: "正在准备诊断包",
+  saving: "正在保存诊断包",
+  cancelling: "正在取消导出",
+  cancelled: "已取消导出",
+  failed: "导出未完成",
+};
 
 function RuntimeLogStream() {
   const desktop = desktopAvailable();
@@ -96,28 +104,31 @@ function RuntimeLogStream() {
 }
 
 export default function AppLogPage() {
+  const operation = useOperation();
+  const exportPending = useRef(false);
   const [exporting, setExporting] = useState(false);
   const [result, setResult] = useState<DiagnosticsResult | null>(null);
-  const [error, setError] = useState("");
+  const [directoryError, setDirectoryError] = useState("");
 
   async function openDirectory() {
-    setError("");
+    setDirectoryError("");
     try {
       await desktopCall("app_open_log_dir");
     } catch (cause) {
-      setError(errorText(cause));
+      setDirectoryError(errorText(cause));
     }
   }
 
   async function exportDiagnostics() {
+    if (exportPending.current) return;
+    exportPending.current = true;
     setExporting(true);
     setResult(null);
-    setError("");
     try {
-      setResult(await desktopCall<DiagnosticsResult>("diagnostics_export"));
-    } catch (cause) {
-      setError(errorText(cause));
+      const exported = await operation.run(taskId => desktopCall<DiagnosticsResult>("diagnostics_export", { taskId })).catch(() => null);
+      if (exported) setResult(exported);
     } finally {
+      exportPending.current = false;
       setExporting(false);
     }
   }
@@ -132,11 +143,12 @@ export default function AppLogPage() {
           </Button>
         </Stack>
         <Text muted>诊断包包含最近 24 小时的运行日志、PLC 通讯日志和检测记录，最多附带 20 件异常工件的原图。</Text>
+        {!result && <OperationStatus operation={operation} label="导出诊断包" labels={diagnosticsLabels} />}
         {result && <Alert tone={result.notes.length ? "warn" : "ok"} title="诊断包已导出">
           <div className="mono">{result.path}</div>
           {result.notes.length > 0 && <ul>{result.notes.map((note, index) => <li key={index}>{note}</li>)}</ul>}
         </Alert>}
-        {error && <Alert tone="ng">{error}</Alert>}
+        {directoryError && <Alert tone="ng">{directoryError}</Alert>}
       </Stack>
     </Card>
     <RuntimeLogStream />

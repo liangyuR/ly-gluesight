@@ -1,4 +1,6 @@
 use super::*;
+use crate::offline::test_dir::TestDir;
+use crate::operation::{Operation, Operations, CANCELLED_MESSAGE};
 use crate::store::{burst_fixture, PartMode, PartRecord, PlcDelivery, RecordSource};
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
@@ -31,6 +33,39 @@ impl Drop for TestFiles {
     }
 }
 
+fn anonymous_operation() -> Operation {
+    Operation::with_events(Operations::default(), None, |_| {}).unwrap()
+}
+
+#[test]
+fn cancelled_archive_removes_the_temporary_zip_and_preserves_an_existing_export() {
+    let dir = TestDir::new("diagnostics-tests", "cancel-archive");
+    let path = dir.join("diagnostics.zip");
+    let temporary = path.with_extension("zip.tmp");
+    let mut existing = ZipWriter::new(Vec::new());
+    existing
+        .add("README.md", b"existing export", false)
+        .unwrap();
+    let existing = existing.finish().unwrap();
+    fs::write(&path, &existing).unwrap();
+
+    let tasks = Operations::default();
+    let task_id = "cancel-diagnostic-export";
+    let operation = Operation::with_events(tasks.clone(), Some(task_id.into()), |_| {}).unwrap();
+    let result = operation.run(|operation| {
+        write_archive(&path, operation, |package| {
+            package.add("README.md", b"new export")?;
+            assert!(temporary.is_file());
+            assert!(tasks.cancel(task_id));
+            Ok(())
+        })
+    });
+
+    assert_eq!(result.unwrap_err(), CANCELLED_MESSAGE);
+    assert!(!temporary.exists());
+    assert_eq!(fs::read(path).unwrap(), existing);
+}
+
 #[test]
 fn invalid_plc_row_keeps_read_logs_in_the_zip_and_records_the_failure() {
     let files = TestFiles::new();
@@ -46,7 +81,15 @@ fn invalid_plc_row_keeps_read_logs_in_the_zip_and_records_the_failure() {
     drop(conn);
 
     let mut package = Package::new(Cursor::new(Vec::new()));
-    let count = write_plc_logs(&mut package, &path, ts, ts + 1, MAX_PLC_LOGS).unwrap();
+    let count = write_plc_logs(
+        &mut package,
+        &path,
+        ts,
+        ts + 1,
+        MAX_PLC_LOGS,
+        &anonymous_operation(),
+    )
+    .unwrap();
     assert_eq!(count, 1);
     assert_eq!(package.notes.len(), 1);
     assert!(package.notes[0].starts_with("PLC 日志读取失败"));
@@ -115,7 +158,8 @@ fn streamed_record_entries_keep_explicit_order_full_details_and_checksums() {
     let expected = [older, newer].map(|id| store.detail(id).unwrap());
 
     let mut package = Package::new(Cursor::new(Vec::new()));
-    let records = write_part_entries(&mut package, &store, &request).unwrap();
+    let records =
+        write_part_entries(&mut package, &store, &request, &anonymous_operation()).unwrap();
     assert_eq!(records.count, 2);
     assert_eq!(records.images.len(), 1);
     assert_eq!(records.images[0].id, newer);
@@ -180,7 +224,8 @@ fn streamed_records_keep_the_most_recent_abnormal_image_candidate() {
         max_image_parts: 1,
     };
     let mut package = Package::new(Cursor::new(Vec::new()));
-    let records = write_part_entries(&mut package, &store, &request).unwrap();
+    let records =
+        write_part_entries(&mut package, &store, &request, &anonymous_operation()).unwrap();
     assert_eq!(
         records
             .images
@@ -211,7 +256,7 @@ fn time_range_record_stream_rejects_a_bad_detail_without_manifest_entries() {
         max_image_parts: 0,
     };
     let mut package = Package::new(Cursor::new(Vec::new()));
-    assert!(write_part_entries(&mut package, &store, &request).is_err());
+    assert!(write_part_entries(&mut package, &store, &request, &anonymous_operation()).is_err());
     assert!(package.files.is_empty());
 }
 

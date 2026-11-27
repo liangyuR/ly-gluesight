@@ -7,7 +7,8 @@ import "./operation.css";
 
 export interface OperationProgress {
   taskId: string;
-  stage: "preparing" | "measuring" | "summarizing" | "saving" | "completed" | "cancelled" | "failed";
+  stage: "preparing" | "measuring" | "summarizing" | "collecting_logs" | "packing_records" | "packing_images"
+    | "saving" | "completed" | "cancelled" | "failed";
   completed: number;
   total: number;
   failed: number;
@@ -18,6 +19,7 @@ export interface OperationProgress {
 const terminal = (stage: OperationProgress["stage"]) => ["completed", "cancelled", "failed"].includes(stage);
 const labels: Record<OperationProgress["stage"], string> = {
   preparing: "正在校验数据", measuring: "正在测量", summarizing: "正在汇总判定", saving: "正在保存结果",
+  collecting_logs: "正在收集日志和配置", packing_records: "正在打包检测记录", packing_images: "正在打包原图",
   completed: "已完成", cancelled: "已取消，原结果保留", failed: "未完成，原结果保留",
 };
 interface OperationState { progress: OperationProgress; registered: boolean; cancelling: boolean; error: string }

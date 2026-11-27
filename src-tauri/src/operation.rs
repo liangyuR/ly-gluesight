@@ -163,6 +163,12 @@ impl Operation {
         }
     }
 
+    pub fn checkpoint(&self) -> Result<(), String> {
+        self.check()?;
+        self.emit(false);
+        Ok(())
+    }
+
     fn emit(&self, force: bool) {
         if self.task_id.is_none() {
             return;

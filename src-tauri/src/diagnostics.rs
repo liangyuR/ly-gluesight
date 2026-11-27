@@ -11,6 +11,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::applog;
 use crate::judge::Verdict;
+use crate::operation::Operation;
 use crate::plc::log_snapshot::{self, ScanError};
 use crate::store::{HistoryQuery, HistoryScope, PartDetail, RecordingEvidence, Store};
 use crate::ziparchive::ZipWriter;
@@ -269,7 +270,13 @@ impl<W: Write + Seek> Package<W> {
         }
     }
 
-    fn copy_dir(&mut self, dir: &Path, prefix: &str, skip: &[&str]) -> Result<(), String> {
+    fn copy_dir(
+        &mut self,
+        dir: &Path,
+        prefix: &str,
+        skip: &[&str],
+        operation: &Operation,
+    ) -> Result<(), String> {
         let Ok(entries) = fs::read_dir(dir) else {
             return Ok(());
         };
@@ -282,6 +289,7 @@ impl<W: Write + Seek> Package<W> {
             .collect();
         files.sort_by_key(|e| e.file_name());
         for entry in files {
+            operation.checkpoint()?;
             self.copy_file(
                 &entry.path(),
                 &format!("{prefix}/{}", entry.file_name().to_string_lossy()),
@@ -305,11 +313,17 @@ fn write_plc_logs<W: Write + Seek>(
     from: i64,
     to: i64,
     limit: u32,
+    operation: &Operation,
 ) -> Result<u64, String> {
     let mut count = 0;
     let mut note = None;
     package.add_stream("logs/plc.jsonl", |out| {
         let scan = log_snapshot::visit_recent(path, from, to, limit, |entry| {
+            if count % 256 == 0 {
+                operation.checkpoint().map_err(io::Error::other)?;
+            } else {
+                operation.check().map_err(io::Error::other)?;
+            }
             serde_json::to_writer(
                 &mut *out,
                 &PlcLine {
@@ -373,6 +387,7 @@ fn write_part_entries<W: Write + Seek>(
     package: &mut Package<W>,
     store: &Store,
     request: &ExportRequest,
+    operation: &Operation,
 ) -> Result<PartEntries, String> {
     let ids = collect_part_ids(store, request, &mut package.notes)?;
     let mut count = 0;
@@ -382,6 +397,7 @@ fn write_part_entries<W: Write + Seek>(
     let mut notes = Vec::new();
     package.add_stream("records/parts.jsonl", |out| {
         for (order, id) in ids.into_iter().enumerate() {
+            operation.checkpoint().map_err(io::Error::other)?;
             let detail = match store.detail(id) {
                 Ok(detail) => detail,
                 Err(error) if !request.history_ids.is_empty() => {
@@ -401,6 +417,7 @@ fn write_part_entries<W: Write + Seek>(
         }
         Ok(())
     })?;
+    operation.check()?;
     package.notes.extend(notes);
     package.add("records/parts.csv", &csv)?;
     candidates.sort_unstable_by_key(|(order, _)| *order);
@@ -416,6 +433,7 @@ fn part_images<W: Write + Seek>(
     package: &mut Package<W>,
     part: &ImagePart,
     budget: &mut u64,
+    operation: &Operation,
 ) -> Result<usize, String> {
     let id = part.id;
     let Some(cycle_id) = part.cycle_id.as_deref() else {
@@ -441,6 +459,7 @@ fn part_images<W: Write + Seek>(
     let mut count = 0;
     let mut directory = None;
     for (label, file) in &part.files {
+        operation.checkpoint()?;
         let Some(path) = relative(file) else {
             package
                 .notes
@@ -485,11 +504,51 @@ fn part_images<W: Write + Seek>(
         .join("workspaces")
         .join("comparisons")
         .join(id.to_string());
-    package.copy_dir(&comparisons, &format!("{folder}/comparisons"), &[])?;
+    package.copy_dir(
+        &comparisons,
+        &format!("{folder}/comparisons"),
+        &[],
+        operation,
+    )?;
     Ok(count)
 }
 
-pub fn export(app: &AppHandle, request: ExportRequest) -> Result<ExportResult, String> {
+fn write_archive<T>(
+    path: &Path,
+    operation: &Operation,
+    build: impl FnOnce(&mut Package<BufWriter<fs::File>>) -> Result<T, String>,
+) -> Result<(T, Vec<String>), String> {
+    let temporary = path.with_extension("zip.tmp");
+    let file = fs::File::create_new(&temporary).map_err(|e| e.to_string())?;
+    let result = (|| {
+        let mut package = Package::new(BufWriter::new(file));
+        let summary = build(&mut package)?;
+        operation.check()?;
+        let Package { zip, notes, .. } = package;
+        zip.finish()
+            .map_err(|e| e.to_string())?
+            .into_inner()
+            .map_err(|e| e.to_string())?
+            .sync_all()
+            .map_err(|e| e.to_string())?;
+        if path.try_exists().map_err(|e| e.to_string())? {
+            return Err("诊断包文件已存在，请重试".into());
+        }
+        operation.saving()?;
+        fs::rename(&temporary, path).map_err(|e| e.to_string())?;
+        Ok((summary, notes))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn export(
+    app: &AppHandle,
+    request: ExportRequest,
+    operation: &Operation,
+) -> Result<ExportResult, String> {
     if request.to <= request.from {
         return Err("结束时间必须晚于开始时间".into());
     }
@@ -500,11 +559,9 @@ pub fn export(app: &AppHandle, request: ExportRequest) -> Result<ExportResult, S
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
     let path = dir.join(format!("诊断包_{stamp}.zip"));
-    let temporary = dir.join(format!("诊断包_{stamp}.zip.tmp"));
-    let file = fs::File::create_new(&temporary).map_err(|e| e.to_string())?;
-    let mut package = Package::new(BufWriter::new(file));
-    let built = build(app, &request, &mut package);
-    let result = built.and_then(|summary| {
+    let (summary, notes) = write_archive(&path, operation, |package| {
+        let summary = build(app, &request, package, operation)?;
+        operation.check()?;
         package.add("README.md", README.as_bytes())?;
         let version = app.package_info().version.to_string();
         let identity = applog::build_identity();
@@ -517,29 +574,11 @@ pub fn export(app: &AppHandle, request: ExportRequest) -> Result<ExportResult, S
             "configSummary": crate::commands::config_summary(app),
             "summary": summary, "notes": package.notes, "files": package.files,
         });
-        package.add("manifest.json", &serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)?;
+        package.add(
+            "manifest.json",
+            &serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
+        )?;
         Ok(summary)
-    });
-    let finished = result.and_then(|summary| {
-        let Package { zip, notes, .. } = package;
-        zip.finish()
-            .map_err(|e| e.to_string())?
-            .into_inner()
-            .map_err(|e| e.to_string())?
-            .sync_all()
-            .map_err(|e| e.to_string())?;
-        Ok((summary, notes))
-    });
-    let (summary, notes) = match finished {
-        Ok(done) => done,
-        Err(error) => {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-    };
-    fs::rename(&temporary, &path).map_err(|e| {
-        let _ = fs::remove_file(&temporary);
-        e.to_string()
     })?;
     let bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     tracing::info!(path = %path.display(), bytes, "已导出诊断包");
@@ -555,7 +594,9 @@ fn build<W: Write + Seek>(
     app: &AppHandle,
     request: &ExportRequest,
     package: &mut Package<W>,
+    operation: &Operation,
 ) -> Result<ExportResult, String> {
+    operation.stage("collecting_logs")?;
     let mut logs = 0;
     let files = applog::files_in_range(&applog::dir(app)?, request.from, request.to)
         .unwrap_or_else(|error| {
@@ -563,6 +604,7 @@ fn build<W: Write + Seek>(
             Vec::new()
         });
     for file in files {
+        operation.checkpoint()?;
         let name = file_name(&file);
         let mut out = Vec::new();
         match applog::export_file(&file, request.from, request.to, &mut out) {
@@ -584,19 +626,28 @@ fn build<W: Write + Seek>(
         request.from,
         request.to,
         MAX_PLC_LOGS,
+        operation,
     )?;
+    operation.checkpoint()?;
     let project = crate::storage::project(app);
     package.copy_file(&project.join("project.json"), "project.json")?;
-    package.copy_dir(&crate::storage::project_config(app), "config", &[])?;
+    package.copy_dir(
+        &crate::storage::project_config(app),
+        "config",
+        &[],
+        operation,
+    )?;
     let machine = crate::storage::config(app).join("site-offline.json");
     if machine.is_file() {
         package.copy_file(&machine, "machine/site-offline.json")?;
     }
     let state = crate::storage::state(app);
-    package.copy_dir(&state, "state", &[])?;
+    package.copy_dir(&state, "state", &[], operation)?;
+    operation.stage("packing_records")?;
     let store = app.state::<Store>();
-    let records = write_part_entries(package, &store, request)?;
+    let records = write_part_entries(package, &store, request, operation)?;
     for (project, revision) in &records.revisions {
+        operation.checkpoint()?;
         match store.recipe_snapshot(project, revision) {
             Ok(Some(recipe)) => package.add(
                 &format!("recipes/{project}/{revision}.json"),
@@ -611,11 +662,15 @@ fn build<W: Write + Seek>(
     let mut budget = MAX_IMAGE_BYTES;
     let mut images = 0;
     let mut image_parts = 0;
+    if !records.images.is_empty() {
+        operation.stage("packing_images")?;
+    }
     for part in &records.images {
         if budget == 0 {
             break;
         }
-        let added = part_images(app, package, part, &mut budget)?;
+        operation.checkpoint()?;
+        let added = part_images(app, package, part, &mut budget, operation)?;
         if added > 0 {
             image_parts += 1;
         }
@@ -637,6 +692,7 @@ fn build<W: Write + Seek>(
 pub async fn diagnostics_export(
     app: AppHandle,
     request: Option<ExportRequest>,
+    task_id: Option<String>,
 ) -> Result<ExportResult, String> {
     let request = request.unwrap_or_else(|| {
         let to = ly_plc::now_ms();
@@ -649,9 +705,9 @@ pub async fn diagnostics_export(
             max_image_parts: default_image_parts(),
         }
     });
+    let operation = Operation::start(&app, task_id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let _busy = crate::raw_compress::activity().busy();
-        export(&app, request)
+        operation.run(|operation| export(&app, request, operation))
     })
     .await
     .map_err(|e| e.to_string())?
