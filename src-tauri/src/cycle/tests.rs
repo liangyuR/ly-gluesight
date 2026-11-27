@@ -670,7 +670,7 @@ fn sparse_snapshot_preserves_a_later_frames_camera_and_verdict() {
             }
         }
     }
-    let acquiring = part.burst_view();
+    let acquiring = &part.published_view(Phase::Acquire).burst;
     assert_eq!(acquiring.groups[1].seq, 2);
     assert!(acquiring.groups[1].incomplete);
     assert_eq!(
@@ -682,11 +682,35 @@ fn sparse_snapshot_preserves_a_later_frames_camera_and_verdict() {
 
     end(&mut part, Some(4), true);
     judge_burst(&mut part);
-    let settled = part.burst_view();
+    let settled = &part.published_view(Phase::Idle).burst;
     assert_eq!(settled.groups[1].cells[1].status, FrameCellStatus::Missing);
     assert_eq!(settled.groups[2].seq, 3);
     assert_eq!(settled.groups[2].cells[1].frame_counter, Some(3));
     assert_eq!(settled.groups[2].cells[1].verdict, Some(Verdict::Ok));
+}
+
+#[test]
+fn unjudged_part_snapshot_still_reflects_the_drain_deadline() {
+    let mut part = burst_part("unjudged-snapshot", &Ledgers::default());
+    part.drain_timeout = Duration::from_secs(1);
+    deliver(&mut part, 0, 1);
+    end(&mut part, Some(1), false);
+    let before = part.published_view(Phase::Idle);
+    assert_eq!(
+        before.burst.groups[0].cells[1].status,
+        FrameCellStatus::Waiting
+    );
+
+    end(&mut part, Some(1), true);
+    let after = part.published_view(Phase::Idle);
+    assert_eq!(
+        after.burst.groups[0].cells[1].status,
+        FrameCellStatus::Missing
+    );
+    assert_eq!(
+        before.burst.groups[0].cells[1].status,
+        FrameCellStatus::Waiting
+    );
 }
 
 #[test]

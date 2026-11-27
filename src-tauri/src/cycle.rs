@@ -296,7 +296,7 @@ pub struct Snapshot {
     pub product_source: ProductSource,
     pub active_recipe_id: Option<String>,
     pub trigger_mode: Option<TriggerMode>,
-    pub part: Option<PartView>,
+    pub part: Option<Arc<PartView>>,
     pub result: Option<ResultView>,
     pub stats: Stats,
     pub stray_frames: u64,
@@ -1474,7 +1474,10 @@ impl Machine {
             product_source: settings.product_source,
             active_recipe_id: active.as_ref().map(|r| r.id.clone()),
             trigger_mode: active.as_ref().map(|r| r.trigger_mode),
-            part: self.part.as_ref().map(Part::view),
+            part: self
+                .part
+                .as_ref()
+                .map(|part| part.published_view(self.phase)),
             result: self.result.clone(),
             stats: self.stats.snapshot(),
             stray_frames: self.stray,

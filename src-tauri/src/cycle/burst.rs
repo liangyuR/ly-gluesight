@@ -23,7 +23,10 @@ use crate::segmentation::{frame_corridors, resolve_regions, segment_part, Region
 use crate::shot_router::{ArmCam, Floor, FrameBaseline, Ledger, Ledgers};
 use crate::store::{BurstRecord, FrameKey, FrameRecord};
 
-use super::{FrameCellStatus, FrameCellView, FrameGroupCells, FrameGroupView, Part, PartViewBurst};
+use super::{
+    FrameCellStatus, FrameCellView, FrameGroupCells, FrameGroupView, Part, PartView, PartViewBurst,
+    Phase,
+};
 
 /// 分段边界的最低置信度：可信边界为 1；笔数与示教件不同、或按笔换算放不下的边界为 0（D-SB-40、D-SB-62）。
 const MIN_CONFIDENCE: f32 = 0.5;
@@ -79,6 +82,7 @@ pub(super) struct BurstPart {
     /// 判定后存下，落库与结果显示用
     judgement: Option<BurstJudgement>,
     final_frame_verdicts: OnceLock<BTreeMap<(usize, u64), Verdict>>,
+    settled_view: OnceLock<Arc<PartView>>,
     warned: BTreeSet<(usize, Warning)>,
     /// 维护采集：只录图不送测，收尾只等收尾窗口
     pub(super) collect: bool,
@@ -179,6 +183,7 @@ impl BurstPart {
             checks,
             judgement: None,
             final_frame_verdicts: OnceLock::new(),
+            settled_view: OnceLock::new(),
             warned: BTreeSet::new(),
             collect: false,
             segments: recipe.path_segments.clone(),
@@ -196,6 +201,7 @@ impl BurstPart {
 
     pub(super) fn set_judgement(&mut self, judgement: BurstJudgement) {
         self.final_frame_verdicts.take();
+        self.settled_view.take();
         self.judgement = Some(judgement);
     }
 
@@ -819,6 +825,18 @@ impl Part {
             camera_frames: burst.grouper.camera_counts(),
             judgement: decided,
             frames,
+        }
+    }
+
+    pub(super) fn published_view(&self, phase: Phase) -> Arc<PartView> {
+        if matches!(phase, Phase::Idle | Phase::Fault) && self.burst.judgement.is_some() {
+            Arc::clone(
+                self.burst
+                    .settled_view
+                    .get_or_init(|| Arc::new(self.view())),
+            )
+        } else {
+            Arc::new(self.view())
         }
     }
 
