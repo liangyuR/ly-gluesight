@@ -15,7 +15,6 @@ import {
   cycleApi,
   FrameGroupStrip,
   RegionResultPanel,
-  useBurstSegments,
   useCycle,
   useLayout,
   useReadiness,
@@ -28,7 +27,7 @@ import { TitlebarContent } from "../layout/TitlebarContent";
 const phaseLabels: Record<string, string> = { IDLE: "空闲", VALIDATE: "接件", ACQUIRE: "采集", DRAIN: "收尾", JUDGE: "判定", FAULT: "故障" };
 
 const viewOptions = [{ value: "image", label: "原图" }, { value: "part", label: "整件布置" }];
-const noSegments: readonly PathSegment[] = [];
+const noSegments: PathSegment[] = [];
 
 export default function InspectPage() {
   const { snapshot } = useCycle();
@@ -46,7 +45,8 @@ export default function InspectPage() {
   const part = snapshot?.part ?? null;
   const layoutId = part?.recipeId ?? snapshot?.activeRecipeId ?? recipes[0]?.id;
   const summary = recipes.find((r) => r.id === layoutId);
-  const layout = useLayout(layoutId, part ? part.recipeRevision : summary?.revisionId);
+  const recipeRevision = part?.recipeRevision ?? summary?.revisionId;
+  const layout = useLayout(layoutId, recipeRevision);
   const phase = snapshot?.phase ?? "IDLE";
   const settled = phase === "IDLE" || phase === "FAULT";
   const candidateResult = settled ? (snapshot?.result ?? null) : null;
@@ -54,7 +54,7 @@ export default function InspectPage() {
   const partResult = result && part && result.cycleId === part.cycleId ? result : null;
   const burst = part?.burst ?? null;
   const burstJudgement = result?.burst ?? null;
-  const burstSegments = useBurstSegments(layoutId, part?.recipeRevision ?? summary?.revisionId);
+  const burstSegments = layout && (!recipeRevision || layout.revisionId === recipeRevision) ? layout.pathSegments : noSegments;
   const burstScope = `${part?.cycleId ?? "idle"}:${part?.bundleId ?? ""}:${part?.recipeRevision ?? ""}`;
   const latestSeq = burst?.groups.reduce<number | null>((latest, group) => latest == null || group.seq > latest ? group.seq : latest, null) ?? null;
   const burstManual = seqSelection?.scope === burstScope && !!burst?.groups.some(group => group.seq === seqSelection.seq);
@@ -142,7 +142,7 @@ export default function InspectPage() {
       <InspectionReadiness snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
       <div className="prod-body">
-        <div className="prod-main burst">
+        <div className="prod-main">
           <Card className="prod-view" role="region" aria-label="检测主视图">
             <div className="panel-head">
               <h3 className="panel-title">检测视图</h3>
@@ -156,7 +156,7 @@ export default function InspectPage() {
               : <BurstRuntimeFrame part={part} seq={burstSeq} regions={partResult?.burst?.regions} focusedCamera={burstManual ? seqSelection?.camera : undefined} />}
           </Card>
 
-          <Card className="prod-shots">
+          <Card>
             <div className="panel-head">
               <h3 className="panel-title">帧组</h3>
               <ContextHelp label="帧组说明">同一触发序号（相机 SDK 帧号）的三台相机各出一帧，配成一个帧组；每格是一台相机的一帧，颜色只表示本帧：绿色为合格，黄色为允许范围内的局部超差，红色为 NG，紫色为测量失败，蓝色为测量中；灰色为缺帧、未测或走出走廊，只算检测不完整，不影响 OK/NG。本件判完后上方色带是各段结论，胶宽不均、整段胶偏等整段性问题看色带。</ContextHelp>
@@ -170,7 +170,7 @@ export default function InspectPage() {
 
         <aside className="prod-side" aria-label="整件结果">
           <PartResult key={result ? `${result.cycleId}:${result.ts}` : "current"} phase={phase} result={result} part={part}
-            segments={layout && layout.revisionId === part?.recipeRevision ? layout.pathSegments : noSegments} onLocate={selectGroup} />
+            segments={burstSegments} onLocate={selectGroup} />
           <Stats snapshot={snapshot} />
           <Progress snapshot={snapshot} result={partResult} onDiagnostics={() => setDiagnostics("capture")} />
           <Card className="prod-segments" role="region" aria-label="检测区域结果">
