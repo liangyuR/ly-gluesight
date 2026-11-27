@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Hash, Radio, RefreshCw, Search, X } from "lucide-react";
-import { Alert, Button, Card, Chip, EmptyState, Heading, IconButton, Pagination, SegmentedControl, Select, Stack, StatusBadge, Table, TextField, type TableColumn } from "qing-steel";
-import StepChart from "../components/StepChart";
+import { useEffect, useRef, useState } from "react";
+import { Radio, RefreshCw, Search, X } from "lucide-react";
+import { Alert, Button, Card, Chip, EmptyState, Heading, IconButton, Pagination, SegmentedControl, Stack, StatusBadge, Table, TextField, type TableColumn } from "qing-steel";
+import { errorText } from "../../../lib/errors";
 import { plcApi, subscribe } from "../api";
-import { categoryLabels, levelLabels } from "../meta";
-import type { HistorySample, LogCategory, LogEntry, LogLevel, LogPage, LogQuery, PlcPoint } from "../types";
+import PlcLogDetails from "../components/PlcLogDetails";
+import { resultCodeLabel } from "../handshake";
 import { formatTs, fromLocalInput, toLocalInput } from "../time";
+import type { LogGroup, LogGroupPage, PartLogEvent } from "../types";
 
-const PAGE_SIZE = 100;
-
+const PAGE_SIZE = 50;
 const ranges = [
   { key: "15m", label: "15 分钟", ms: 15 * 60_000 },
   { key: "1h", label: "1 小时", ms: 3_600_000 },
@@ -17,289 +17,129 @@ const ranges = [
   { key: "custom", label: "自定义", ms: 0 },
 ] as const;
 
-type RangeKey = (typeof ranges)[number]["key"];
+const eventLabels: Record<PartLogEvent, string> = {
+  received: "接到工件",
+  ended: "工件结束",
+  resultWritten: "结果写入完成",
+  resultFailed: "结果写入失败",
+  interrupted: "工件中断",
+  skipped: "跳过工件",
+};
 
-function toggle<T>(list: T[], v: T) {
-  return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
+function groupLabel(group: LogGroup) {
+  return group.partSeq === null ? "未关联工件" : `#${group.partSeq}`;
 }
 
-const levelTone = { info: "info", warn: "warn", error: "ng" } as const;
-
 export default function PlcLogPage() {
-  const [points, setPoints] = useState<PlcPoint[]>([]);
-  const [rangeKey, setRangeKey] = useState<RangeKey>("1h");
+  const [range, setRange] = useState<(typeof ranges)[number]["key"]>("1h");
   const [customStart, setCustomStart] = useState(() => toLocalInput(Date.now() - 3_600_000));
   const [customEnd, setCustomEnd] = useState(() => toLocalInput(Date.now()));
-  const [levels, setLevels] = useState<LogLevel[]>([]);
-  const [categories, setCategories] = useState<LogCategory[]>([]);
-  const [pointId, setPointId] = useState("");
-  const [keywordInput, setKeywordInput] = useState("");
+  const [input, setInput] = useState("");
   const [keyword, setKeyword] = useState("");
-  const [contextInput, setContextInput] = useState("");
-  const [context, setContext] = useState("");
-  const [page, setPage] = useState(0);
+  const [abnormalOnly, setAbnormalOnly] = useState(false);
   const [live, setLive] = useState(true);
-  const [data, setData] = useState<LogPage>({ total: 0, items: [] });
-  const [dataScope, setDataScope] = useState(-1);
-  const [dataPage, setDataPage] = useState(-1);
-  const [history, setHistory] = useState<{ samples: HistorySample[]; start: number; end: number } | null>(null);
+  const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState<LogGroup | null>(null);
+  const [data, setData] = useState<LogGroupPage | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [configError, setConfigError] = useState("");
-  const [exportError, setExportError] = useState("");
-  const [exporting, setExporting] = useState(false);
-  const [exported, setExported] = useState<string | null>(null);
-  const [revealing, setRevealing] = useState(false);
-  const exportPending = useRef<object | null>(null);
-  const revealPending = useRef(false);
-  const requestSerial = useRef(0);
-  const configSerial = useRef(0);
-  const alive = useRef(true);
-  const filterKey = JSON.stringify([rangeKey, customStart, customEnd, levels, categories, pointId, context, keyword]);
-  const scope = useRef({ key: filterKey, generation: 0 });
-  if (scope.current.key !== filterKey) scope.current = { key: filterKey, generation: scope.current.generation + 1 };
-  const generation = scope.current.generation;
-  const currentData = dataScope === generation && dataPage === page ? data : { total: 0, items: [] };
-
-  const loadPoints = useCallback(() => {
-    const serial = ++configSerial.current;
-    setConfigError("");
-    plcApi.getConfig().then(c => { if (alive.current && serial === configSerial.current) setPoints(c.points); })
-      .catch(e => { if (alive.current && serial === configSerial.current) setConfigError(String(e)); });
-  }, []);
+  const refresh = useRef<() => void>(() => {});
+  const following = live && range !== "custom" && page === 1;
 
   useEffect(() => {
-    alive.current = true; loadPoints();
-    return () => { alive.current = false; configSerial.current++; };
-  }, [loadPoints]);
-
-  useEffect(() => {
-    exportPending.current = null; setExporting(false); setExported(null); setExportError("");
-  }, [generation]);
-
-  const buildQuery = useCallback((): { query: LogQuery; start: number; end: number } => {
-    const now = Date.now();
-    if (rangeKey === "custom") {
-      const start = fromLocalInput(customStart);
-      const end = fromLocalInput(customEnd);
-      if (start === null || end === null || start > end) throw new Error("请选择有效时间段，开始时间不得晚于结束时间");
-      return { query: { start, end, levels, categories, pointId: pointId || null, context: context || null, keyword: keyword || null }, start, end };
+    let active = true;
+    let busy = false;
+    let dirty = false;
+    setData(null);
+    async function load() {
+      if (busy) { dirty = true; return; }
+      busy = true;
+      setLoading(true);
+      setError("");
+      try {
+        const start = range === "custom" ? fromLocalInput(customStart) : Date.now() - ranges.find(r => r.key === range)!.ms;
+        const end = range === "custom" ? fromLocalInput(customEnd) : null;
+        if (start === null || (range === "custom" && (end === null || start > end))) {
+          throw new Error("请选择有效时间段，开始时间不得晚于结束时间");
+        }
+        const result = await plcApi.queryLogGroups({ start, end, keyword, abnormalOnly, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE });
+        if (active) {
+          const lastPage = Math.max(1, Math.ceil(result.total / PAGE_SIZE));
+          if (page > lastPage) setPage(lastPage);
+          else setData(result);
+        }
+      } catch (cause) {
+        if (active) setError(errorText(cause));
+      } finally {
+        busy = false;
+        if (active) {
+          setLoading(false);
+          if (dirty) { dirty = false; void load(); }
+        }
+      }
     }
-    const start = now - ranges.find((r) => r.key === rangeKey)!.ms;
-    return { query: { start, end: null, levels, categories, pointId: pointId || null, context: context || null, keyword: keyword || null }, start, end: now };
-  }, [rangeKey, customStart, customEnd, levels, categories, pointId, context, keyword]);
-
-  const run = useCallback(async () => {
-    const serial = ++requestSerial.current;
-    setLoading(true);
-    setError("");
-    setHistory(null);
-    try {
-      const { query, start, end } = buildQuery();
-      const [result, samples] = await Promise.allSettled([
-        plcApi.queryLogs({ ...query, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
-        pointId ? plcApi.pointHistory(pointId, start, end) : Promise.resolve(null),
-      ]);
-      if (serial !== requestSerial.current) return;
-      if (result.status === "rejected") throw result.reason;
-      setData(result.value);
-      setDataScope(generation); setDataPage(page);
-      if (samples.status === "rejected") setError(`点位趋势：${String(samples.reason)}`);
-      else setHistory(samples.value ? { samples: samples.value, start, end } : null);
-    } catch (e) {
-      if (serial === requestSerial.current) setError(String(e));
-    } finally {
-      if (serial === requestSerial.current) setLoading(false);
-    }
-  }, [buildQuery, page, pointId, generation]);
-
-  const runRef = useRef(run);
-  runRef.current = run;
-
-  useEffect(() => {
-    void run();
-    return () => { requestSerial.current++; };
-  }, [run]);
-
-  const following = live && rangeKey !== "custom" && page === 0;
+    refresh.current = load;
+    void load();
+    return () => { active = false; refresh.current = () => {}; };
+  }, [range, customStart, customEnd, keyword, abnormalOnly, page]);
 
   useEffect(() => {
     if (!following) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const unsubscribe = subscribe("plc://log", () => {
-      if (timer) return;
-      timer = setTimeout(() => {
-        timer = null;
-        runRef.current();
-      }, 800);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const off = subscribe("plc://log", () => {
+      if (timer !== undefined) return;
+      timer = setTimeout(() => { timer = undefined; refresh.current(); }, 800);
     });
-    return () => {
-      unsubscribe();
-      if (timer) clearTimeout(timer);
-    };
+    return () => { off(); clearTimeout(timer); };
   }, [following]);
 
-  const resetPage = () => setPage(0);
-
-  const exportCsv = async () => {
-    if (exportPending.current) return;
-    const request = {};
-    const exportScope = generation;
-    const current = () => alive.current && scope.current.generation === exportScope && exportPending.current === request;
-    exportPending.current = request; setExporting(true); setExported(null); setExportError("");
-    try {
-      const path = await plcApi.exportLogs(buildQuery().query, { levels: levelLabels, categories: categoryLabels });
-      if (current()) setExported(path);
-    } catch (e) { if (current()) setExportError(String(e)); }
-    finally {
-      if (exportPending.current === request) {
-        exportPending.current = null;
-        if (alive.current) setExporting(false);
-      }
-    }
-  };
-
-  const reveal = async () => {
-    if (!exported || revealPending.current) return;
-    revealPending.current = true; setRevealing(true); setExportError("");
-    try { await plcApi.reveal(exported); }
-    catch (e) { if (alive.current) setExportError(String(e)); }
-    finally {
-      revealPending.current = false;
-      if (alive.current) setRevealing(false);
-    }
-  };
-
-  const selectedPoint = points.find((p) => p.id === pointId);
-
-  const logColumns: TableColumn<LogEntry>[] = [
-    { key: "ts", header: "时间", render: (e) => <span className="mono nowrap">{formatTs(e.ts)}</span> },
-    { key: "level", header: "级别", render: (e) => <StatusBadge tone={levelTone[e.level]}>{levelLabels[e.level]}</StatusBadge> },
-    { key: "category", header: "类别", render: (e) => <span className="nowrap">{categoryLabels[e.category] ?? e.category}</span> },
-    { key: "point", header: "点位", render: (e) => e.pointId
-      ? <Button variant="text" size="sm" onClick={() => { setPointId(e.pointId!); resetPage(); }}>{e.pointName ?? e.pointId}</Button>
-      : <span className="muted">—</span> },
-    { key: "message", header: "内容", render: (e) => e.message },
-    { key: "context", header: "事务", render: (e) => e.context
-      ? <Button variant="text" size="sm" onClick={() => { setContextInput(e.context!); setContext(e.context!); resetPage(); }}><span className="mono">{e.context}</span></Button>
-      : <span className="muted">—</span> },
+  const columns: TableColumn<LogGroup>[] = [
+    { key: "partSeq", header: "件序号", rowHeader: true, render: g =>
+      <Button variant="text" size="sm" onClick={e => { e.stopPropagation(); setSelected(g); }}>{groupLabel(g)}</Button> },
+    { key: "sn", header: "SN", render: g => <span className="mono">{g.sn ?? "—"}</span> },
+    { key: "type", header: "型号", render: g => g.productCode ?? "—" },
+    { key: "time", header: "最近通讯", nowrap: true, render: g => <time className="mono">{formatTs(g.lastTs)}</time> },
+    { key: "event", header: "通讯进度", render: g => g.event ? <Stack gap={6}>
+      <span>{eventLabels[g.event]}</span>
+      {g.event === "resultWritten" && g.resultCode != null && <span className="muted">{resultCodeLabel(g.resultCode, g.faultCode)}</span>}
+    </Stack> : <span className="muted">—</span> },
+    { key: "logs", header: "记录", render: g => <Stack gap={6}>
+      <span>{g.entryCount} 条</span>
+      {g.errorCount > 0 && <StatusBadge tone="ng">{g.errorCount} 错误</StatusBadge>}
+      {g.warningCount > 0 && <StatusBadge tone="warn">{g.warningCount} 警告</StatusBadge>}
+    </Stack> },
   ];
 
-  return (
-    <div className="stack">
-      <Card>
-        <Stack direction="column" align="stretch" gap={12}>
-        <Stack gap={8}>
-          <SegmentedControl label="时间范围" value={rangeKey} options={ranges.map((r) => ({ value: r.key, label: r.label }))} onValueChange={(value) => { setRangeKey(value as RangeKey); resetPage(); }} />
-          {rangeKey === "custom" && (
-            <Stack gap={8}>
-              <TextField aria-label="开始时间" type="datetime-local" step={1} value={customStart} onChange={(e) => { setCustomStart(e.target.value); resetPage(); }} />
-              <span className="muted">至</span>
-              <TextField aria-label="结束时间" type="datetime-local" step={1} value={customEnd} onChange={(e) => { setCustomEnd(e.target.value); resetPage(); }} />
-            </Stack>
-          )}
-          <div className="spacer" />
-          <Button
-            variant="tonal"
-            aria-pressed={following}
-            leadingIcon={<Radio size={16} />}
-            disabled={rangeKey === "custom"}
-            title={rangeKey === "custom" ? "自定义时间段不支持实时跟随" : ""}
-            onClick={() => {
-              setLive((v) => !v);
-              resetPage();
-            }}
-          >
-            {following ? "实时跟随中" : "实时跟随"}
-          </Button>
-          <Button loading={loading} leadingIcon={<RefreshCw size={16} />} onClick={run}>刷新</Button>
-          <Button leadingIcon={<Download size={16} />} loading={exporting} onClick={() => void exportCsv()}>{exporting ? "导出中…" : "导出 CSV"}</Button>
-          <Button onClick={() => {
-            const now = Date.now();
-            setRangeKey("1h"); setCustomStart(toLocalInput(now - 3_600_000)); setCustomEnd(toLocalInput(now));
-            setLevels([]); setCategories([]); setPointId(""); setContextInput(""); setContext(""); setKeywordInput(""); setKeyword(""); setPage(0); setLive(true);
-          }}>清空筛选</Button>
-        </Stack>
-
-        <Stack gap={8}>
-          <span className="plc-filter-label">级别</span>
-          {(Object.keys(levelLabels) as LogLevel[]).map((l) => (
-            <Chip key={l} selected={levels.includes(l)} onClick={() => { setLevels(toggle(levels, l)); resetPage(); }}>{levelLabels[l]}</Chip>
-          ))}
-          <span className="plc-filter-label">类别</span>
-          {(Object.keys(categoryLabels) as LogCategory[]).map((c) => (
-            <Chip key={c} selected={categories.includes(c)} onClick={() => { setCategories(toggle(categories, c)); resetPage(); }}>{categoryLabels[c]}</Chip>
-          ))}
-        </Stack>
-
-        <Stack gap={8}>
-          <span className="plc-filter-label">点位</span>
-          <Select aria-label="日志点位" value={pointId} onValueChange={(value) => { setPointId(value); resetPage(); }}
-            options={[
-              { value: "", label: "全部点位" },
-              ...(pointId && !points.some(p => p.id === pointId) ? [{ value: pointId, label: `${pointId}（已移除）` }] : []),
-              ...points.map((p) => ({ value: p.id, label: p.name })),
-            ]} />
-          <div className="plc-search">
-            <TextField
-              aria-label="事务"
-              leading={<Hash size={16} />}
-              trailing={contextInput ? <IconButton variant="text" size="sm" aria-label="清空事务" onClick={() => { setContextInput(""); setContext(""); resetPage(); }}><X size={14} /></IconButton> : undefined}
-              placeholder="事务精确匹配，如 partSeq=12，回车确认"
-              value={contextInput}
-              onChange={(e) => setContextInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  setContext(contextInput.trim());
-                  resetPage();
-                }
-              }}
-            />
-          </div>
-          <div className="plc-search">
-            <TextField
-              aria-label="搜索内容或点位名称"
-              leading={<Search size={16} />}
-              trailing={keywordInput ? <IconButton variant="text" size="sm" aria-label="清空搜索" onClick={() => { setKeywordInput(""); setKeyword(""); resetPage(); }}><X size={14} /></IconButton> : undefined}
-              placeholder="搜索内容或点位名称，回车确认"
-              value={keywordInput}
-              onChange={(e) => setKeywordInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  setKeyword(keywordInput.trim());
-                  resetPage();
-                }
-              }}
-            />
-          </div>
-        </Stack>
-        </Stack>
-      </Card>
-
-      {configError && <Alert tone="ng" action={<Button size="sm" onClick={loadPoints}>重新加载点位</Button>}>点位配置：{configError}</Alert>}
-      {exported && (
-        <Alert tone="ok" action={<Button variant="text" size="sm" loading={revealing} onClick={() => void reveal()}>{revealing ? "正在打开…" : "打开所在文件夹"}</Button>}>
-          已导出：<span className="mono">{exported}</span>
-        </Alert>
-      )}
-      {exportError && <Alert tone="ng">{exportError}</Alert>}
-
-      {history && dataScope === generation && dataPage === page && (
-        <Card title={<Heading level={3}>点位趋势 · {selectedPoint?.name ?? pointId}</Heading>} actions={<span className="muted">{history.samples.length} 个采样点 · 基于值变化记录</span>}>
-          <StepChart samples={history.samples} start={history.start} end={history.end} />
-        </Card>
-      )}
-
-      <Card title={<Stack gap={10}>
-          <Heading level={3}>日志</Heading>
-          <span className="muted">共 {currentData.total} 条</span>
-        </Stack>} actions={<Pagination label="日志分页" total={currentData.total} page={page + 1} pageSize={PAGE_SIZE} pageSizeOptions={[PAGE_SIZE]} disabled={loading} onPageChange={(value) => setPage(value - 1)} />}>
-        <Stack direction="column" align="stretch" gap={12}>
-          {error && <Alert tone="ng">{error}</Alert>}
-          <Table<LogEntry> caption="PLC 日志" rows={currentData.items} columns={logColumns} rowKey={(e) => String(e.id)} loading={loading} keepRowsWhileLoading
-            emptyState={<EmptyState title="所选条件下暂无日志" />} />
-        </Stack>
-      </Card>
-    </div>
-  );
+  return <div className="stack">
+    <Card>
+      <Stack gap={8}>
+        <SegmentedControl label="时间范围" value={range} options={ranges.map(r => ({ value: r.key, label: r.label }))}
+          onValueChange={v => { setRange(v as typeof range); setPage(1); }} />
+        {range === "custom" && <>
+          <TextField aria-label="开始时间" type="datetime-local" step={1} value={customStart} onChange={e => { setCustomStart(e.target.value); setPage(1); }} />
+          <span className="muted">至</span>
+          <TextField aria-label="结束时间" type="datetime-local" step={1} value={customEnd} onChange={e => { setCustomEnd(e.target.value); setPage(1); }} />
+        </>}
+        <form className="plc-search" onSubmit={e => { e.preventDefault(); setKeyword(input.trim()); setPage(1); }}>
+          <TextField aria-label="搜索件序号或 SN" leading={<Search size={16} />} placeholder="件序号或 SN，回车搜索" value={input}
+            trailing={input || keyword ? <IconButton type="button" variant="text" size="sm" aria-label="清空搜索"
+              onClick={() => { setInput(""); setKeyword(""); setPage(1); }}><X size={14} /></IconButton> : undefined}
+            onChange={e => setInput(e.target.value)} />
+        </form>
+        <Chip selected={abnormalOnly} onClick={() => { setAbnormalOnly(v => !v); setPage(1); }}>只看通讯异常</Chip>
+        <div className="spacer" />
+        <Button variant="tonal" aria-pressed={following} disabled={range === "custom"} leadingIcon={<Radio size={16} />}
+          onClick={() => { setLive(!following); setPage(1); }}>{following ? "实时跟随中" : "实时跟随"}</Button>
+        <IconButton aria-label="刷新通讯日志" disabled={loading} onClick={() => refresh.current()}><RefreshCw size={16} /></IconButton>
+      </Stack>
+    </Card>
+    <Card title={<Heading level={3}>工件通讯记录</Heading>} actions={data && data.total > PAGE_SIZE &&
+      <Pagination label="工件记录分页" total={data.total} page={page} pageSize={PAGE_SIZE} disabled={loading} showPageSize={false} onPageChange={setPage} />}>
+      {error && <Alert tone="ng">{error}</Alert>}
+      <Table caption="工件通讯记录" rows={data?.items ?? []} columns={columns} rowKey={g => String(g.firstId)}
+        getRowProps={g => ({ onClick: () => setSelected(g), className: "plc-log-group-row" })}
+        loading={loading} keepRowsWhileLoading emptyState={<EmptyState title="所选条件下暂无通讯记录" />} />
+    </Card>
+    {selected && <PlcLogDetails group={selected} onClose={() => setSelected(null)} />}
+  </div>;
 }

@@ -47,7 +47,7 @@ select.input { padding-right: 6px; }
 .plc-json { height: 360px; resize: vertical; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; }
 .plc-heartbeat { margin-left: 6px; }
 .plc-value { font-weight: 600; overflow-wrap: anywhere; }
-.plc-filter-label { font-size: 12px; color: var(--on-surface-variant); }
+.plc-log-group-row { cursor: pointer; }
 .plc-search { flex: 1; min-width: 240px; max-width: 420px; }
 
 .plc-connection-form { display: grid; gap: 14px; align-content: start; }

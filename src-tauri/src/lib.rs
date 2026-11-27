@@ -292,6 +292,8 @@ pub fn run() {
             plc::plc_get_values,
             plc::plc_write_point,
             plc::plc_query_logs,
+            plc::grouped_logs::plc_query_log_groups,
+            plc::grouped_logs::plc_query_group_logs,
             plc::plc_export_logs,
             plc::plc_point_history,
             plc::plc_check_address,

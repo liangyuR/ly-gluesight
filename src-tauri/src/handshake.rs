@@ -386,6 +386,7 @@ pub(crate) struct Snapshot {
     pub(crate) poll_count: u64,
     /// plcHeartbeat 在 ly-plc 轮询缓存里的时间戳：值或读错误变化时更新，读错误恢复为原值也会前进。
     pub(crate) heartbeat_changed_at: i64,
+    pub(crate) part_observed_at: i64,
     /// 各字段的读数；读取失败的字段留着原因，用到时才报错：空闲时 PLC 区的型号、SN 不合法不影响通讯就绪。
     values: HashMap<&'static str, Result<PlcValue, String>>,
     sn_echo_header_broken: bool,
@@ -425,13 +426,16 @@ impl Snapshot {
             .iter()
             .map(|field| (field.tag, contract.value(raw, field.tag).cloned()))
             .collect();
-        let heartbeat_changed_at = raw
-            .get(contract.point_id(tag::PLC_HEARTBEAT)?)
-            .map_or(last_poll, |point| point.ts);
+        let changed_at = |tag| -> Result<i64, String> {
+            Ok(raw
+                .get(contract.point_id(tag)?)
+                .map_or(last_poll, |point| point.ts))
+        };
         Ok(Self {
             connection_since: status.since,
             poll_count: status.poll_count,
-            heartbeat_changed_at,
+            heartbeat_changed_at: changed_at(tag::PLC_HEARTBEAT)?,
+            part_observed_at: changed_at(tag::INSPECTING)?.max(changed_at(tag::PART_SEQ)?),
             values,
             sn_echo_header_broken: contract.sn_header_broken(raw, tag::SN_ECHO),
         })

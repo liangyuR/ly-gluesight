@@ -84,7 +84,7 @@ export interface PointValue {
 }
 
 export type LogLevel = "info" | "warn" | "error";
-export type LogCategory = "connection" | "value" | "write" | "edge" | "error" | "config";
+export type LogCategory = "connection" | "value" | "write" | "edge" | "error" | "config" | "part";
 
 export interface LogEntry {
   id: number;
@@ -121,6 +121,43 @@ export interface LogLabels {
 export interface LogPage {
   total: number;
   items: LogEntry[];
+}
+
+export interface LogGroupKey {
+  firstId: number;
+  lastId: number;
+  context: string | null;
+  ranges: [number, number][];
+}
+
+export type PartLogEvent = "received" | "ended" | "resultWritten" | "resultFailed" | "skipped" | "interrupted";
+
+export interface LogGroup extends LogGroupKey {
+  partSeq: number | null;
+  sn: string | null;
+  productCode: number | null;
+  firstTs: number;
+  lastTs: number;
+  entryCount: number;
+  warningCount: number;
+  errorCount: number;
+  event: PartLogEvent | null;
+  resultCode: number | null;
+  faultCode: number | null;
+}
+
+export interface LogGroupQuery {
+  start: number;
+  end: number | null;
+  keyword?: string;
+  abnormalOnly?: boolean;
+  limit: number;
+  offset: number;
+}
+
+export interface LogGroupPage {
+  total: number;
+  items: LogGroup[];
 }
 
 export interface HistorySample {

@@ -228,6 +228,32 @@ impl Rig {
     async fn finish(&mut self) {
         self.engine.disconnect().await;
     }
+
+    async fn part_events(&self, seq: u32, sn: &str, final_event: &str) -> Vec<serde_json::Value> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let query = ly_plc::LogQuery {
+            categories: vec!["part".into()],
+            context: Some(format!("partSeq={seq}")),
+            ..Default::default()
+        };
+        loop {
+            let page = self.engine.logbook().query(&query).unwrap();
+            let events: Vec<serde_json::Value> = page
+                .items
+                .iter()
+                .rev()
+                .map(|row| serde_json::from_str(row.new_value.as_deref().unwrap()).unwrap())
+                .collect();
+            if events
+                .last()
+                .is_some_and(|e| e["event"] == final_event && e["sn"] == sn)
+            {
+                return events;
+            }
+            assert!(Instant::now() < deadline, "工件通讯事件：{events:?}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
 }
 
 /// 协议 9 正常一件：PC 接件、登记都不写 PLC；工件结束后写结果，PLC 按序号取到；写完 PC 即回空闲，不等 PLC 任何确认，下一件照常。
@@ -242,6 +268,15 @@ async fn part_result_is_taken_by_sequence_and_pc_returns_idle_without_plc_confir
         rig.session.report(&rig.engine, code, 0).await.unwrap();
         assert_eq!(rig.plc.result(), Some((code as u32, 0)));
         assert_eq!(rig.plc.text(tag::SN_ECHO), sn);
+        let events = rig.part_events(seq, sn, "resultWritten").await;
+        assert_eq!(
+            events.iter().map(|e| &e["event"]).collect::<Vec<_>>(),
+            ["received", "ended", "resultWritten"]
+        );
+        assert!(events
+            .iter()
+            .all(|e| e["sn"] == sn && e["receivedAt"] == events[0]["receivedAt"]));
+        assert_eq!(events[2]["resultCode"], code);
         assert_eq!(
             (rig.session.phase(), rig.session.pending()),
             (SessionPhase::Idle, false)
@@ -278,7 +313,7 @@ async fn sequence_change_while_inspecting_loses_part_and_new_part_is_taken() {
         matches!(event, SessionEvent::Lost(_)).then_some(())
     })
     .await;
-    rig.session.settle().await;
+    rig.session.settle(&rig.engine, "中途换件").await;
     let request = rig.started().await;
     assert_eq!(request.request_seq, 2);
     assert_eq!(rig.plc.get(tag::RESULT_SEQ), 0, "被换掉的件不回结果");
@@ -292,7 +327,7 @@ async fn settled_part_is_not_retaken_while_inspecting_but_same_sequence_after_en
     let mut rig = Rig::new("settled-part").await;
     rig.arrive(3, "SN-SLOW").await;
     rig.admit().await;
-    rig.session.settle().await;
+    rig.session.settle(&rig.engine, "工件结束超时").await;
     rig.quiet().await;
     rig.plc.done();
     rig.quiet().await;
@@ -315,6 +350,32 @@ async fn stale_result_with_the_new_parts_sequence_is_cleared_while_it_is_inspect
     assert_eq!(rig.plc.result(), None);
     rig.session.report(&rig.engine, 1, 0).await.unwrap();
     assert_eq!(rig.plc.result(), Some((1, 0)));
+    let events = rig.part_events(1, "SN-NEW", "resultWritten").await;
+    let received = events
+        .iter()
+        .find(|e| e["event"] == "received" && e["sn"] == "SN-NEW")
+        .unwrap();
+    let observed_at = received["observedAt"].as_i64().unwrap();
+    let sn_changes = rig
+        .engine
+        .logbook()
+        .query(&ly_plc::LogQuery {
+            categories: vec!["value".into()],
+            point_id: Some("p_sn".into()),
+            context: Some("partSeq=1".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let sn_timestamp = |sn: &str| {
+        sn_changes
+            .items
+            .iter()
+            .find(|r| r.new_value.as_deref() == Some(sn))
+            .unwrap()
+            .ts
+    };
+    assert!(sn_timestamp("SN-OLD") < observed_at);
+    assert!(observed_at <= sn_timestamp("SN-NEW"));
     rig.finish().await;
 }
 
@@ -330,7 +391,7 @@ async fn next_part_arriving_before_result_loses_previous_part_and_is_taken_at_on
             matches!(event, SessionEvent::Lost(_)).then_some(())
         })
         .await;
-        rig.session.settle().await;
+        rig.session.settle(&rig.engine, "收尾期间换件").await;
         let request = rig.started().await;
         assert_eq!(
             (request.request_seq, request.sn.as_str()),
@@ -398,7 +459,7 @@ async fn lost_communication_makes_session_not_ready_and_recovery_needs_no_reset(
         rig.plc.fault(lose);
         rig.not_ready().await;
         assert!(rig.session.view().message.is_some());
-        rig.session.settle().await;
+        rig.session.settle(&rig.engine, "通讯异常").await;
         if let Some(recover) = recover {
             rig.plc.fault(recover);
         }
@@ -408,6 +469,27 @@ async fn lost_communication_makes_session_not_ready_and_recovery_needs_no_reset(
         rig.quiet().await;
         assert_eq!(rig.plc.result(), None, "{name}");
         rig.arrive(2, "SN-2").await;
+        if name == "heartbeat-stop" {
+            rig.part_events(2, "SN-2", "received").await;
+            let link = rig
+                .engine
+                .logbook()
+                .query(&ly_plc::LogQuery {
+                    categories: vec!["connection".into()],
+                    ..Default::default()
+                })
+                .unwrap();
+            let warnings: Vec<_> = link
+                .items
+                .iter()
+                .filter(|row| row.level == "warn")
+                .collect();
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].context.is_none());
+            assert!(link.items.iter().any(|row| row.id > warnings[0].id
+                && row.level == "info"
+                && row.context.is_none()));
+        }
         rig.finish().await;
     }
 }
@@ -421,6 +503,9 @@ async fn disconnect_while_writing_result_fails_delivery_and_session_recovers() {
         .fault(Fault::DisconnectAfterWriteTo(RESULT_SEQ_DWORD));
     assert!(rig.session.report(&rig.engine, 1, 0).await.is_err());
     assert!(!rig.session.pending());
+    let events = rig.part_events(1, "SN-1", "resultFailed").await;
+    assert!(events.iter().all(|event| event["event"] != "resultWritten"));
+    assert_eq!(events.last().unwrap()["sn"], "SN-1");
     rig.ready().await;
     rig.arrive(2, "SN-2").await;
     rig.finish().await;
