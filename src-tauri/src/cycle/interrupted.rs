@@ -10,7 +10,7 @@ use crate::plc_session::PartSite;
 use crate::recipe::Recipe;
 use crate::recorder::{RecordingOutcome, RecordingState};
 use crate::settings::RecordMode;
-use crate::store::{HistoryScope, PartMode, PlcDelivery, PlcDeliveryState, RecordSource};
+use crate::store::{PartMode, PlcDelivery, PlcDeliveryState};
 
 pub(super) struct Interrupted<'a> {
     pub cycle_id: &'a str,
@@ -90,13 +90,4 @@ pub(super) fn recording(cycle_id: &str, record: RecordMode) -> RecordingOutcome 
             RecordingState::Failed
         },
     }
-}
-
-pub(super) fn counts_in_stats(
-    source: RecordSource,
-    ts: i64,
-    scope: HistoryScope,
-    midnight: i64,
-) -> bool {
-    HistoryScope::of(source) == scope && ts >= midnight
 }

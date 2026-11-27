@@ -1615,6 +1615,29 @@ impl Store {
         Ok(())
     }
 
+    fn for_each_verdict_count(
+        conn: &Connection,
+        filter: &str,
+        args: &[SqlValue],
+        mut add: impl FnMut(String, u64),
+    ) -> Result<(), String> {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT verdict, COUNT(*) FROM parts{filter} GROUP BY verdict"
+            ))
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params_from_iter(args.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })
+            .map_err(db_err)?;
+        for row in rows {
+            let (verdict, count) = row.map_err(db_err)?;
+            add(verdict, count);
+        }
+        Ok(())
+    }
+
     pub fn query(&self, q: &HistoryQuery) -> Result<HistoryPage, String> {
         let conn = self.conn.lock().unwrap();
         let page_filter = Self::filter(q, "");
@@ -1637,18 +1660,7 @@ impl Store {
         let mut verdict_facets = with_facets.then(VerdictCounts::default);
         let mut counts = VerdictCounts::default();
         let mut total = 0;
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT verdict, COUNT(*) FROM parts{count_filter} GROUP BY verdict"
-            ))
-            .map_err(db_err)?;
-        let rows = stmt
-            .query_map(params_from_iter(count_args.iter()), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
-            })
-            .map_err(db_err)?;
-        for row in rows {
-            let (stored_verdict, n) = row.map_err(db_err)?;
+        Self::for_each_verdict_count(&conn, count_filter, count_args, |stored_verdict, n| {
             let verdict = parse_verdict(&stored_verdict);
             if let Some(facets) = &mut verdict_facets {
                 facets.add(verdict, n);
@@ -1657,7 +1669,7 @@ impl Store {
                 counts.add(verdict, n);
                 total += n;
             }
-        }
+        })?;
         let (filter, args) = page_filter;
         let limit = if q.limit == 0 { 50 } else { q.limit.min(500) };
         let sql = format!("SELECT {SUMMARY_COLS} FROM parts{filter} ORDER BY ts DESC, id DESC LIMIT {limit} OFFSET {}", q.offset);
@@ -2184,15 +2196,21 @@ impl Store {
 
     /// 当前项目自 since 起的正式检测件结论计数。
     pub fn counts_since(&self, since: i64, scope: HistoryScope) -> Result<VerdictCounts, String> {
-        self.query(&HistoryQuery {
-            from: Some(since),
-            project: Some(self.project.clone()),
-            scope,
-            modes: vec![PartMode::Production],
-            limit: 1,
-            ..Default::default()
-        })
-        .map(|p| p.counts)
+        let (filter, args) = Self::filter(
+            &HistoryQuery {
+                from: Some(since),
+                project: Some(self.project.clone()),
+                scope,
+                modes: vec![PartMode::Production],
+                ..Default::default()
+            },
+            "",
+        );
+        let mut counts = VerdictCounts::default();
+        Self::for_each_verdict_count(&self.conn.lock().unwrap(), &filter, &args, |verdict, n| {
+            counts.add(parse_verdict(&verdict), n);
+        })?;
+        Ok(counts)
     }
 
     pub(crate) fn comparison_cycle(&self, id: i64) -> Result<Option<String>, String> {

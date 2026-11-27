@@ -716,12 +716,7 @@ pub fn repair_history(app: &AppHandle) {
 }
 
 /// 启动时握手日志里有已绑定身份的在途件，而历史与追溯暂存里都没有它：进程在检测中途退出，补一条 ERR 记录。
-pub(crate) fn record_interrupted_part(
-    app: &AppHandle,
-    s7: &PlcSession,
-    stats: &mut Stats,
-    scope: HistoryScope,
-) {
+pub(crate) fn record_interrupted_part(app: &AppHandle, s7: &PlcSession, stats: &mut Stats) {
     let (Some(cycle_id), Some(request)) = (s7.cycle_id(), s7.request()) else {
         return;
     };
@@ -740,7 +735,7 @@ pub(crate) fn record_interrupted_part(
         .and_then(|pending| {
             let store = app.state::<Store>();
             Ok(pending
-                || store.detail_by_cycle(cycle_id)?.is_some()
+                || store.id_by_cycle(cycle_id)?.is_some()
                 || store.history_cycle_deleted(cycle_id)?)
         });
     match known {
@@ -770,8 +765,8 @@ pub(crate) fn record_interrupted_part(
         now_ms(),
     );
     let label = site.source.label();
-    let counted = part.mode == crate::store::PartMode::Production
-        && interrupted::counts_in_stats(part.source, part.ts, scope, history::local_midnight_ms());
+    let counted =
+        part.mode == crate::store::PartMode::Production && part.ts >= history::local_midnight_ms();
     let outcome = interrupted::recording(cycle_id, site.record);
     host.audit.insert(part);
     if counted {
@@ -1111,7 +1106,6 @@ struct Machine {
         Option<Instant>,
     ),
     stats_day: i64,
-    stats_scope: HistoryScope,
     stray: u64,
     stray_times: VecDeque<Instant>,
     alarms: Vec<String>,
@@ -1137,12 +1131,12 @@ struct Machine {
 
 impl Machine {
     fn new(app: AppHandle, frame_pool: FramePool) -> Self {
-        let mut stats = today_stats(&app, HistoryScope::Real);
+        let mut stats = today_stats(&app);
         let mut s7 = PlcSession::open(crate::storage::state(&app).join("plc-handshake.json"));
         if let Some(notice) = s7.archived() {
             log("warn", "S7 握手日志归档", notice.to_owned());
         }
-        record_interrupted_part(&app, &s7, &mut stats, HistoryScope::Real);
+        record_interrupted_part(&app, &s7, &mut stats);
         s7.forget_previous();
         host(&app).store_busy(Phase::Fault, &s7);
         Self {
@@ -1162,7 +1156,6 @@ impl Machine {
             stats,
             collection: (Vec::new(), Vec::new(), None),
             stats_day: history::local_day(),
-            stats_scope: HistoryScope::Real,
             stray: 0,
             stray_times: VecDeque::new(),
             alarms: Vec::new(),
@@ -1185,7 +1178,7 @@ impl Machine {
 
     /// 原图录制失败不停产，告警独立于每件清空的 alarms，跟着当前场景的录制结果走。
     fn sync_recording_alarm(&mut self) {
-        let alarm = host(&self.app).recording_health.alarm(self.stats_scope);
+        let alarm = host(&self.app).recording_health.alarm(HistoryScope::Real);
         if alarm != self.recording_alarm {
             self.recording_alarm = alarm;
             self.dirty = true;
@@ -1450,15 +1443,15 @@ impl Machine {
             let store = self.app.state::<Store>();
             self.collection = (
                 store
-                    .collection_progress(self.stats_scope)
+                    .collection_progress(HistoryScope::Real)
                     .unwrap_or_default(),
-                store.trial_progress(self.stats_scope).unwrap_or_default(),
+                store.trial_progress(HistoryScope::Real).unwrap_or_default(),
                 Some(Instant::now()),
             );
         }
         let active = self.current_recipe();
         let snapshot = Arc::new(Snapshot {
-            stats_scope: self.stats_scope,
+            stats_scope: HistoryScope::Real,
             measurement_workers: self.frame_pool.health().snapshot(),
             phase: self.phase,
             plc_locked: host.busy(),
@@ -1520,11 +1513,6 @@ impl Machine {
         self.set_phase(Phase::Validate);
         self.part = None;
         self.uninspected = None;
-        let scope = HistoryScope::of(RecordSource::Real);
-        if scope != self.stats_scope {
-            self.stats_scope = scope;
-            self.stats = today_stats(&self.app, scope);
-        }
         self.current_cycle_id = None;
         self.result = None;
         crate::workspace::clear_live(&self.app);
@@ -2221,12 +2209,6 @@ impl Machine {
                     self.dirty = true;
                 }
             }
-        }
-        let scope = HistoryScope::Real;
-        if scope != self.stats_scope {
-            self.stats_scope = scope;
-            self.stats = today_stats(&app, scope);
-            self.dirty = true;
         }
         self.sync_recording_alarm();
         let cameras = match self.phase {
@@ -3074,11 +3056,9 @@ fn burst_warnings(
     out
 }
 
-/// 今日统计只算当前站点的范围：真机只算真机件，离线只算离线件。
-
-fn today_stats(app: &AppHandle, scope: HistoryScope) -> Stats {
+fn today_stats(app: &AppHandle) -> Stats {
     app.state::<Store>()
-        .counts_since(history::local_midnight_ms(), scope)
+        .counts_since(history::local_midnight_ms(), HistoryScope::Real)
         .map(Stats::from)
         .unwrap_or_default()
 }

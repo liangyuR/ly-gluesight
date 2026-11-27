@@ -163,6 +163,101 @@ fn verdict_filter_keeps_page_and_total_exact_with_legacy_verdicts_in_facets() {
 }
 
 #[test]
+fn production_counts_keep_the_date_and_project_scope_when_latest_tags_are_invalid() {
+    let db = TestDb::new();
+    let store = Store::open_for(&db.path(), "line-a").unwrap();
+    let other = Store::open_for(&db.path(), "line-b").unwrap();
+    let midnight = 1_700_006_400_000;
+    let insert = |store: &Store, cycle_id, ts, mode, verdict: Verdict| {
+        let judgement = Judgement {
+            verdict,
+            plc_code: if mode == PartMode::Production {
+                verdict.plc_code()
+            } else {
+                0
+            },
+            fault_code: 0,
+            reason: String::new(),
+            segments: Vec::new(),
+            gaps: Vec::new(),
+        };
+        store
+            .insert(&PartRecord {
+                mode,
+                ts,
+                sn: cycle_id,
+                recipe: None,
+                judgement: &judgement,
+                drain_ms: None,
+                frames: &[],
+                frames_expected: 0,
+                frames_received: 0,
+                triggers: 0,
+                table: None,
+                software_version: "test",
+                cycle_id: Some(cycle_id),
+                bundle_id: None,
+                delivery: &PlcDelivery::default(),
+                shots: &[],
+                source: RecordSource::Real,
+                burst: None,
+            })
+            .unwrap()
+    };
+    use PartMode::{MaintenanceCollect, MaintenanceShadow, Production};
+    insert(
+        &store,
+        "before-midnight",
+        midnight - 1,
+        Production,
+        Verdict::ErrInspect,
+    );
+    insert(
+        &store,
+        "at-midnight",
+        midnight,
+        Production,
+        Verdict::OkWithExcursion,
+    );
+    let latest = insert(&store, "latest", midnight + 1, Production, Verdict::NgWidth);
+    insert(
+        &store,
+        "trial",
+        midnight + 2,
+        MaintenanceShadow,
+        Verdict::Ok,
+    );
+    insert(
+        &store,
+        "collection",
+        midnight + 3,
+        MaintenanceCollect,
+        Verdict::ErrInspect,
+    );
+    insert(
+        &other,
+        "other-project",
+        midnight + 4,
+        Production,
+        Verdict::ErrInspect,
+    );
+    Connection::open(db.path())
+        .unwrap()
+        .execute("UPDATE parts SET tags = '[' WHERE id = ?1", [latest])
+        .unwrap();
+
+    assert!(store.summary(latest).is_err());
+    assert_eq!(
+        store.counts_since(midnight, HistoryScope::Real).unwrap(),
+        VerdictCounts {
+            excursion: 1,
+            ng: 1,
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
 fn invalid_or_stale_history_tag_selection_leaves_every_selected_record_unchanged() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
