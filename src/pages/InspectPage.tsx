@@ -10,6 +10,7 @@ import InspectionDiagnostics, { type DiagnosticGroup } from "../features/cycle/c
 import ContextHelp from "../features/cycle/components/ContextHelp";
 import { MaintenanceToggle } from "../features/cycle/components/MaintenanceMode";
 import PartResult from "../features/cycle/components/PartResult";
+import PreviousEvidence, { type EvidenceLocation } from "../features/cycle/components/PreviousEvidence";
 import { errorText } from "../lib/errors";
 import {
   cycleApi,
@@ -35,6 +36,7 @@ export default function InspectPage() {
   const [view, setView] = useState<"image" | "part">("image");
   const [diagnostics, setDiagnostics] = useState<DiagnosticGroup | null>(null);
   const [seqSelection, setSeqSelection] = useState<{ scope: string; seq: number; camera?: number } | null>(null);
+  const [lastEvidence, setLastEvidence] = useState<EvidenceLocation | null>(null);
   const [pendingRecipe, setPendingRecipe] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState("");
   const [action, setAction] = useState<"switch" | null>(null);
@@ -69,9 +71,14 @@ export default function InspectPage() {
 
   const resumeFollowing = () => setSeqSelection(null);
   const selectGroup = (seq: number, camera?: number) => {
-    if (!burst?.groups.some(group => group.seq === seq)) return;
+    if (!burst?.groups.some(group => group.seq === seq)) return false;
     setSeqSelection({ scope: burstScope, seq, camera });
     setView("image");
+    return true;
+  };
+  const locateEvidence = (seq: number, camera?: number) => {
+    if (!selectGroup(seq, camera) || !partResult || !part) return;
+    setLastEvidence({ cycleId: part.cycleId, sn: part.sn, seq, camera, cameraName: camera == null ? undefined : part.burst.cameras[camera] });
   };
   const canSwitch = (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
   const switchProblem = !canSwitch ? "当前工件已开始或型号由 PLC 下发，暂时不能切换配方" : pendingRecipe && !recipes.some(recipe => recipe.id === pendingRecipe) ? "该配方已不在配方库中，请重新选择" : "";
@@ -171,7 +178,10 @@ export default function InspectPage() {
 
         <aside className="prod-side" aria-label="整件结果">
           <PartResult key={resultScope} phase={phase} result={result} part={part}
-            segments={burstSegments} onLocate={selectGroup} />
+            segments={burstSegments} onLocate={locateEvidence} />
+          {lastEvidence && lastEvidence.cycleId !== part?.cycleId && <PreviousEvidence
+            key={`${lastEvidence.cycleId}:${lastEvidence.seq}:${lastEvidence.camera ?? ""}`}
+            evidence={lastEvidence} onDismiss={() => setLastEvidence(null)} />}
           <Stats snapshot={snapshot} />
           <Progress snapshot={snapshot} result={partResult} onDiagnostics={() => setDiagnostics("capture")} />
           <Card className="prod-segments" role="region" aria-label="检测区域结果">
@@ -180,7 +190,7 @@ export default function InspectPage() {
               <ContextHelp label="区域结果说明">整件按区域（直线、弯道、未分段）分别判；每个区域写帧数、胶宽范围、胶偏或未判原因。未分段区域只跑每帧独立检测、不判胶偏。缺帧只标检测不完整，不改 OK/NG。</ContextHelp>
             </div>
             <RegionResultPanel key={resultScope} judgement={burstJudgement} segments={burstSegments} cameras={burst?.cameras ?? summary?.cameras}
-              expectedTotal={burst ? burst.expectedTotal : undefined} onSelectGroup={burst ? selectGroup : undefined} />
+              expectedTotal={burst ? burst.expectedTotal : undefined} onSelectGroup={burst ? locateEvidence : undefined} />
           </Card>
         </aside>
       </div>

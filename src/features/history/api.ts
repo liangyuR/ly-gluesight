@@ -14,6 +14,7 @@ export const historyApi = {
     call<HistoryPage>("history_query", { query }, () => ({ total: 0, counts: { ok: 0, excursion: 0, ng: 0, err: 0 }, items: [] })),
   detail: (id: number) => call<PartDetail>("history_detail", { id }, () => Promise.reject("浏览器预览模式") as never),
   overview: (id: number) => desktopCall<PartDetail>("history_overview", { id }),
+  idByCycle: (cycleId: string) => desktopCall<number | null>("history_id_by_cycle", { cycleId }),
   frameDetail: (id: number, camera: number, seq: number) => desktopCall<PartDetail>("history_frame_detail", { id, camera, seq }),
   neighbors: (id: number, query: HistoryQuery | null) => call<{ older: number | null; newer: number | null }>("history_neighbors", { id, query }, () => ({ older: null, newer: null })),
   rejudge: (request: RejudgeRequest) =>

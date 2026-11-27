@@ -105,6 +105,13 @@ pub async fn history_overview(app: AppHandle, id: i64) -> Result<PartDetail, Str
 }
 
 #[tauri::command]
+pub async fn history_id_by_cycle(app: AppHandle, cycle_id: String) -> Result<Option<i64>, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Store>().id_by_cycle(&cycle_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub async fn history_frame_detail(
     app: AppHandle,
     id: i64,

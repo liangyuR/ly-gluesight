@@ -329,6 +329,7 @@ pub fn run() {
             history::history_delete,
             history::history_detail,
             history::history_overview,
+            history::history_id_by_cycle,
             history::history_frame_detail,
             history::history_neighbors,
             history::history_rejudge,

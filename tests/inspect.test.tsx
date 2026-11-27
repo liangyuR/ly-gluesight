@@ -1,12 +1,15 @@
 import { useState } from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TitlebarSlotsContext } from "../src/layout/TitlebarContent";
 import InspectPage from "../src/pages/InspectPage";
+import PreviousEvidence from "../src/features/cycle/components/PreviousEvidence";
 import { cycleApi, recipeApi, useCycle, useLayout } from "../src/features/cycle/api";
 import { burstImageApi } from "../src/features/workspace/burstImages";
+import { historyApi } from "../src/features/history/api";
+import type { HistoryDetailState } from "../src/features/history/types";
 import { plcApi } from "../src/features/plc/api";
 import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, frameMetrics, readiness, snapshot } from "./fixtures";
 import { burstPartView, burstResult } from "./cycle-visual-fixtures";
@@ -46,6 +49,28 @@ beforeEach(() => {
 });
 const nativeSelect = (name: string, root: Pick<typeof screen, "getByLabelText"> = screen) => root.getByLabelText(name, { selector: "select" });
 const manual = () => nativeSelect("当前检测配方");
+
+it("历史查询期间清除回查位置 → 查询稍后成功也不离开在线页", async () => {
+  let showRecord: (id: number) => void = () => {};
+  const pending = new Promise<number>(resolve => { showRecord = resolve; });
+  vi.spyOn(historyApi, "idByCycle").mockReturnValue(pending);
+
+  function Review() {
+    const [shown, setShown] = useState(true);
+    return shown ? <PreviousEvidence evidence={{ cycleId: "archived-cycle", sn: "1", seq: 5 }} onDismiss={() => setShown(false)} />
+      : <span>检测在线</span>;
+  }
+  const user = userEvent.setup();
+  render(<MemoryRouter initialEntries={["/inspect"]}><Routes>
+    <Route path="/inspect" element={<Review />} />
+    <Route path="/history/:id" element={<span>历史回查</span>} />
+  </Routes></MemoryRouter>);
+  await user.click(screen.getByRole("button", { name: "继续查看证据" }));
+  expect(screen.getByRole("button", { name: "继续查看证据" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "清除回查位置" }));
+  await act(async () => { showRecord(41); });
+  expect(screen.getByText("检测在线")).toBeVisible();
+});
 
 function TitlebarHarness({ showPage = true }: { showPage?: boolean }) {
   const [details, setDetails] = useState<HTMLDivElement | null>(null);
@@ -190,9 +215,21 @@ describe("在线检测段配方", () => {
     expect(screen.queryByRole("button", { name: "返回当前帧组" })).not.toBeInTheDocument();
   });
 
-  it("OK 工件缺帧 → 从完整性明细定位对应帧组，下一件收起上一件证据", async () => {
+  it("从完整性明细定位后遇到相同 SN 的下一件 → 继续跟随并可重试打开上一件历史帧", async () => {
+    const previous = state.part!;
+    vi.spyOn(historyApi, "idByCycle").mockResolvedValueOnce(null)
+      .mockImplementation(async cycleId => cycleId === previous.cycleId ? 41 : 73);
+    function Destination() {
+      const { pathname, search, state: detailState } = useLocation();
+      const back = (detailState as HistoryDetailState).returnTo!;
+      return <><output aria-label="历史定位">{pathname}{search}</output><Link to={back.path}>{back.label}</Link></>;
+    }
+    const renderApp = () => <MemoryRouter initialEntries={["/inspect"]}><Routes>
+      <Route path="/inspect" element={<InspectPage />} />
+      <Route path="/history/:id" element={<Destination />} />
+    </Routes></MemoryRouter>;
     const user = userEvent.setup();
-    const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const page = render(renderApp());
     const verdict = within(screen.getByRole("region", { name: "整件判定" }));
     expect(verdict.getByText("OK")).toBeVisible();
     await user.click(verdict.getByRole("button", { name: /检测完整性.*检测不完整/ }));
@@ -202,10 +239,21 @@ describe("在线检测段配方", () => {
     const camera = within(screen.getByRole("region", { name: "CAM-2 帧组 5" }));
     expect(camera.getByText("缺帧", { selector: ".wp-image-empty strong" })).toBeVisible();
 
-    state = { ...state, phase: "ACQUIRE", part: burstPartView("next") };
-    page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(screen.queryByRole("button", { name: "继续查看证据" })).not.toBeInTheDocument();
+    state = { ...state, phase: "ACQUIRE", part: burstPartView(previous.sn, "next-cycle") };
+    page.rerender(renderApp());
     expect(screen.queryByRole("region", { name: "检测覆盖明细" })).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "CAM-2 帧组 5" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "CAM-2 帧组 12" })).toBeVisible();
+
+    const saved = within(screen.getByRole("region", { name: "上次定位的检测证据" }));
+    expect(saved.getByText(`SN ${previous.sn} · 帧组 5 · CAM-2`)).toBeVisible();
+    await user.click(saved.getByRole("button", { name: "继续查看证据" }));
+    expect(await saved.findByRole("status")).toHaveTextContent("历史记录暂不可用");
+    await user.click(saved.getByRole("button", { name: "继续查看证据" }));
+    expect(await screen.findByLabelText("历史定位")).toHaveTextContent("/history/41?camera=1&seq=5&view=original");
+    await user.click(screen.getByRole("link", { name: "返回在线检测" }));
+    expect(screen.getByRole("region", { name: "CAM-2 帧组 12" })).toBeVisible();
   });
 
   it("长件的不完整帧组以摘要显示 → 展开分页后可定位原帧号，换件重新收起", async () => {

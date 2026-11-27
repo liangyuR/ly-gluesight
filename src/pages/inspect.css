@@ -38,6 +38,7 @@
 .prod .wp-runtime-strip .wp-kv strong { font-size: 12px; }
 .frame-state.qs-chip { height: 24px; padding: 0 10px; font-size: 12px; }
 .view-mode { color: var(--primary); font-size: 12px; }
+.prod-evidence-location { overflow-wrap: anywhere; font-size: 12px; }
 
 .prod .prod-part-result, .prod .prod-part-evidence { gap: 0; padding: 0; }
 .prod-part-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 37px; padding: 4px 14px; border-bottom: 1px solid var(--outline-variant); }
