@@ -4,7 +4,6 @@ use std::path::Path;
 use ly_plc::{HistorySample, LogEntry, LogPage, LogQuery};
 use rusqlite::{named_params, params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
-use tauri::State;
 
 use super::PlcHost;
 
@@ -282,10 +281,7 @@ fn groups(conn: &Connection, query: GroupQuery) -> rusqlite::Result<GroupPage> {
 }
 
 #[tauri::command]
-pub async fn plc_query_log_groups(
-    plc: State<'_, PlcHost>,
-    query: GroupQuery,
-) -> Result<GroupPage, String> {
+pub async fn plc_query_log_groups(plc: &PlcHost, query: GroupQuery) -> Result<GroupPage, String> {
     let path = plc.log_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         groups(&open(&path)?, query).map_err(|e| e.to_string())
@@ -384,7 +380,7 @@ impl Reader {
 
 #[tauri::command]
 pub async fn plc_query_group_logs(
-    plc: State<'_, PlcHost>,
+    plc: &PlcHost,
     group: GroupSelection,
     query: LogQuery,
 ) -> Result<LogPage, String> {
@@ -398,13 +394,15 @@ pub async fn plc_query_group_logs(
 mod tests {
     use super::*;
     use crate::offline::test_dir::TestDir;
+    use serde_json::{json, Value};
     use std::sync::Arc;
 
-    fn fixture(entries: &[(i64, Option<&str>, &str, &str, &str)]) -> TestDir {
+    fn fixture(entries: &[(i64, Option<&str>, &str, &str, &str)]) -> (TestDir, PlcHost) {
         let dir = TestDir::new("plc-log-tests", "groups");
         let path = dir.join("plc.db");
-        let _book = ly_plc::Logbook::open(&path, Arc::new(|_| {}), 0).unwrap();
-        let conn = Connection::open(path).unwrap();
+        let sink: ly_plc::EventSink = Arc::new(|_| {});
+        let book = ly_plc::Logbook::open(&path, sink.clone(), 0).unwrap();
+        let conn = Connection::open(&path).unwrap();
         for &(ts, context, category, level, value) in entries {
             conn.execute(
                 "INSERT INTO plc_log(ts,context,category,level,new_value,point_id,message)
@@ -413,24 +411,40 @@ mod tests {
             )
             .unwrap();
         }
-        dir
+        let plc = PlcHost {
+            engine: ly_plc::PlcEngine::new(
+                crate::inspection::default_plc_config(),
+                Arc::new(book),
+                sink,
+            ),
+            config_path: dir.join("plc.json"),
+            log_path: path,
+        };
+        (dir, plc)
     }
 
-    fn period(start: i64, end: i64) -> GroupQuery {
-        GroupQuery {
-            start,
-            end: Some(end),
-            keyword: None,
-            abnormal_only: false,
-            offset: None,
-            limit: None,
-        }
+    async fn query_groups(plc: &PlcHost, query: Value) -> Value {
+        let page = plc_query_log_groups(plc, serde_json::from_value(query).unwrap())
+            .await
+            .unwrap();
+        serde_json::to_value(page).unwrap()
     }
 
-    #[test]
-    fn reused_sequence_keeps_early_signals_and_delayed_failure_with_their_own_piece() {
+    async fn detail_ids(plc: &PlcHost, group: &Value) -> Vec<i64> {
+        let selection = serde_json::from_value(group.clone()).unwrap();
+        plc_query_group_logs(plc, selection, LogQuery::default())
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|row| row.id)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn reused_sequence_keeps_early_signals_and_delayed_failure_with_their_own_piece() {
         let seq = Some("partSeq=12");
-        let dir = fixture(&[
+        let (_dir, plc) = fixture(&[
             (
                 10,
                 seq,
@@ -463,45 +477,43 @@ mod tests {
                 r#"{"event":"resultWritten","receivedAt":13,"sn":"B123","resultCode":1,"faultCode":0}"#,
             ),
         ]);
-        let path = dir.join("plc.db");
-        let conn = open(&path).unwrap();
-        let mut query = period(10, 15);
-        query.keyword = Some("b12".into());
-        let mut result = groups(&conn, query).unwrap();
-        assert_eq!(result.total, 1);
-        let piece = result.items.pop().unwrap();
-        assert_eq!(
-            (piece.event.as_deref(), piece.result_code, piece.entry_count),
-            (Some("resultWritten"), Some(1), 3)
-        );
-        let reader = Reader::open(&path, piece.selection).unwrap();
-        let detail = reader.logs(&LogQuery::default()).unwrap();
-        assert_eq!(
-            detail.items.iter().map(|r| r.id).collect::<Vec<_>>(),
-            [3, 5, 7]
-        );
-        let trend = reader.history("test-point", 0, 20).unwrap();
+        let result = query_groups(&plc, json!({"start":10,"end":15,"keyword":"b12"})).await;
+        assert_eq!(result["total"], 1);
+        let piece = &result["items"][0];
+        assert_eq!(piece["event"], "resultWritten");
+        assert_eq!(piece["resultCode"], 1);
+        assert_eq!(piece["entryCount"], 3);
+        assert_eq!(detail_ids(&plc, piece).await, [3, 5, 7]);
+        let trend = crate::plc::plc_point_history(
+            &plc,
+            "test-point".into(),
+            0,
+            20,
+            Some(serde_json::from_value(piece.clone()).unwrap()),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             trend.iter().map(|v| v.value.as_deref()).collect::<Vec<_>>(),
             [Some("new")]
         );
-        let mut query = period(10, 15);
-        query.abnormal_only = true;
-        query.limit = Some(1);
-        let result = groups(&conn, query).unwrap();
-        assert_eq!((result.total, result.items.len()), (2, 1));
-        let old = result.items.into_iter().next().unwrap();
-        assert_eq!(
-            (old.sn.as_deref(), old.event.as_deref()),
-            (Some("A123"), Some("resultFailed"))
-        );
-        assert_eq!(old.selection.ranges, [[1, 2], [6, 6]]);
+        let result = query_groups(
+            &plc,
+            json!({"start":10,"end":15,"abnormalOnly":true,"limit":1}),
+        )
+        .await;
+        assert_eq!(result["total"], 2);
+        assert_eq!(result["items"].as_array().unwrap().len(), 1);
+        let old = &result["items"][0];
+        assert_eq!(old["sn"], "A123");
+        assert_eq!(old["event"], "resultFailed");
+        assert_eq!(detail_ids(&plc, old).await, [1, 2, 6]);
     }
 
-    #[test]
-    fn legacy_contexts_and_unassociated_records_remain_browsable_within_window() {
+    #[tokio::test]
+    async fn legacy_contexts_and_unassociated_records_remain_browsable_within_window() {
         let old = Some("requestSeq=34");
-        let dir = fixture(&[
+        let (_dir, plc) = fixture(&[
             (1, old, "value", "info", "outside"),
             (2, old, "value", "info", "first"),
             (2, None, "connection", "info", ""),
@@ -509,22 +521,19 @@ mod tests {
             (4, Some("requestSeq=0"), "value", "info", "zero"),
             (5, old, "value", "info", "reused"),
         ]);
-        let result = groups(&open(&dir.join("plc.db")).unwrap(), period(2, 5)).unwrap();
-        assert_eq!(result.total, 3);
-        let ranges: Vec<_> = result
-            .items
-            .into_iter()
-            .map(|g| {
-                assert!(g.event.is_none());
-                (g.part_seq, g.selection.ranges)
-            })
-            .collect();
+        let result = query_groups(&plc, json!({"start":2,"end":5})).await;
+        assert_eq!(result["total"], 3);
+        let mut details = Vec::new();
+        for group in result["items"].as_array().unwrap() {
+            assert!(group["event"].is_null());
+            details.push((group["partSeq"].as_i64(), detail_ids(&plc, group).await));
+        }
         assert_eq!(
-            ranges,
+            details,
             [
-                (Some(34), vec![[6, 6]]),
-                (None, vec![[3, 3], [5, 5]]),
-                (Some(34), vec![[2, 2], [4, 4]]),
+                (Some(34), vec![6]),
+                (None, vec![3, 5]),
+                (Some(34), vec![2, 4]),
             ]
         );
     }

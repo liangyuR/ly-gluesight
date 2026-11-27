@@ -27,6 +27,12 @@ pub struct PlcHost {
     log_path: PathBuf,
 }
 
+impl<'a, R: tauri::Runtime> tauri::ipc::CommandArg<'a, R> for &'a PlcHost {
+    fn from_command(item: tauri::ipc::CommandItem<'a, R>) -> Result<Self, tauri::ipc::InvokeError> {
+        Ok(State::<PlcHost>::from_command(item)?.inner())
+    }
+}
+
 impl PlcHost {
     pub fn init(app: &AppHandle) -> Result<Self, String> {
         let config_path = crate::storage::project_config(app).join("plc.json");
@@ -361,7 +367,7 @@ pub async fn plc_export_logs(
 
 #[tauri::command]
 pub async fn plc_point_history(
-    plc: State<'_, PlcHost>,
+    plc: &PlcHost,
     point_id: String,
     start: i64,
     end: i64,
