@@ -1102,6 +1102,59 @@ fn overview_keeps_verdicts_and_single_frame_loads_only_selected_metrics() {
 }
 
 #[test]
+fn named_frame_uses_the_record_project_camera_order_and_preserves_missing_rows() {
+    let db = TestDb::new();
+    let store = Store::open_for(&db.path(), "line-a").unwrap();
+    let other = Store::open_for(&db.path(), "line-b").unwrap();
+    let original = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&original, burst_fixture::frames(4, &[]), None, Some(4));
+    store
+        .insert(&burst_part(&original, "normal-order", &judgement, &burst))
+        .unwrap();
+
+    let mut doc = crate::recipe::samples_burst();
+    doc.inspect.reverse();
+    let reordered = doc.build().unwrap();
+    let mut frames = burst_fixture::frames(4, &[(2, 3)]);
+    let target = frames
+        .iter_mut()
+        .find(|frame| (frame.camera, frame.seq) == (2, 1))
+        .unwrap();
+    target.raw_file = Some("rec/cam1_s000001.pgm".into());
+    let (judgement, burst) = burst_fixture::record(&reordered, frames, None, Some(4));
+    let id = other
+        .insert(&burst_part(
+            &reordered,
+            "reverse-camera-order",
+            &judgement,
+            &burst,
+        ))
+        .unwrap();
+    Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "UPDATE part_frames SET metrics='broken' WHERE part_id=?1 AND camera=0 AND seq=1",
+            [id],
+        )
+        .unwrap();
+
+    let (selected, camera) = store.detail_frame_by_camera(id, "cam1", 1).unwrap();
+    assert_eq!(camera, 2);
+    assert_eq!(selected.summary.project_id, "line-b");
+    assert_eq!(
+        selected.burst.unwrap().frames,
+        store.detail_frame(id, 2, 1).unwrap().burst.unwrap().frames
+    );
+
+    let (missing, camera) = store.detail_frame_by_camera(id, "cam1", 3).unwrap();
+    assert_eq!(camera, 2);
+    assert_eq!(missing.burst.unwrap().frames[0].status, FrameState::Missing);
+    assert!(store.detail_frame_by_camera(id, "cam1", 5).is_err());
+    assert!(store.detail_frame_by_camera(id, "camX", 1).is_err());
+}
+
+#[test]
 fn upgrading_v10_removes_retired_records_without_losing_production_and_prevents_replay() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

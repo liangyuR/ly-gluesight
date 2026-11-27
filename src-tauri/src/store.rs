@@ -365,9 +365,10 @@ pub struct PartDetail {
     pub burst: Option<PartDetailBurst>,
 }
 
-enum DetailScope {
+enum DetailScope<'a> {
     Full,
     Frame(usize, u64),
+    FrameByCamera(&'a str, u64),
     WithoutFrameVerdicts,
 }
 
@@ -1862,15 +1863,28 @@ impl Store {
         seq: u64,
     ) -> Result<(PartDetail, Arc<Recipe>), String> {
         let (detail, recipe) = self.read_detail(id, DetailScope::Frame(camera, seq))?;
-        if detail
-            .burst
-            .as_ref()
-            .is_none_or(|burst| burst.frames.is_empty())
-        {
-            return Err("没有这一帧的记录".into());
-        }
+        Self::selected_frame(&detail)?;
         let recipe = recipe.ok_or("原始配方快照缺失")?;
         Ok((detail, recipe))
+    }
+
+    pub(crate) fn detail_frame_by_camera(
+        &self,
+        id: i64,
+        camera: &str,
+        seq: u64,
+    ) -> Result<(PartDetail, usize), String> {
+        let (detail, _) = self.read_detail(id, DetailScope::FrameByCamera(camera, seq))?;
+        let record_camera = Self::selected_frame(&detail)?.camera;
+        Ok((detail, record_camera))
+    }
+
+    fn selected_frame(detail: &PartDetail) -> Result<&FrameRecord, String> {
+        detail
+            .burst
+            .as_ref()
+            .and_then(|burst| burst.frames.first())
+            .ok_or_else(|| "没有这一帧的记录".into())
     }
 
     pub fn detail_overview(&self, id: i64) -> Result<PartDetail, String> {
@@ -1895,7 +1909,7 @@ impl Store {
     fn read_detail(
         &self,
         id: i64,
-        scope: DetailScope,
+        scope: DetailScope<'_>,
     ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
         let mut conn = open_read_only(&self.path)?;
         let snapshot = conn.transaction().map_err(db_err)?;
@@ -1906,30 +1920,54 @@ impl Store {
         &self,
         snapshot: Transaction<'_>,
         id: i64,
-        scope: DetailScope,
+        scope: DetailScope<'_>,
     ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
         const N: usize = SUMMARY_LEN;
-        let (summary, judgement, frames, triggers, software_version, recording, burst_judgement) = snapshot
+        let (summary, columns) = snapshot
             .query_row(
                 &format!("SELECT {SUMMARY_COLS}, judgement, frames, triggers, software_version,recording_state,recording_available,recording_directory,recording_errors,burst_judgement FROM parts WHERE id = ?1"),
                 [id],
-                |row| Ok((summary(row)?, row.get::<_, String>(N)?, row.get::<_, String>(N + 1)?, row.get::<_, i64>(N + 2)? as u64, row.get::<_, String>(N + 3)?,
-                    recording_row(row, N + 4)?, row.get::<_, Option<String>>(N + 8)?)),
+                |row| {
+                    let summary = summary(row)?;
+                    let columns = (|| -> rusqlite::Result<_> {
+                        Ok((row.get::<_, String>(N)?, row.get::<_, String>(N + 1)?, row.get::<_, i64>(N + 2)? as u64, row.get::<_, String>(N + 3)?,
+                            recording_row(row, N + 4)?, row.get::<_, Option<String>>(N + 8)?))
+                    })();
+                    Ok((summary, columns))
+                },
             )
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| format!("记录 {id} 不存在或已过期清理"))?;
+        // 按相机名取帧时，先报告原配方或相机定位错误，再处理详情列。
+        let (selected, resolved_recipe) = match scope {
+            DetailScope::Frame(camera, seq) => (Some((camera, seq)), None),
+            DetailScope::FrameByCamera(camera, seq) => {
+                let revision = summary
+                    .recipe_revision
+                    .as_deref()
+                    .ok_or("历史配方快照缺失")?;
+                let raw = snapshot_raw(&snapshot, &summary.project_id, revision)?
+                    .ok_or("历史配方快照缺失")?;
+                let recipe = self.history_recipe(raw, &summary.project_id, revision)?;
+                let index = recipe
+                    .inspect
+                    .iter()
+                    .position(|item| item.camera == camera)
+                    .ok_or_else(|| format!("记录里没有相机 {camera} 的原图"))?;
+                (Some((index, seq)), Some(recipe))
+            }
+            DetailScope::Full | DetailScope::WithoutFrameVerdicts => (None, None),
+        };
+        let (judgement, frames, triggers, software_version, recording, burst_judgement) =
+            columns.map_err(db_err)?;
         let raw_snapshot = match summary.recipe_revision.as_deref() {
-            Some(revision) if summary.burst.is_some() => {
+            Some(revision) if summary.burst.is_some() && resolved_recipe.is_none() => {
                 snapshot_raw(&snapshot, &summary.project_id, revision)?
             }
             _ => None,
         };
         let raw_frames = if summary.burst.is_some() {
-            let selected = match scope {
-                DetailScope::Frame(camera, seq) => Some((camera, seq)),
-                DetailScope::Full | DetailScope::WithoutFrameVerdicts => None,
-            };
             frame_rows_raw(&snapshot, id, selected)?
         } else {
             Vec::new()
@@ -1948,12 +1986,18 @@ impl Store {
         snapshot.commit().map_err(db_err)?;
         let (burst, recipe) = match (burst_judgement, &summary.burst) {
             (Some(judgement), Some(counts)) => {
-                let revision = summary
-                    .recipe_revision
-                    .as_deref()
-                    .ok_or_else(|| format!("记录 {id} 是段配方记录却没有配方快照身份"))?;
-                let raw = raw_snapshot.ok_or_else(|| format!("记录 {id} 的原配方快照缺失"))?;
-                let recipe = self.history_recipe(raw, &summary.project_id, revision)?;
+                let recipe = match resolved_recipe {
+                    Some(recipe) => recipe,
+                    None => {
+                        let revision = summary
+                            .recipe_revision
+                            .as_deref()
+                            .ok_or_else(|| format!("记录 {id} 是段配方记录却没有配方快照身份"))?;
+                        let raw =
+                            raw_snapshot.ok_or_else(|| format!("记录 {id} 的原配方快照缺失"))?;
+                        self.history_recipe(raw, &summary.project_id, revision)?
+                    }
+                };
                 let judgement: BurstJudgement = serde_json::from_str(&judgement)
                     .map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?;
                 let frames = decode_frame_rows(raw_frames)?;

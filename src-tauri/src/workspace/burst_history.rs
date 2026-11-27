@@ -468,10 +468,10 @@ pub async fn workspace_record_frame_view(
             .comparisons
             .get(&host.root, &store, history_id, &comparison)?;
         let camera_id = found.candidate_recipe.plan_cameras().get(camera).cloned().ok_or("相机下标超出候选计划相机")?;
-        let summary = store.summary(history_id)?;
-        let original = store.record_recipe(&summary)?.ok_or("历史配方快照缺失")?;
-        let record_camera = original.plan_cameras().iter().position(|id| id == &camera_id).ok_or_else(|| format!("记录里没有相机 {camera_id} 的原图"))?;
-        let detail = store.detail_frame(history_id, record_camera, seq)?;
+        let (detail, record_camera) = store.detail_frame_by_camera(history_id, &camera_id, seq)?;
+        if detail.summary.cycle_id.as_deref() != Some(found.cycle_id.as_str()) {
+            return Err("历史工件身份已改变".into());
+        }
         let burst = found.burst.as_ref().ok_or("这次对照没有逐帧结果")?;
         let metrics = burst
             .frames
@@ -496,7 +496,7 @@ pub async fn workspace_record_frame_view(
         if found.source == "original" {
             let bundle_id = found.bundle_id.as_deref().ok_or("这次重现没有记下发布包")?;
             let prepared = history_prepared(&app, &detail.summary.project_id, &found.candidate_recipe, bundle_id)?;
-            let image = frame_image(&app, &detail, camera, seq)?;
+            let image = frame_image(&app, &detail, record_camera, seq)?;
             let measured = prepared.measure_frame(camera, segment, seq, &image, &format!("record-view-{history_id}-c{camera}-{seq}"))?;
             let trace = crate::measure::FrameTrace { edges: measured.edges, part_edges: measured.part_edges, line: measured.line };
             return Ok(trace_view(&prepared.recipe, segment, trace, Arc::new(metrics.clone())));
@@ -506,12 +506,6 @@ pub async fn workspace_record_frame_view(
         }
         let recipe = &found.candidate_recipe;
         let graphs = vision::CorridorSet::build_for_frame(recipe, &burst.sizes, camera, segment)?;
-        // 对照按候选的计划相机编下标，原图按记录的：按相机编号对应
-        let record_camera = detail
-            .burst
-            .as_ref()
-            .and_then(|b| b.cameras.iter().position(|c| *c == camera_id))
-            .ok_or_else(|| format!("记录里没有相机 {camera_id} 的原图"))?;
         let image = frame_image(&app, &detail, record_camera, seq)?;
         burst::frame_view(
             &app,
