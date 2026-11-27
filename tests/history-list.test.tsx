@@ -129,7 +129,7 @@ it("后续页刷新期间先收到越界结果 → 最新查询仍有记录时�
   expect(queries().slice(before).map(query => query.offset)).toEqual([50, 50]);
 });
 
-it("从筛选后的第二页打开工件再返回 → 恢复原筛选并查询原页", async () => {
+it("从筛选后的第二页打开工件再返回 → 恢复筛选、页码和原工件焦点", async () => {
   const part = { ...burstPartSummary(1), projectId: "line-b", tags: ["待复核"] };
   const filteredPage = { project: "line-b", tag: "待复核", offset: 50 };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -165,7 +165,9 @@ it("从筛选后的第二页打开工件再返回 → 恢复原筛选并查询�
   const back = await screen.findByRole("button", { name: "返回历史列表" });
   const beforeReturn = queries().length;
   await user.click(back);
-  expect(await row(1)).toBeVisible();
+  const returnedRow = await row(1);
+  expect(returnedRow).toBeVisible();
+  await waitFor(() => expect(returnedRow).toHaveFocus());
   expect(project()).toHaveValue("line-b");
   expect(tag()).toHaveValue("待复核");
   expect(queries()[beforeReturn]).toMatchObject(filteredPage);

@@ -86,6 +86,8 @@ export default function HistoryPage() {
   const pickPending = useRef(false);
   const alive = useRef(true);
   const mutationBusy = useRef(false);
+  const resultsBody = useRef<HTMLDivElement>(null);
+  const restoreRecord = useRef(initial?.focusRecordId);
   const setMutationBusy = useCallback((busy: boolean) => { mutationBusy.current = busy; }, []);
 
   const currentId = projects.current?.id ?? null;
@@ -106,6 +108,7 @@ export default function HistoryPage() {
     [range, groups, sn, tag, recipeId, mode, projectId],
   );
   const view = useMemo<HistoryListView>(() => ({ range, groups, mode, sn, tag, recipeId, project, offset }), [range, groups, mode, sn, tag, recipeId, project, offset]);
+  const entryView = useRef(view);
   const scope = useMemo(() => ({ query, view, projectBlocked }), [query, view, projectBlocked]);
   const currentScope = useRef(scope);
   const activeLoad = useRef<{ scope: typeof scope; pending: boolean } | null>(null);
@@ -118,9 +121,20 @@ export default function HistoryPage() {
   const resetFilters = () => {
     setRange(DEFAULT_RANGE); setGroups([]); setMode("all"); setSn(""); setTag(""); setRecipeId(""); setProject(""); setOffset(0);
   };
-  const navigate = (to: string) => go(to, { state: { query: result?.query ?? query, listView: result?.view ?? view } satisfies HistoryDetailState });
+  const openRecord = (id: number) => go(`/history/${id}`, {
+    state: { query: result?.query ?? query, listView: result?.view ?? view, listRecordId: id } satisfies HistoryDetailState,
+  });
 
   useLayoutEffect(() => { currentScope.current = scope; }, [scope]);
+  useLayoutEffect(() => {
+    if (view !== entryView.current) restoreRecord.current = undefined;
+    const id = restoreRecord.current;
+    if (id == null || !page || stale) return;
+    restoreRecord.current = undefined;
+    const opener = resultsBody.current?.querySelector<HTMLButtonElement>(`button[data-history-id="${id}"]`);
+    opener?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    opener?.focus({ preventScroll: true });
+  }, [page, stale, view]);
   useLayoutEffect(() => {
     alive.current = true;
     return () => {
@@ -237,7 +251,7 @@ export default function HistoryPage() {
     const target = e.target as HTMLElement;
     if (target.closest("button, a, input, label, .qs-table-checkbox")) return;
     const id = target.closest("tbody tr")?.querySelector<HTMLElement>("[data-history-id]")?.dataset.historyId;
-    if (id) navigate(`/history/${id}`);
+    if (id) openRecord(Number(id));
   };
 
   const columns: TableColumn<Item>[] = [
@@ -245,7 +259,7 @@ export default function HistoryPage() {
       key: "ts",
       header: "时间",
       render: (p) => (
-        <Button variant="text" size="sm" className="hist-open mono" data-history-id={p.id} data-tone={partVerdict(p).tone} aria-label={`查看 SN ${p.sn} 的记录`} onClick={() => navigate(`/history/${p.id}`)}>
+        <Button variant="text" size="sm" className="hist-open mono" data-history-id={p.id} data-tone={partVerdict(p).tone} aria-label={`查看 SN ${p.sn} 的记录`} onClick={() => openRecord(p.id)}>
           {formatTime(p.ts)}
         </Button>
       ),
@@ -388,7 +402,7 @@ export default function HistoryPage() {
       </Card>
 
       <Card className="hist-results">
-        <div className={`hist-results-body${pending ? " is-loading" : ""}`} aria-busy={loading} onClick={openRow}>
+        <div ref={resultsBody} className={`hist-results-body${pending ? " is-loading" : ""}`} aria-busy={loading} onClick={openRow}>
           <Table<Item>
             className="hist-table"
             caption="历史记录"
@@ -416,7 +430,7 @@ export default function HistoryPage() {
           />
         )}
       </Card>
-      {rejudge && <RejudgeDialog query={rejudge.query} total={rejudge.total} onOpenRecord={id => navigate(`/history/${id}`)} onClose={() => setRejudge(null)} />}
+      {rejudge && <RejudgeDialog query={rejudge.query} total={rejudge.total} onOpenRecord={openRecord} onClose={() => setRejudge(null)} />}
       {recordAction && <HistoryRecordDialog action={recordAction} ids={selected.map(Number)} initialTags={selectedTags} onClose={() => setRecordAction(null)} onSaved={savedTags} onDeleted={deletedRecords} onBusyChange={setMutationBusy} />}
       {packageIds && <HistoryExportDialog ids={packageIds} onClose={() => setPackageIds(null)} />}
       {packagePreview && <HistoryImportDialog preview={packagePreview} projectName={projects.current?.name} onClose={() => setPackagePreview(null)} onImported={load} />}

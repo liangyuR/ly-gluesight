@@ -21,7 +21,7 @@ export type RecordSource = "real";
 export type HistoryScope = "real";
 
 /** 历史详情的地址状态：前后件筛选、列表视图、其他返回目标及详情滚动位置。 */
-export type HistoryDetailState = { query?: HistoryQuery; listView?: HistoryListView; returnTo?: { path: string; label: string }; scrollTop?: number };
+export type HistoryDetailState = { query?: HistoryQuery; listView?: HistoryListView; listRecordId?: number; returnTo?: { path: string; label: string }; scrollTop?: number };
 
 export interface HistoryListView {
   range: string;
@@ -37,6 +37,7 @@ export interface HistoryListView {
 export interface HistoryListState {
   filter?: HistoryFilter;
   view?: HistoryListView;
+  focusRecordId?: number;
   historyNotice?: { message: string; warnings: string[] };
 }
 
