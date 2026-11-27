@@ -89,6 +89,21 @@ it("默认不限项目与配方；按配方、SN、判定筛选的条件传给�
   }));
 });
 
+it("历史清理使所翻页超出范围 → 回到最后一个有效页", async () => {
+  vi.mocked(workspaceApi.historyCandidates)
+    .mockResolvedValueOnce({ total: 101, items: [row(7, "SN-7")] })
+    .mockResolvedValueOnce({ total: 62, items: [] })
+    .mockResolvedValueOnce({ total: 62, items: [row(8, "SN-8")] });
+  show();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "第 3 页" }));
+
+  await user.click(await screen.findByRole("checkbox", { name: "选用 SN SN-8" }));
+  expect(screen.getByRole("button", { name: "第 2 页" })).toHaveAttribute("aria-current", "page");
+  expect(screen.getByRole("button", { name: "设为示教件" })).toBeEnabled();
+  expect(vi.mocked(workspaceApi.historyCandidates).mock.calls.map(([, query]) => query.offset)).toEqual([0, 100, 50]);
+});
+
 it("更换筛选等待新页 → 只能预览和提交新页的记录", async () => {
   const nextPage = deferred<HistoryCandidatePage>();
   vi.mocked(workspaceApi.historyCandidates).mockImplementation(async (_, query) => query.sn

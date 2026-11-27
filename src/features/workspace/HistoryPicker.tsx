@@ -109,9 +109,16 @@ export default function HistoryPicker({ recipeId, title, help, disabled, confirm
     return () => { alive = false; };
   }, [request]);
   const current = !snPending && response?.request === request ? response : null;
-  const page = current?.page;
+  const received = current?.page;
+  const correctedOffset = received && offset > 0 && offset >= received.total
+    ? Math.max(0, Math.ceil(received.total / PAGE) - 1) * PAGE : offset;
+  const correctingPage = correctedOffset !== offset;
+  useEffect(() => {
+    if (correctingPage) setOffset(previous => previous === offset ? correctedOffset : previous);
+  }, [correctingPage, correctedOffset, offset]);
+  const page = correctingPage ? null : received;
   const rows = page?.items ?? [];
-  const loading = request != null && !current;
+  const loading = request != null && (!current || correctingPage);
   const loadError = blocked ? projects.error : current?.error;
   const pagingTotal = !snPending && request && response?.request.recipeId === recipeId && response.request.filters === filters
     ? response.page?.total ?? 0 : 0;
