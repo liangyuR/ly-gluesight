@@ -2,16 +2,29 @@ use std::collections::HashMap;
 use std::fs::{self, Metadata, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use super::Comparison;
 use crate::store::Store;
 
 const LIMIT: usize = 100;
 const SUMMARY_CACHE_LIMIT: usize = 1024;
+const DECODED_CACHE_MAX_FILE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Default)]
-pub(super) struct Comparisons(Mutex<HashMap<PathBuf, CachedSummary>>);
+pub(super) struct Comparisons(Mutex<ComparisonCache>);
+
+#[derive(Default)]
+struct ComparisonCache {
+    summaries: HashMap<PathBuf, CachedSummary>,
+    decoded: Option<CachedComparison>,
+}
+
+struct CachedComparison {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    saved: Arc<Comparison>,
+}
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +73,11 @@ impl Comparisons {
         let mut cache = self.0.lock().unwrap();
         let projects = crate::project::list(data)?;
         let mut warnings = store.delete_history_with_recordings(data, ids)?;
+        drop(
+            cache
+                .decoded
+                .take_if(|entry| ids.contains(&entry.saved.history_id)),
+        );
         for (project, id) in projects
             .iter()
             .flat_map(|project| ids.iter().map(move |id| (&project.id, *id)))
@@ -73,7 +91,7 @@ impl Comparisons {
                 if !exists(&dir)? {
                     return Ok(());
                 }
-                let files = inventory(&dir, id, &mut cache)?;
+                let files = inventory(&dir, id, &mut cache.summaries)?;
                 reconcile(files, id, None, &mut cache)?;
                 fs::remove_dir(&dir).map_err(error)
             })();
@@ -101,7 +119,7 @@ impl Comparisons {
             return Err("历史工件身份已改变，复测结果未保存".into());
         }
         let dir = directory(root, comparison.history_id, true)?;
-        let mut files = inventory(&dir, comparison.history_id, &mut cache)?;
+        let mut files = inventory(&dir, comparison.history_id, &mut cache.summaries)?;
         let file = dir.join(format!("{}.json", comparison.id));
         let temporary = dir.join(format!("{}.tmp", comparison.id));
         checked_directory(&dir, false)?;
@@ -150,7 +168,7 @@ impl Comparisons {
         if !exists(&dir)? {
             return Ok(Vec::new());
         }
-        let mut files = inventory(&dir, history_id, &mut cache)?;
+        let mut files = inventory(&dir, history_id, &mut cache.summaries)?;
         files.retain(|(_, saved)| saved.cycle_id == cycle);
         newest_first(&mut files);
         files
@@ -178,7 +196,7 @@ impl Comparisons {
         if !exists(&dir)? {
             return Ok(Vec::new());
         }
-        let mut files = inventory(&dir, history_id, &mut cache)?;
+        let mut files = inventory(&dir, history_id, &mut cache.summaries)?;
         files.retain(|(_, saved)| saved.cycle_id == cycle);
         newest_first(&mut files);
         Ok(files
@@ -197,8 +215,8 @@ impl Comparisons {
         store: &Store,
         history_id: i64,
         id: &str,
-    ) -> Result<Comparison, String> {
-        let _gate = self.0.lock().unwrap();
+    ) -> Result<Arc<Comparison>, String> {
+        let mut cache = self.0.lock().unwrap();
         if !id.starts_with(&format!("{history_id}-"))
             || !id.bytes().all(|b| b.is_ascii_digit() || b == b'-')
         {
@@ -208,10 +226,26 @@ impl Comparisons {
             .comparison_cycle(history_id)?
             .ok_or("历史记录已清理")?;
         let path = directory(root, history_id, false)?.join(format!("{id}.json"));
-        let saved = read_comparison(&path, history_id, true)?;
+        let bytes = read_comparison_bytes(&path)?;
+        if let Some(entry) = cache
+            .decoded
+            .as_ref()
+            .filter(|entry| entry.path == path && entry.bytes == bytes)
+        {
+            if entry.saved.cycle_id != cycle {
+                return Err("历史工件身份已改变".into());
+            }
+            return Ok(Arc::clone(&entry.saved));
+        }
+        let saved = Arc::new(decode_comparison(&path, history_id, &bytes, true)?);
         if saved.cycle_id != cycle {
             return Err("历史工件身份已改变".into());
         }
+        cache.decoded = (bytes.len() <= DECODED_CACHE_MAX_FILE_BYTES).then(|| CachedComparison {
+            path,
+            bytes,
+            saved: Arc::clone(&saved),
+        });
         Ok(saved)
     }
 
@@ -232,6 +266,9 @@ impl Comparisons {
     > {
         let mut cache = self.0.lock().unwrap();
         let (count, orphaned) = store.purge_before(before, keep)?;
+        if count > 0 {
+            cache.decoded = None;
+        }
         let mut warnings = Vec::new();
         let comparisons = root.join("comparisons");
         let scan = (|| {
@@ -255,7 +292,7 @@ impl Comparisons {
                     }
                     checked_directory(&path, false)?;
                     let cycle = store.comparison_cycle(id)?;
-                    let files = inventory(&path, id, &mut cache)?;
+                    let files = inventory(&path, id, &mut cache.summaries)?;
                     reconcile(files, id, cycle.as_deref(), &mut cache)?;
                     if cycle.is_none() {
                         fs::remove_dir(&path).map_err(error)?;
@@ -354,14 +391,31 @@ fn read_comparison(
     history_id: i64,
     with_verdicts: bool,
 ) -> Result<Comparison, String> {
+    decode_comparison(
+        path,
+        history_id,
+        &read_comparison_bytes(path)?,
+        with_verdicts,
+    )
+}
+
+fn read_comparison_bytes(path: &Path) -> Result<Vec<u8>, String> {
     checked_directory(path.parent().ok_or("复测文件没有父目录")?, false)?;
     let metadata = fs::symlink_metadata(path).map_err(error)?;
     plain(&metadata)?;
     if !metadata.is_file() {
         return Err("复测记录不是普通文件".into());
     }
-    let mut saved: Comparison =
-        serde_json::from_slice(&fs::read(path).map_err(error)?).map_err(error)?;
+    fs::read(path).map_err(error)
+}
+
+fn decode_comparison(
+    path: &Path,
+    history_id: i64,
+    bytes: &[u8],
+    with_verdicts: bool,
+) -> Result<Comparison, String> {
+    let mut saved: Comparison = serde_json::from_slice(bytes).map_err(error)?;
     valid_identity(&saved)?;
     if saved.history_id != history_id
         || path.file_stem().and_then(|s| s.to_str()) != Some(saved.id.as_str())
@@ -434,7 +488,7 @@ fn reconcile(
     mut files: Vec<(PathBuf, ComparisonSummary)>,
     history_id: i64,
     cycle: Option<&str>,
-    cache: &mut HashMap<PathBuf, CachedSummary>,
+    cache: &mut ComparisonCache,
 ) -> Result<(), String> {
     newest_first(&mut files);
     let mut kept = 0;
@@ -450,7 +504,8 @@ fn reconcile(
                 return Err("复测记录在清理期间改变，未删除".into());
             }
             remove_checked(&file)?;
-            cache.remove(&file);
+            cache.summaries.remove(&file);
+            drop(cache.decoded.take_if(|entry| entry.path == file));
         }
     }
     Ok(())
@@ -469,4 +524,80 @@ fn remove_checked(file: &Path) -> Result<(), String> {
         }
     }
     fs::remove_file(file).map_err(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::{burst_tests::stored_record, tests::ImportTestDir};
+
+    fn saved_comparison() -> (ImportTestDir, Store, Comparisons, Comparison) {
+        let (dir, detail) = stored_record(&[]);
+        let root = ImportTestDir(dir);
+        let store = Store::open(&root.0.join("parts.sqlite")).unwrap();
+        let recipe = store.record_recipe(&detail.summary).unwrap().unwrap();
+        let saved = Comparison {
+            id: format!("{}-1", detail.summary.id),
+            history_id: detail.summary.id,
+            source: "rules".into(),
+            cycle_id: detail.summary.cycle_id.unwrap(),
+            bundle_id: None,
+            candidate_id: recipe.id.clone(),
+            candidate_revision: 1,
+            candidate_recipe: recipe,
+            original_verdict: detail.summary.verdict,
+            judgement: detail.judgement,
+            measurements: Vec::new(),
+            created_at: 1,
+            burst: None,
+        };
+        let comparisons = Comparisons::default();
+        comparisons.save(&root.0, &store, &saved).unwrap();
+        (root, store, comparisons, saved)
+    }
+
+    #[test]
+    fn comparison_reads_current_content_when_file_metadata_does_not_change() {
+        let (root, store, comparisons, mut saved) = saved_comparison();
+        let file = directory(&root.0, saved.history_id, false)
+            .unwrap()
+            .join(format!("{}.json", saved.id));
+        let read = || comparisons.get(&root.0, &store, saved.history_id, &saved.id);
+        assert_eq!(read().unwrap().candidate_revision, 1);
+        let metadata = fs::metadata(&file).unwrap();
+        saved.candidate_revision = 2;
+        let updated = serde_json::to_vec(&saved).unwrap();
+        assert_eq!(metadata.len(), updated.len() as u64);
+        fs::write(&file, updated).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(metadata.modified().unwrap())
+            .unwrap();
+        assert_eq!(read().unwrap().candidate_revision, 2);
+
+        fs::write(&file, b"{").unwrap();
+        assert!(read().is_err());
+        fs::remove_file(file).unwrap();
+        assert!(read().is_err());
+    }
+
+    #[test]
+    fn comparison_requires_current_history_even_if_file_is_unchanged() {
+        let (root, store, comparisons, saved) = saved_comparison();
+        let read = || comparisons.get(&root.0, &store, saved.history_id, &saved.id);
+        assert_eq!(read().unwrap().cycle_id, saved.cycle_id);
+        rusqlite::Connection::open(root.0.join("parts.sqlite"))
+            .unwrap()
+            .execute(
+                "UPDATE parts SET cycle_id = ?2 WHERE id = ?1",
+                rusqlite::params![saved.history_id, "replacement-cycle"],
+            )
+            .unwrap();
+        assert!(read().is_err());
+
+        store.purge_before(i64::MAX, &Default::default()).unwrap();
+        assert!(read().is_err());
+    }
 }

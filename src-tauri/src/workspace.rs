@@ -1542,7 +1542,7 @@ pub async fn workspace_comparison_get(
     app: AppHandle,
     history_id: i64,
     comparison_id: String,
-) -> Result<Comparison, String> {
+) -> Result<Arc<Comparison>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<WorkspaceHost>();
         host.comparisons.get(

@@ -221,7 +221,7 @@ fn saving_expected_frames_or_x_ref_is_ignored_and_kind_change_clears_them() {
 }
 
 /// 存进记录库再读出的一件段配方记录（样例配方 cam1–cam3、4 个帧组）：`saved` 里的相机下标每帧都有原图引用，其余相机没保存原图。
-fn stored_record(saved: &[usize]) -> (std::path::PathBuf, crate::store::PartDetail) {
+pub(super) fn stored_record(saved: &[usize]) -> (std::path::PathBuf, crate::store::PartDetail) {
     use crate::store::{
         burst_fixture, PartMode, PartRecord, PlcDelivery, PlcDeliveryState, RecordSource, Store,
     };
