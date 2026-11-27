@@ -117,7 +117,7 @@ it("在线检测挂到窗口标题栏 → 状态与操作可用，离页后清�
 });
 
 describe("在线检测切型锁定", () => {
-  it("本件判定包含生产跳过 → 帧格与原图标记不判定，新工件不沿用上一件跳过范围", async () => {
+  it("本件判定包含生产跳过 → 原图、帧格和采集详情一致，换件后清除旧范围", async () => {
     const part = burstPartView(), result = burstResult();
     part.burst.groups[0].cells[0].verdict = "NG_GAP";
     part.burst.groups[0].cells[1] = { status: "missing", verdict: null, frameCounter: null };
@@ -139,8 +139,24 @@ describe("在线检测切型锁定", () => {
     expect(camera.getByText("不参与判定")).toBeVisible();
     expect(camera.getByText("NG · 仅供诊断")).toBeVisible();
     expect(within(screen.getByRole("region", { name: "CAM-2 帧组 1" })).getByText("原图缺失；本帧组生产跳过，不参与判定。")).toBeVisible();
-    state = { ...state, part: { ...part, cycleId: "next-cycle" } };
+
+    await userEvent.click(screen.getByRole("button", { name: /^采集详情/ }));
+    const cells = () => within(screen.getByRole("table", { name: "本帧组各相机" }));
+    const camera1 = () => within(cells().getByRole("row", { name: /CAM-1/ }));
+    const camera2 = () => within(cells().getByRole("row", { name: /CAM-2/ }));
+    expect(camera1().getByText("生产跳过")).toBeVisible();
+    expect(camera1().getByText("不参与判定")).toBeVisible();
+    expect(camera1().getByText("NG · 断胶 · 仅供诊断")).toBeVisible();
+    expect(camera1().getByText("1001")).toBeVisible();
+    expect(camera2().getByText("缺帧 · 仅供诊断")).toBeVisible();
+    expect(camera2().getByText("不参与判定")).toBeVisible();
+
+    state = { ...state, part: { ...part, cycleId: "next-cycle", burst: { ...part.burst, groups: [part.burst.groups[0]], groupCount: 1 } } };
     page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(camera1().getByText("NG · 断胶")).toBeVisible();
+    expect(camera2().getByText("缺帧")).toBeVisible();
+    expect(cells().queryByText("生产跳过")).toBeNull();
+    await userEvent.keyboard("{Escape}");
     const next = within(screen.getByRole("group", { name: "帧组" }));
     expect(within(next.getByRole("button", { name: "帧组 1" })).getByRole("img", { name: "CAM-1 · NG" })).toBeVisible();
     expect(screen.queryByText("生产跳过 4 帧组 · 不参与判定")).toBeNull();

@@ -195,7 +195,7 @@ export default function InspectPage() {
         </aside>
       </div>
 
-      {diagnostics && <InspectionDiagnostics group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={part} selectedSeq={burstSeq} />}
+      {diagnostics && <InspectionDiagnostics group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={part} regions={partResult?.burst?.regions} selectedSeq={burstSeq} />}
       {pendingRecipe && (
         <Dialog
           open
