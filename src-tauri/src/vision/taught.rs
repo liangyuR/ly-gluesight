@@ -648,11 +648,38 @@ impl CorridorSet {
         recipe: &Recipe,
         sizes: &[[u32; 2]],
     ) -> (Self, Vec<UnavailableCorridor>) {
+        Self::build_selected(recipe, sizes, None)
+    }
+
+    pub(crate) fn build_for_frame(
+        recipe: &Recipe,
+        sizes: &[[u32; 2]],
+        camera: usize,
+        segment: u32,
+    ) -> Result<Self, String> {
+        let (set, unavailable) = Self::build_selected(recipe, sizes, Some((camera, segment)));
+        if set.get(camera, segment).is_some() {
+            return Ok(set);
+        }
+        Err(unavailable.into_iter().next().map_or_else(
+            || format!("第 {segment} 段没有这台相机的走廊测量图"),
+            |unavailable| unavailable.reason,
+        ))
+    }
+
+    fn build_selected(
+        recipe: &Recipe,
+        sizes: &[[u32; 2]],
+        selected: Option<(usize, u32)>,
+    ) -> (Self, Vec<UnavailableCorridor>) {
         let cameras = recipe.plan_cameras();
         let mut graphs = BTreeMap::new();
         let mut headings = BTreeMap::new();
         let mut unavailable = Vec::new();
         for segment in &recipe.path_segments {
+            if selected.is_some_and(|(_, index)| index != segment.index) {
+                continue;
+            }
             for camera in crate::plan::segment_cameras(segment, &cameras) {
                 let Some((idx, inspect)) = recipe
                     .inspect
@@ -662,6 +689,9 @@ impl CorridorSet {
                 else {
                     continue;
                 };
+                if selected.is_some_and(|(camera, _)| camera != idx) {
+                    continue;
+                }
                 let skip = |reason: String, untaught: bool| UnavailableCorridor {
                     camera_idx: idx,
                     camera: camera.clone(),

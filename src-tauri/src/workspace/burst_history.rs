@@ -504,22 +504,8 @@ pub async fn workspace_record_frame_view(
         if burst.sizes.is_empty() {
             return Err("这次对照没有保存示教帧尺寸（之前保存的对照或候选当时未示教完）：重新触发测试后再看叠图".into());
         }
-        let sizes = burst.sizes.clone();
         let recipe = &found.candidate_recipe;
-        let camera_id = recipe
-            .plan_cameras()
-            .get(camera)
-            .cloned()
-            .ok_or("相机下标超出候选计划相机")?;
-        // 部分复测的对照里可能有建不成的组合（D-SB-57）：只建得成的建，不让别的段挡住这一帧
-        let (graphs, unavailable) = vision::CorridorSet::build_available(recipe, &sizes);
-        if graphs.get(camera, segment).is_none() {
-            let why = unavailable
-                .iter()
-                .find(|u| (u.camera_idx, u.segment) == (camera, segment))
-                .map_or_else(|| format!("第 {segment} 段没有这台相机的走廊测量图"), |u| u.reason.clone());
-            return Err(why);
-        }
+        let graphs = vision::CorridorSet::build_for_frame(recipe, &burst.sizes, camera, segment)?;
         // 对照按候选的计划相机编下标，原图按记录的：按相机编号对应
         let record_camera = detail
             .burst
