@@ -1,18 +1,18 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HistoryTrials } from "../src/features/workspace/HistoryTrials";
 import { workspaceApi } from "../src/features/workspace/api";
 import { useWorkspace } from "../src/features/workspace/context";
-import type { HistoryCandidate } from "../src/features/workspace/types";
+import type { Comparison, HistoryCandidate } from "../src/features/workspace/types";
 import { burstWorkspaceView, workspaceState } from "./fixtures";
 
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { historyCandidates: vi.fn(), compare: vi.fn() } }));
 
-const row: HistoryCandidate = { recordId: 7, cycleId: "cycle-7", ts: 1, sn: "SN-7", mode: "production", verdict: "OK", groupCount: 12, cameras: [], complete: true, recipeId: "S", projectId: "line-a",
-  reasons: [], warnings: [], durationMs: null, measuredFps: null, setFps: null, importedRound: null, usage: null, fixture: null };
+const row = { recordId: 7, cycleId: "cycle-7", ts: 1, sn: "SN-7", mode: "production", verdict: "OK", groupCount: 12, cameras: [], complete: true, recipeId: "S", projectId: "line-a",
+  reasons: [], warnings: [], durationMs: null, measuredFps: null, setFps: null, importedRound: null, usage: null, fixture: null } satisfies HistoryCandidate;
 
 let ws: ReturnType<typeof workspaceState>;
 beforeEach(() => {
@@ -47,5 +47,39 @@ describe("历史件试测", () => {
     expect(other).toHaveTextContent("OTHER · line-b");
     expect(other).toHaveTextContent("原图不全");
     expect(screen.getByRole("button", { name: /^触发测试.*SN-8/ })).toBeEnabled();
+  });
+
+  it("取消历史件重新测试 → 保留原对照并可再次测试，只显示取消状态", async () => {
+    const { workspace, layout } = ws.data!;
+    const saved: Comparison = {
+      id: "saved-trial", historyId: row.recordId, cycleId: row.cycleId, source: "raw", bundleId: null,
+      candidateId: workspace.doc.id, candidateRevision: workspace.revision, candidateRecipe: layout,
+      originalVerdict: row.verdict, judgement: { verdict: "OK", plcCode: 1, faultCode: 0,
+        reason: "上一次试测结果", segments: [], gaps: [] }, measurements: [], createdAt: 1, burst: null,
+    };
+    const compare = vi.mocked(workspaceApi.compare);
+    const user = userEvent.setup();
+    render(<MemoryRouter><HistoryTrials recipeId="S" /></MemoryRouter>);
+    const item = within(await screen.findByRole("listitem", { name: /SN-7/ }));
+    const run = item.getByRole("button", { name: /^触发测试/ });
+    compare.mockResolvedValueOnce(saved);
+    await user.click(run);
+    expect(await item.findByText(saved.judgement.reason)).toBeVisible();
+    expect(item.getByRole("link", { name: "看详情" })).toHaveAttribute("href", "/history/7?comparison=saved-trial");
+
+    compare.mockRejectedValueOnce("OPERATION_CANCELLED: 任务已取消");
+    await user.click(run);
+    const status = screen.getByRole("status", { name: "历史件试测进度" });
+    expect(status).toHaveTextContent("已取消，原结果保留");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(item.getByText(saved.judgement.reason)).toBeVisible();
+    expect(item.getByRole("link", { name: "看详情" })).toHaveAttribute("href", "/history/7?comparison=saved-trial");
+    expect(run).toBeEnabled();
+    expect(run).toHaveTextContent("重新测试");
+
+    compare.mockResolvedValueOnce({ ...saved, id: "retried-trial", judgement: { ...saved.judgement, reason: "重新试测完成" } });
+    await user.click(run);
+    expect(await item.findByText("重新试测完成")).toBeVisible();
+    expect(item.getByRole("link", { name: "看详情" })).toHaveAttribute("href", "/history/7?comparison=retried-trial");
   });
 });

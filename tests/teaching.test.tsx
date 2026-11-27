@@ -33,6 +33,26 @@ beforeEach(() => {
 
 describe("走廊示教", () => {
 
+  it("取消全段重新试测 → 保留上次结果并恢复试测入口", async () => {
+    vi.mocked(workspaceApi.teachPreviewSegment).mockResolvedValueOnce({
+      round: "round-1", start: 1, end: 4,
+      frames: Array.from({ length: 4 }, (_, i) => frameMetrics(0, i + 1, { presentRatio: 0 })),
+    });
+    show("/recipe/teach?camera=CAM-1&segment=1");
+    const trial = within(screen.getByRole("region", { name: "本段试测" }));
+    fireEvent.click(trial.getByRole("button", { name: "全段试测" }));
+    const saved = within(await trial.findByLabelText("试测统计"));
+    expect(saved.getByText("无胶 4")).toBeVisible();
+
+    vi.mocked(workspaceApi.teachPreviewSegment).mockRejectedValueOnce("OPERATION_CANCELLED: 任务已取消");
+    fireEvent.click(trial.getByRole("button", { name: "重新试测" }));
+    await waitFor(() => expect(trial.getByRole("status", { name: "全段试测进度" })).toHaveTextContent("已取消，原结果保留"));
+    expect(trial.queryByRole("alert")).not.toBeInTheDocument();
+    expect(saved.getByText("上次试测结果")).toBeVisible();
+    expect(saved.getByText("无胶 4")).toBeVisible();
+    expect(trial.getByRole("button", { name: "重新试测" })).toBeEnabled();
+  });
+
   it("单段没有分段审查记录 → 按实际轮次帧数标记笔首及段尾跳过，无胶统计排除跳过帧", async () => {
     ws = workspaceState(burstWorkspaceView(burstRecipe({ id: "A", segments: [pathSegment(1, "straight", { expectedFrames: 12, skipTail: 1 })], passSkip: { head: 4, tail: 0 } })));
     ws.data!.workspace.teachingPiece!.passes = [12];

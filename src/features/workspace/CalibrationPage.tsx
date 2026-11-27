@@ -42,7 +42,14 @@ export default function CalibrationPage() {
   const expectedTotal = calibration?.expectedTotal ?? plan.expectedTotal;
   const measured = !!calibration?.measured;
   const stale = !measured && calibration?.roundId != null;
-  const measure = () => void act(() => operation.run(taskId => workspaceApi.measureTeaching(doc.id, data.workspace.revision, taskId)), "示教件已按当前走廊测量");
+  const measure = () => void act(async () => {
+    try {
+      return await operation.run(taskId => workspaceApi.measureTeaching(doc.id, data.workspace.revision, taskId));
+    } catch (cause) {
+      if (operation.snapshot()?.progress.stage === "cancelled") return null;
+      throw cause;
+    }
+  }, "示教件已按当前走廊测量");
   const columns: TableColumn<SegmentCalibView>[] = [
     { key: "segment", header: "段", render: row => `段 ${row.index} · ${segmentKindLabel[row.kind]}` },
     { key: "nexp", header: "示教帧数", align: "right", render: row => row.nExp ?? <span className="c-warn">示教件分段未确认</span> },

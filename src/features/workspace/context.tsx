@@ -39,7 +39,7 @@ interface WorkspaceContextValue {
   discardDrafts: () => boolean;
   setDoc: (doc: RecipeDoc) => void;
   setCorridorDraft: (key: string, draft: CameraTeachDraft) => void;
-  act: (request: () => Promise<WorkspaceView>, message?: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => Promise<WorkspaceView | null>;
+  act: (request: () => Promise<WorkspaceView | null>, message?: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => Promise<WorkspaceView | null>;
   saveDoc: (doc?: RecipeDoc) => Promise<WorkspaceView | null>;
   saveState: "saved" | "saving" | "failed" | "pending"; retrySave: () => void;
   setError: (message: string) => void;
@@ -204,7 +204,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => { alive = false; clearTimeout(timer); };
   }, [doc, data?.workspace.doc]);
 
-  const act = useCallback(async (request: () => Promise<WorkspaceView>, message: SnackMessage | ((next: WorkspaceView) => SnackMessage) = "") => {
+  const act = useCallback(async (request: () => Promise<WorkspaceView | null>, message: SnackMessage | ((next: WorkspaceView) => SnackMessage) = "") => {
     if (acting.current || savingRef.current) return null;
     acting.current = true; setBusy(true); setError(""); clearSnack();
     const originalId = selected.current;
@@ -212,6 +212,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const current = () => originalId === selected.current && serial === requestSerial.current;
     try {
       const next = await request();
+      if (next === null) return null;
       if (current()) {
         if (next.workspace.doc.id !== originalId) throw new Error("候选响应与当前配方不一致，请重试操作");
         accept(next);

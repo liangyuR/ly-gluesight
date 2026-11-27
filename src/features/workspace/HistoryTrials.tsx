@@ -67,7 +67,9 @@ export function HistoryTrials({ recipeId }: { recipeId: string }) {
         unmeasured: result.burst?.unmeasured?.map(item => item.reason).join("；") ?? "",
       };
       setResults(previous => ({ ...previous, [recordId]: summary }));
-    } catch (e) { setError(errorText(e)); }
+    } catch (e) {
+      if (operation.snapshot()?.progress.stage !== "cancelled") setError(errorText(e));
+    }
     finally { setRunning(null); }
   };
   const trigger = (recordId: number) => { if (pendingSave) { setQueued(recordId); saveNow(); } else void run(recordId); };
