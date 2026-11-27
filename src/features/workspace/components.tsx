@@ -11,7 +11,7 @@ import type { FrameImage, FramePixels } from "./types";
 import { fillRgba } from "../../lib/frame";
 import { errorText } from "../../lib/errors";
 import { PlanSteps } from "./PlanSteps";
-import { searchBand } from "./searchBand";
+import { prepareSearchBand, searchBand } from "./searchBand";
 import { useRecipeHref } from "./recipeRoutes";
 import { fanRadii, guideRadii, HEADING_MARK, rayEnd, wedgePath, type HeadingGuide, type HeadingPart } from "./headingOverlay";
 import ContextHelp from "../cycle/components/ContextHelp";
@@ -318,11 +318,13 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
   const turnable = !!onSectorTurn && !editDisabled && headingShown && !!overlay?.heading?.sector;
   const path = overlay?.path ?? EMPTY_PATH;
   const searchHalf = overlay?.searchHalfPx;
-  const band = useMemo(() => searchBand(path, searchHalf), [path, searchHalf]);
+  const bandPath = useMemo(() => prepareSearchBand(path, searchHalf), [path, searchHalf]);
+  const showBand = bandShown && !!image;
+  const band = useMemo(() => bandPath && showBand ? searchBand(bandPath) : null, [bandPath, showBand]);
   const pathPoints = useMemo(() => shown && path.length >= 2 ? path.map(point => point.join(",")).join(" ") : "", [path, shown]);
   const hint = error || emptyHint;
   const footer = controlsAt === "footer";
-  const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{!!marks?.length && <Chip selected={marksShown} onClick={() => setMarksShown(v => !v)}>角点</Chip>}{band && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{overlay?.heading && <Chip selected={headingShown} onClick={() => setHeadingShown(v => !v)}>定向</Chip>}{!!overlay?.partEdges?.length && <Chip selected={partEdgesShown} onClick={() => setPartEdgesShown(v => !v)}>胶边距</Chip>}{overlay?.mixEvidence?.observation && <Chip selected={mixShown} onClick={() => setMixShown(v => !v)}>混胶色差</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
+  const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{!!marks?.length && <Chip selected={marksShown} onClick={() => setMarksShown(v => !v)}>角点</Chip>}{bandPath && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{overlay?.heading && <Chip selected={headingShown} onClick={() => setHeadingShown(v => !v)}>定向</Chip>}{!!overlay?.partEdges?.length && <Chip selected={partEdgesShown} onClick={() => setPartEdgesShown(v => !v)}>胶边距</Chip>}{overlay?.mixEvidence?.observation && <Chip selected={mixShown} onClick={() => setMixShown(v => !v)}>混胶色差</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
   return <div className={"wp-viewport" + (footer ? " wp-viewport-footer" : "")}>{footer ? tools && <div className="wp-image-tools">{tools}</div> : <div className="wp-image-tools">{tools ?? <span>{caption ?? label}</span>}{controls}</div>}{subtools}
     <div className={footer ? "wp-image-stage" : "wp-image-stage-plain"}>{!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "暂无图像"}</strong>{hint && <span>{hint}</span>}</div> :
       <svg ref={svg} role="img" tabIndex={0} style={{ aspectRatio: `${image.width} / ${image.height}` }} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
@@ -395,10 +397,10 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
         if (p) onEdit.move(current.index, p);
       }} onPointerUp={() => { if (turning.current && turnDeg != null) onSectorTurn?.(turnDeg); stopGesture(); }} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
         <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}>{image.pixels ? <FrameCanvas image={image} pixels={image.pixels} /> : <image href={image.url} width={image.width} height={image.height} />}
-          {band && bandShown && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--ov-line)" opacity={.75}>
+          {band && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--ov-line)" opacity={.75}>
             <defs><clipPath id={bandClip}><rect width={image.width} height={image.height} /></clipPath></defs>
-            {[band.left, band.right].map((edge, i) => <polyline key={i} points={edge.map(p => p.join(",")).join(" ")} strokeWidth={1} strokeDasharray="5 5" vectorEffect="non-scaling-stroke" />)}
-            {band.bars.map(i => <line key={i} x1={band.left[i][0]} y1={band.left[i][1]} x2={band.right[i][0]} y2={band.right[i][1]} strokeWidth={1} strokeDasharray="2 6" vectorEffect="non-scaling-stroke" />)}
+            {[band.left, band.right].map((edge, i) => <polyline key={i} points={edge} strokeWidth={1} strokeDasharray="5 5" vectorEffect="non-scaling-stroke" />)}
+            {band.bars.map(([left, right], i) => <line key={i} x1={left[0]} y1={left[1]} x2={right[0]} y2={right[1]} strokeWidth={1} strokeDasharray="2 6" vectorEffect="non-scaling-stroke" />)}
           </g>}
           {brush && brush.points.length > 0 && <g aria-label="刷选胶路区域" pointerEvents="none">
             <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--ov-line)" strokeOpacity={.25} strokeWidth={brush.radiusPx * 2} strokeLinecap="round" strokeLinejoin="round" />

@@ -97,4 +97,23 @@ describe("图像查看与加载", () => {
       expect(points?.[128]).toBe("66,44");
     });
   });
+
+  it("搜索带在重复点和折返处保留原始边界，隐藏后重开使用当前路径", () => {
+    const path: [number, number][] = [[3, 1], [3, 1], [7, 1], [3, 1], [2, 1]];
+    const viewer = (points: typeof path) => <FrameViewer image={image} label="搜索带预览" overlay={{ path: points, searchHalfPx: 2 }} />;
+    const { container, rerender } = render(viewer(path));
+    const band = () => container.querySelector('[aria-label="搜索带边界"]');
+    const edges = () => [...band()!.querySelectorAll("polyline")].map(line => line.getAttribute("points"));
+    expect(edges()).toEqual(["3,3 5,3 7,3 5,-1 3,-1 2,-1", "3,-1 5,-1 7,-1 5,3 3,3 2,3"]);
+    expect([...band()!.querySelectorAll("line")].map(line => line.getAttribute("x1"))).toEqual(["3", "7", "3", "2"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "中线叠加" }));
+    expect(band()).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "搜索带" }));
+    expect(band()).not.toBeInTheDocument();
+    rerender(viewer(path.map(([x, y]) => [x, y + 4])));
+    expect(band()).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "搜索带" }));
+    expect(edges()).toEqual(["3,7 5,7 7,7 5,3 3,3 2,3", "3,3 5,3 7,3 5,7 3,7 2,7"]);
+  });
 });
