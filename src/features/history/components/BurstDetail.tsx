@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight, Scale, ScanEye, SplitSquareHorizontal } from "lucide-react";
 import { Alert, Button, Card, Chip, IconButton, Select, Stack, StatusBadge, Text } from "qing-steel";
@@ -29,6 +29,7 @@ import { historyReturnContext, historyReturnSearch } from "../returnContext";
 import MixSummary from "../../plan/MixSummary";
 import { evidenceOverlay, MeasurementEvidenceSummary } from "../../plan/measurementEvidence";
 
+const HistoryRegionResultPanel = memo(RegionResultPanel);
 const comparisonLabel = { rules: "规则重判", raw: "候选原图复测", original: "原发布包重现" };
 const recordingReason = { off: "录制关闭，本件未保存原图", notRetained: "按录制策略本件未保存原图", pending: "原图仍在落盘", incomplete: "原图不完整", failed: "原图录制失败", complete: "原图已按保留策略清理或无法核验" };
 const frameStateName = { measured: "已测", missing: "缺帧", error: "测量失败", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测" };
@@ -151,9 +152,12 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const [settled, setSettled] = useState(false);
   const waitingForComparison = !!wanted && !showOriginal && !settled && !comparison;
   const compared = useMemo(() => comparison?.burst ? comparisonBurst(burst, comparison.burst) : null, [burst, comparison]);
+  const comparedBurst = comparison?.burst;
+  const diffs = useMemo(() => comparedBurst && burst.judgement.regions.length ? regionDiffs(burstSideOf(burst), comparedBurst) : null, [burst, comparedBurst]);
   const shown = compared && !showOriginal ? compared : burst, j = shown.judgement;
   const groups = useMemo(() => shown === burst ? originalGroups : historyGroups(shown), [shown, burst, originalGroups]);
   const [selection, setSelection] = useState({ camera: entry.camera, seq: entry.seq });
+  const selectGroup = useCallback((seq: number) => setSelection(prev => ({ ...prev, seq })), []);
   const shownCamera = useRef<string | undefined>(undefined);
   shownCamera.current = shown.cameras[selection.camera];
   const selectCameraIn = (cameras: string[]) => {
@@ -237,7 +241,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   }, [traceJump]);
   const returnToTrace = () => setTraceJump(jump => jump && { ...jump, target: "trace" });
   const traceCamera = originalShown ? selection.camera : shown.recordCameras?.[selection.camera];
-  const traceSelection = traceCamera == null ? null : { camera: traceCamera, seq: selection.seq };
+  const traceSelection = useMemo(() => traceCamera == null ? null : { camera: traceCamera, seq: selection.seq }, [traceCamera, selection.seq]);
   const step = (direction: -1 | 1) => setSelection(prev => {
     let index = firstGroupAtOrAfter(groups, prev.seq);
     if (direction === -1) index--;
@@ -395,7 +399,6 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const staleCandidate = comparedWith && comparedWith.revision !== comparison?.candidateRevision ? comparedWith : null;
 
   const flags = flagBadges(burst.judgement.flags);
-  const diffs = comparison?.burst ? regionDiffs(burstSideOf(burst), comparison.burst) : null;
   const region = frame?.region != null ? j.regions[frame.region] : null;
   const skipped = productionSkippedRegion(j.regions, selection.seq);
   const metrics = frame?.metrics;
@@ -476,7 +479,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
         <Select aria-label="历史相机选择" value={String(selection.camera)} onValueChange={value => setSelection(prev => ({ ...prev, camera: Number(value) }))}
           options={shown.cameras.map((name, c) => ({ value: String(c), label: name }))} />
       </>}>
-        <FrameGroupStrip groups={groups} cameras={shown.cameras} regions={j.regions} selected={selection.seq} selectedCamera={selection.camera} onSelect={seq => setSelection(prev => ({ ...prev, seq }))} onSelectCell={(seq, camera) => setSelection({ seq, camera })} />
+        <FrameGroupStrip groups={groups} cameras={shown.cameras} regions={j.regions} selected={selection.seq} selectedCamera={selection.camera} onSelect={selectGroup} onSelectCell={(seq, camera) => setSelection({ seq, camera })} />
         {!waitingForComparison && <div className="wp-stack">
           <div className="hist-frame-tiles" aria-label={`帧组 ${selection.seq} 各相机原图`}>
             {shown.cameras.map((name, c) => <FrameTile key={c} detail={detail} comparison={viewing ? comparison : null} camera={c} recordCamera={shown.recordCameras ? shown.recordCameras[c] : c} cameraName={name} seq={selection.seq}
@@ -512,9 +515,9 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
       </Panel>
       <Panel title={viewing ? `${viewing}整件判定` : "原始整件判定"} className="side">
         <p className="reason-box">{displayReason(j.reason)}</p>
-        <RegionResultPanel key={viewing && comparison ? `comparison:${comparison.id}` : "record"}
+        <HistoryRegionResultPanel key={viewing && comparison ? `comparison:${comparison.id}` : "record"}
           judgement={j} segments={shown.segments} cameras={shown.cameras} expectedTotal={shown.expectedTotal}
-          onSelectGroup={seq => setSelection(prev => ({ ...prev, seq }))} />
+          onSelectGroup={selectGroup} />
         <div className="kv2">
           <span>记录号</span><b>#{s.id}</b>
           <span>配方修订</span><b>{s.recipeRevision ?? "—"}</b>

@@ -18,6 +18,19 @@ const mm = (v: number | null | undefined) => v == null ? "—" : v.toFixed(2);
 type TraceFrame = Pick<FrameRecord, "camera" | "seq">;
 const frameKey = ({ camera, seq }: TraceFrame) => `${camera}:${seq}`;
 
+function findFrameIndex(rows: readonly FrameRecord[], { camera, seq }: TraceFrame) {
+  let low = 0;
+  let high = rows.length;
+  while (low < high) {
+    const mid = low + Math.floor((high - low) / 2);
+    const frame = rows[mid];
+    if (frame.camera < camera || (frame.camera === camera && frame.seq < seq)) low = mid + 1;
+    else high = mid;
+  }
+  const frame = rows[low];
+  return frame?.camera === camera && frame.seq === seq ? low : -1;
+}
+
 function hasFrameIssue({ status, metrics }: FrameRecord) {
   return (status !== "measured" && status !== "notInspected") || !!measurementIssue(metrics?.measurementEvidence)
     || !!metrics?.mixEvidence?.directions.length || !!metrics?.mixEvidence?.incomplete;
@@ -62,13 +75,13 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect,
   const traceTools = useRef<HTMLDivElement>(null);
   const focusedFrame = useRef<TraceFrame | null>(null);
   useEffect(() => {
-    const index = selected ? rows.findIndex(frame => frame.camera === selected.camera && frame.seq === selected.seq) : -1;
+    const index = selected ? findFrameIndex(rows, selected) : -1;
     setPage(index < 0 ? 0 : Math.floor(index / pageSize));
   }, [selected?.camera, selected?.seq, rows, pageSize]);
   useLayoutEffect(() => {
     const tools = traceTools.current;
     if (!tools || !focusFrame || focusedFrame.current === focusFrame) return;
-    const index = rows.findIndex(frame => frame.camera === focusFrame.camera && frame.seq === focusFrame.seq);
+    const index = findFrameIndex(rows, focusFrame);
     if (index >= 0) {
       const targetPage = Math.floor(index / pageSize);
       if (shownPage !== targetPage) { setPage(targetPage); return; }
