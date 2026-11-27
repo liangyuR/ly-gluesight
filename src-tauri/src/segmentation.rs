@@ -198,7 +198,7 @@ impl Region {
 
 /// 判定需要的走廊（D-SB-45）：按计划相机、seq（1..=total）给出该用第几段（`PathSegment.index`）的走廊测量，None 为不测。
 /// 可信的直线 / 弯道区域：本段检测相机用本段走廊。过渡区：帧按比例边界落在哪一段，该段检测相机用该段走廊，只检测最近边界
-/// 另一侧那一段的相机用那一段的走廊；多个过渡区合并（中间的段被取空）时同样按帧所在段与最近的边界取，不跨到更远的段。跳过区域不测。其余未分段区域（置信度不足、算法待定）：用到达时的预测段与它的检测相机（`plan::arrival_corridor`）。
+/// 另一侧那一段的相机用那一段的走廊；多个过渡区合并（中间的段被取空）时同样按帧所在段与最近的边界取，不跨到更远的段。跳过区域不测。其余未分段区域（置信度不足、算法待定）：用到达时的预测段与它的检测相机。
 pub fn frame_corridors(
     segments: &[PathSegment],
     cameras: &[String],
@@ -213,6 +213,7 @@ pub fn frame_corridors(
             .map(|b| b.frame_seq),
         SegOutcome::Unsegmented => None,
     };
+    let arrival = std::cell::OnceCell::new();
     let mut out = vec![vec![None; total as usize]; cameras.len()];
     for region in regions {
         for seq in region.first_seq.max(1)..=region.last_seq.min(total) {
@@ -258,9 +259,9 @@ pub fn frame_corridors(
                             .chain(neighbor.map(|n| covered[n]))
                             .find(|&s| detects(s))
                     }
-                    RegionKind::Unsegmented { .. } => {
-                        crate::plan::arrival_corridor(segments, cameras, c, seq)
-                    }
+                    RegionKind::Unsegmented { .. } => arrival
+                        .get_or_init(|| crate::plan::ArrivalRouting::new(segments, cameras))
+                        .corridor(c, seq),
                 };
             }
         }
@@ -984,6 +985,24 @@ mod tests {
                 assert_eq!(segment.offset.expected_frames, 0);
             }
         }
+    }
+
+    #[test]
+    fn unsegmented_remeasurement_uses_arrival_corridors() {
+        let mut segments = calibrated(&[S, C], &[2, 1]);
+        let cameras = ["camA", "camB", "camC"].map(String::from);
+        segments[1].cameras = vec![cameras[1].clone()];
+        let outcome = SegOutcome::Unsegmented;
+        let regions = resolve_regions(&segments, &outcome, 4, 0.5, 0, PassRules::NONE);
+
+        assert_eq!(
+            frame_corridors(&segments, &cameras, &regions, &outcome, 4),
+            [
+                [Some(1), Some(1), None, None],
+                [Some(1), Some(1), Some(2), Some(2)],
+                [Some(1), Some(1), None, None],
+            ]
+        );
     }
 
     #[test]

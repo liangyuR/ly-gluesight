@@ -15,7 +15,7 @@ use crate::frame_clock::{ClockStart, FrameClock, Stamp};
 use crate::frame_group::{loss_alarms, Grouper, Offer, MAX_SEQ};
 use crate::judge::{fault, Judgement, Verdict};
 use crate::measure::{FrameMeasured, MeasureError};
-use crate::plan::{wider_checks, PathSegment, SegmentChecks};
+use crate::plan::{wider_checks, ArrivalRouting, PathSegment, SegmentChecks};
 use crate::recipe::Recipe;
 use crate::recorder::RecordedFrame;
 use crate::segmentation::{
@@ -84,6 +84,7 @@ pub(super) struct BurstPart {
     /// 维护采集：只录图不送测，收尾只等收尾窗口
     pub(super) collect: bool,
     segments: Vec<PathSegment>,
+    arrival_routing: ArrivalRouting,
     /// 各（计划相机下标, 段）拖过的搜索扇区方向（度）；没拖过的段用自动方向，不在表里
     sectors: BTreeMap<(usize, u32), f64>,
     boundary_guard: u32,
@@ -166,10 +167,12 @@ impl BurstPart {
                 Some(start)
             })
             .collect();
+        let cameras = recipe.plan_cameras();
+        let arrival_routing = ArrivalRouting::new(&recipe.path_segments, &cameras);
         Self {
             grouper: Grouper::with_limit(vec![0; cams.len()], limit),
             clock: FrameClock::new(starts),
-            cameras: recipe.plan_cameras(),
+            cameras,
             cams,
             frames: BTreeMap::new(),
             pending: BTreeSet::new(),
@@ -180,6 +183,7 @@ impl BurstPart {
             warned: BTreeSet::new(),
             collect: false,
             segments: recipe.path_segments.clone(),
+            arrival_routing,
             sectors,
             boundary_guard: recipe.boundary_guard,
             pass_skip: recipe.pass_skip,
@@ -546,12 +550,9 @@ impl Part {
                     CounterSource::ChunkTrigger | CounterSource::Synthetic
                 )
                 .then_some(frame.trigger_counter);
-                let corridor = crate::plan::arrival_corridor(
-                    &burst.segments,
-                    &burst.cameras,
-                    camera,
-                    burst.taught_seq(camera, seq),
-                );
+                let corridor = burst
+                    .arrival_routing
+                    .corridor(camera, burst.taught_seq(camera, seq));
                 let measuring = !burst.collect && corridor.is_some();
                 let metrics = (!burst.collect && corridor.is_none()).then(|| {
                     unmeasured(
