@@ -2,6 +2,7 @@ mod admission;
 mod burst;
 mod daily_stats;
 mod interrupted;
+mod maintenance_progress;
 pub mod readiness;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -41,6 +42,7 @@ use crate::store::{
     VerdictCounts,
 };
 use daily_stats::DailyStats;
+use maintenance_progress::{MaintenanceProgress, ProgressData};
 
 pub enum Input {
     /// 段配方一台相机一帧的测量结果（FramePool 交来）
@@ -974,8 +976,6 @@ pub fn run_kind(recipe: &Recipe, maintenance: bool) -> Result<RunKind, String> {
     Ok(RunKind::Production)
 }
 
-const COLLECTION_REFRESH: Duration = Duration::from_secs(5);
-
 /// 没能建立检测的件：照常采图，工件结束后回 ERR（维护模式回 0）。
 struct Uninspected {
     sn: String,
@@ -1098,12 +1098,7 @@ struct Machine {
     fault_repeat: Option<FaultRepeat>,
     result: Option<ResultView>,
     stats: DailyStats,
-    /// 维护采集进度、试判统计与上次从记录库读取的时刻（录制收尾是异步的，定时刷新）
-    collection: (
-        Vec<crate::store::CollectionProgress>,
-        Vec<crate::store::TrialProgress>,
-        Option<Instant>,
-    ),
+    maintenance_progress: MaintenanceProgress,
     stats_checked: Instant,
     history_purge_day: NaiveDate,
     stray: u64,
@@ -1156,7 +1151,7 @@ impl Machine {
             fault_repeat: None,
             result: None,
             stats,
-            collection: (Vec::new(), Vec::new(), None),
+            maintenance_progress: MaintenanceProgress::default(),
             stats_checked: Instant::now(),
             history_purge_day: day,
             stray: 0,
@@ -1436,22 +1431,10 @@ impl Machine {
         self.dirty = false;
         self.published = Instant::now();
         let host = host(&self.app);
-        if host.settings().maintenance.is_none() {
-            self.collection = (Vec::new(), Vec::new(), None);
-        } else if self
-            .collection
-            .2
-            .is_none_or(|at| at.elapsed() > COLLECTION_REFRESH)
-        {
-            let store = self.app.state::<Store>();
-            self.collection = (
-                store
-                    .collection_progress(HistoryScope::Real)
-                    .unwrap_or_default(),
-                store.trial_progress(HistoryScope::Real).unwrap_or_default(),
-                Some(Instant::now()),
-            );
-        }
+        let settings = host.settings();
+        let progress = self
+            .maintenance_progress
+            .snapshot(settings.maintenance.as_ref());
         let active = self.current_recipe();
         let snapshot = Arc::new(Snapshot {
             stats_scope: HistoryScope::Real,
@@ -1461,7 +1444,7 @@ impl Machine {
             plc_handshake: Some(self.s7.view()),
             since: self.since,
             fault: self.fault.clone(),
-            product_source: host.settings().product_source,
+            product_source: settings.product_source,
             active_recipe_id: active.as_ref().map(|r| r.id.clone()),
             trigger_mode: active.as_ref().map(|r| r.trigger_mode),
             part: self.part.as_ref().map(Part::view),
@@ -1477,9 +1460,9 @@ impl Machine {
                 .chain(self.recording_alarm.as_ref().map(RecordingAlarm::message))
                 .collect(),
             recording_alarm: self.recording_alarm.clone(),
-            maintenance: host.settings().maintenance,
-            collection: self.collection.0.clone(),
-            trial: self.collection.1.clone(),
+            maintenance: settings.maintenance,
+            collection: progress.collection,
+            trial: progress.trial,
         });
         let previous = host
             .shared
@@ -2206,6 +2189,20 @@ impl Machine {
         self.flush_noise();
         let _link = host(&app).link_gate.lock().await;
         let settings = host(&app).settings();
+        let progress_app = app.clone();
+        self.dirty |= self.maintenance_progress.poll(
+            settings.maintenance.as_ref(),
+            Instant::now(),
+            move || {
+                let store = progress_app.state::<Store>();
+                ProgressData {
+                    collection: store
+                        .collection_progress(HistoryScope::Real)
+                        .unwrap_or_default(),
+                    trial: store.trial_progress(HistoryScope::Real).unwrap_or_default(),
+                }
+            },
+        );
         self.s7.set_maintenance(settings.maintenance.is_some());
         if !host(&app).busy() && matches!(self.phase, Phase::Idle | Phase::Fault) {
             // 配置操作进行中就留到下一拍，不让空闲节拍排队

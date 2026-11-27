@@ -1,6 +1,7 @@
 use chrono::{Local, NaiveDate, TimeZone};
 
 use super::daily_stats::DailyStats;
+use super::maintenance_progress::{MaintenanceProgress, ProgressData};
 use super::*;
 use crate::frame::CounterSource;
 use crate::offline::Scenario;
@@ -61,6 +62,100 @@ fn interrupted_maintenance_parts_leave_production_totals_unchanged() {
 
     let stats = daily.snapshot();
     assert_eq!((stats.total, stats.ok, stats.ng, stats.err), (1, 0, 0, 1));
+}
+
+#[tokio::test]
+async fn maintenance_reentry_waits_for_the_old_read_and_publishes_only_fresh_progress() {
+    use std::sync::mpsc::{channel, TryRecvError};
+
+    use tokio::sync::oneshot;
+
+    use crate::settings::Maintenance;
+    use crate::store::{CollectionProgress, TrialProgress};
+
+    const TIMEOUT: Duration = Duration::from_secs(5);
+
+    fn data(recorded: u32) -> ProgressData {
+        ProgressData {
+            collection: vec![CollectionProgress {
+                recipe_id: "test".into(),
+                recorded,
+                usable: recorded,
+            }],
+            trial: vec![TrialProgress {
+                recipe_id: "test".into(),
+                recipe_version: 1,
+                counts: VerdictCounts {
+                    ok: u64::from(recorded),
+                    ..VerdictCounts::default()
+                },
+                ng: Vec::new(),
+            }],
+        }
+    }
+
+    async fn wait_until(mut ready: impl FnMut() -> bool) {
+        tokio::time::timeout(TIMEOUT, async {
+            while !ready() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("维护统计未返回");
+    }
+
+    let old_mode = Maintenance {
+        since: 1,
+        reason: "第一次维护".into(),
+    };
+    let new_mode = Maintenance {
+        since: 2,
+        reason: "第二次维护".into(),
+    };
+    let mut progress = MaintenanceProgress::default();
+    let now = Instant::now();
+    wait_until(|| {
+        progress.poll(Some(&old_mode), now, || data(1));
+        progress.snapshot(Some(&old_mode)) == data(1)
+    })
+    .await;
+
+    let later = now + Duration::from_secs(6);
+    let (started, observed_start) = oneshot::channel();
+    let (release, wait_for_release) = channel();
+    progress.poll(Some(&old_mode), later, move || {
+        started.send(()).unwrap();
+        wait_for_release.recv_timeout(TIMEOUT).unwrap();
+        data(2)
+    });
+    tokio::time::timeout(TIMEOUT, observed_start)
+        .await
+        .unwrap()
+        .unwrap();
+    progress.poll(None, later, ProgressData::default);
+    assert!(progress.snapshot(None) == ProgressData::default());
+
+    let (overlap, observed_overlap) = channel();
+    progress.poll(Some(&new_mode), later, move || {
+        overlap.send(()).unwrap();
+        data(3)
+    });
+    assert!(progress.snapshot(Some(&new_mode)) == ProgressData::default());
+    assert_eq!(observed_overlap.try_recv(), Err(TryRecvError::Disconnected));
+
+    release.send(()).unwrap();
+    wait_until(|| {
+        let changed = progress.poll(Some(&new_mode), later, || data(3));
+        let snapshot = progress.snapshot(Some(&new_mode));
+        if snapshot == data(3) {
+            assert!(changed);
+            true
+        } else {
+            assert!(snapshot == ProgressData::default());
+            false
+        }
+    })
+    .await;
 }
 
 /// 段配方在途件：samples_burst（cam1–cam3 共用触发、一个直线段 N_exp = 4），相机组序号 0–2、会话 11–13，
