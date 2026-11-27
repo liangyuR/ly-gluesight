@@ -1,5 +1,6 @@
 mod admission;
 mod burst;
+mod daily_stats;
 mod interrupted;
 pub mod readiness;
 use std::collections::VecDeque;
@@ -8,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use chrono::{Local, NaiveDate};
 use ly_plc::{now_ms, PlcEngine};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -35,8 +37,10 @@ use crate::recording_health::{AlarmChange, RecordingAlarm, RecordingHealth};
 use crate::settings::{CycleSettings, ProductSource};
 use crate::shot_router::{arm_frames, ArmCam, Floor, FrameMeta, Ledgers, Policy};
 use crate::store::{
-    BurstRecord, HistoryScope, PlcDelivery, PlcDeliveryState, RecordSource, Store, VerdictCounts,
+    BurstRecord, HistoryScope, PartMode, PlcDelivery, PlcDeliveryState, RecordSource, Store,
+    VerdictCounts,
 };
+use daily_stats::DailyStats;
 
 pub enum Input {
     /// 段配方一台相机一帧的测量结果（FramePool 交来）
@@ -716,7 +720,7 @@ pub fn repair_history(app: &AppHandle) {
 }
 
 /// 启动时握手日志里有已绑定身份的在途件，而历史与追溯暂存里都没有它：进程在检测中途退出，补一条 ERR 记录。
-pub(crate) fn record_interrupted_part(app: &AppHandle, s7: &PlcSession, stats: &mut Stats) {
+fn record_interrupted_part(app: &AppHandle, s7: &PlcSession, stats: &mut DailyStats, now: i64) {
     let (Some(cycle_id), Some(request)) = (s7.cycle_id(), s7.request()) else {
         return;
     };
@@ -762,17 +766,12 @@ pub(crate) fn record_interrupted_part(app: &AppHandle, s7: &PlcSession, stats: &
         &interrupted,
         s7.recipe_id().and_then(|id| host.recipe(id)),
         app.package_info().version.to_string(),
-        now_ms(),
+        now,
     );
     let label = site.source.label();
-    let counted =
-        part.mode == crate::store::PartMode::Production && part.ts >= history::local_midnight_ms();
+    stats.record(part.mode, part.ts, part.judgement.verdict);
     let outcome = interrupted::recording(cycle_id, site.record);
     host.audit.insert(part);
-    if counted {
-        stats.total += 1;
-        stats.err += 1;
-    }
     host.audit.recording(outcome);
     log_with(
         "warn",
@@ -1098,14 +1097,15 @@ struct Machine {
     fault_at: Option<i64>,
     fault_repeat: Option<FaultRepeat>,
     result: Option<ResultView>,
-    stats: Stats,
+    stats: DailyStats,
     /// 维护采集进度、试判统计与上次从记录库读取的时刻（录制收尾是异步的，定时刷新）
     collection: (
         Vec<crate::store::CollectionProgress>,
         Vec<crate::store::TrialProgress>,
         Option<Instant>,
     ),
-    stats_day: i64,
+    stats_checked: Instant,
+    history_purge_day: NaiveDate,
     stray: u64,
     stray_times: VecDeque<Instant>,
     alarms: Vec<String>,
@@ -1131,12 +1131,14 @@ struct Machine {
 
 impl Machine {
     fn new(app: AppHandle, frame_pool: FramePool) -> Self {
-        let mut stats = today_stats(&app);
+        let started_at = Local::now();
+        let day = started_at.date_naive();
+        let mut stats = DailyStats::new(day, today_stats(&app, day));
         let mut s7 = PlcSession::open(crate::storage::state(&app).join("plc-handshake.json"));
         if let Some(notice) = s7.archived() {
             log("warn", "S7 握手日志归档", notice.to_owned());
         }
-        record_interrupted_part(&app, &s7, &mut stats);
+        record_interrupted_part(&app, &s7, &mut stats, started_at.timestamp_millis());
         s7.forget_previous();
         host(&app).store_busy(Phase::Fault, &s7);
         Self {
@@ -1155,7 +1157,8 @@ impl Machine {
             result: None,
             stats,
             collection: (Vec::new(), Vec::new(), None),
-            stats_day: history::local_day(),
+            stats_checked: Instant::now(),
+            history_purge_day: day,
             stray: 0,
             stray_times: VecDeque::new(),
             alarms: Vec::new(),
@@ -1463,7 +1466,7 @@ impl Machine {
             trigger_mode: active.as_ref().map(|r| r.trigger_mode),
             part: self.part.as_ref().map(Part::view),
             result: self.result.clone(),
-            stats: self.stats.clone(),
+            stats: self.stats.snapshot(),
             stray_frames: self.stray,
             alarms: self
                 .alarms
@@ -2196,6 +2199,9 @@ impl Machine {
     }
 
     async fn on_tick(&mut self) {
+        if self.stats_checked.elapsed() >= Duration::from_secs(1) {
+            self.refresh_stats_day();
+        }
         let app = self.app.clone();
         self.flush_noise();
         let _link = host(&app).link_gate.lock().await;
@@ -2511,9 +2517,10 @@ impl Machine {
         self.close_routing();
         let app = self.app.clone();
         let mut drain_ms = None;
+        let recorded_at = now_ms();
         let pending = PlcDelivery {
             state: PlcDeliveryState::Pending,
-            updated_at: now_ms(),
+            updated_at: recorded_at,
             message: None,
         };
         let record = self.recorded_part(
@@ -2587,9 +2594,7 @@ impl Machine {
             None => log("err", "PLC 交付", "缺少工件身份，交付状态未记录"),
         }
         let r = sent.map_err(|error| format!("回写 PLC 失败：{error}"));
-        if mode == crate::store::PartMode::Production {
-            self.count(judgement.verdict);
-        }
+        self.count(mode, recorded_at, judgement.verdict);
         let level = match judgement.verdict {
             Verdict::Ok | Verdict::OkWithExcursion => "ok",
             Verdict::ErrInspect => "err",
@@ -2718,7 +2723,7 @@ impl Machine {
         judgement: &Judgement,
         drain_ms: Option<u64>,
         delivery: PlcDelivery,
-        mode: crate::store::PartMode,
+        mode: PartMode,
     ) -> Result<RecordedPart, String> {
         let Some(cycle_id) = self.current_cycle_id.clone() else {
             return Err("工件身份尚未持久分配，不能关联历史与原图".into());
@@ -2740,7 +2745,7 @@ impl Machine {
         });
         let source = part.map_or_else(|| RecordSource::Real, |p| p.source);
         Ok(RecordedPart {
-            ts: now_ms(),
+            ts: delivery.updated_at,
             sn: sn.to_owned(),
             recipe,
             judgement: judgement.clone(),
@@ -2812,15 +2817,15 @@ impl Machine {
     }
 
     /// 没建立检测的件（拒收或维护模式未检）按会话锁存的模式记。
-    fn part_mode(&self, sn: &str) -> crate::store::PartMode {
+    fn part_mode(&self, sn: &str) -> PartMode {
         self.part
             .as_ref()
             .filter(|part| part.sn == sn)
             .map(|part| part.mode)
             .unwrap_or(if self.s7.part_maintenance() {
-                crate::store::PartMode::MaintenanceCollect
+                PartMode::MaintenanceCollect
             } else {
-                crate::store::PartMode::Production
+                PartMode::Production
             })
     }
 
@@ -2831,31 +2836,29 @@ impl Machine {
         judgement: &Judgement,
         drain_ms: Option<u64>,
         delivery: PlcDelivery,
+        mode: PartMode,
     ) -> Result<(), String> {
-        host(&self.app).audit.insert(self.recorded_part(
-            sn,
-            recipe_id,
-            judgement,
-            drain_ms,
-            delivery,
-            self.part_mode(sn),
-        )?);
+        host(&self.app)
+            .audit
+            .insert(self.recorded_part(sn, recipe_id, judgement, drain_ms, delivery, mode)?);
         self.record_without_part(sn, judgement)
     }
 
-    fn count(&mut self, v: Verdict) {
-        let today = history::local_day();
-        if today != self.stats_day {
-            self.stats_day = today;
-            self.stats = Stats::default();
+    fn refresh_stats_day(&mut self) -> NaiveDate {
+        self.stats_checked = Instant::now();
+        let today = Local::now().date_naive();
+        if self.stats.advance(today) {
+            self.dirty = true;
+        }
+        today
+    }
+
+    fn count(&mut self, mode: PartMode, recorded_at: i64, verdict: Verdict) {
+        let today = self.refresh_stats_day();
+        if self.stats.record(mode, recorded_at, verdict) && self.history_purge_day != today {
+            self.history_purge_day = today;
             let app = self.app.clone();
             tauri::async_runtime::spawn_blocking(move || purge_history(&app));
-        }
-        self.stats.total += 1;
-        match v {
-            Verdict::Ok | Verdict::OkWithExcursion => self.stats.ok += 1,
-            Verdict::ErrInspect => self.stats.err += 1,
-            _ => self.stats.ng += 1,
         }
     }
 
@@ -2923,12 +2926,13 @@ impl Machine {
                 fault::DEVICE_LOST
             };
             let judgement = Judgement::error(code, format!("{reason}，结果未回写"));
-            self.count(judgement.verdict);
             let delivery = PlcDelivery {
                 state: PlcDeliveryState::Failed,
                 updated_at: now_ms(),
                 message: Some(reason.to_owned()),
             };
+            let mode = self.part_mode(&sn);
+            self.count(mode, delivery.updated_at, judgement.verdict);
             let plc_write = self.s7.part_timing().map(|timing| PlcWriteTrace {
                 timing,
                 state: PlcWriteState::NotWritten,
@@ -2941,6 +2945,7 @@ impl Machine {
                 &judgement,
                 None,
                 delivery,
+                mode,
             ) {
                 log("err", "中断工件审计持久化失败", error);
             }
@@ -3056,9 +3061,9 @@ fn burst_warnings(
     out
 }
 
-fn today_stats(app: &AppHandle) -> Stats {
+fn today_stats(app: &AppHandle, day: NaiveDate) -> Stats {
     app.state::<Store>()
-        .counts_since(history::local_midnight_ms(), HistoryScope::Real)
+        .counts_since(history::local_midnight_ms(day), HistoryScope::Real)
         .map(Stats::from)
         .unwrap_or_default()
 }

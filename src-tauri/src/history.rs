@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
 
-use chrono::{Local, TimeZone};
+use chrono::{Local, NaiveDate, TimeZone};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -18,16 +18,12 @@ use crate::store::{
     PartSummary, Store, StoredMeasurement,
 };
 
-pub fn local_midnight_ms() -> i64 {
-    let today = Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
+pub fn local_midnight_ms(day: NaiveDate) -> i64 {
+    let midnight = day.and_hms_opt(0, 0, 0).unwrap();
     Local
-        .from_local_datetime(&today)
+        .from_local_datetime(&midnight)
         .earliest()
         .map_or(0, |t| t.timestamp_millis())
-}
-
-pub fn local_day() -> i64 {
-    Local::now().date_naive().to_epoch_days() as i64
 }
 
 pub(crate) fn format_ts(ts: i64) -> String {

@@ -1,6 +1,67 @@
+use chrono::{Local, NaiveDate, TimeZone};
+
+use super::daily_stats::DailyStats;
 use super::*;
 use crate::frame::CounterSource;
 use crate::offline::Scenario;
+use crate::store::PartMode;
+
+fn local_noon(date: NaiveDate) -> i64 {
+    Local
+        .from_local_datetime(&date.and_hms_opt(12, 0, 0).unwrap())
+        .single()
+        .unwrap()
+        .timestamp_millis()
+}
+
+#[test]
+fn midnight_clears_totals_and_late_writeback_keeps_the_record_date() {
+    let yesterday = NaiveDate::from_ymd_opt(2025, 2, 8).unwrap();
+    let today = yesterday.succ_opt().unwrap();
+    let mut daily = DailyStats::new(
+        yesterday,
+        Stats {
+            total: 8,
+            ok: 4,
+            ng: 2,
+            err: 2,
+        },
+    );
+
+    assert!(daily.advance(today));
+    let cleared = daily.snapshot();
+    assert_eq!(
+        (cleared.total, cleared.ok, cleared.ng, cleared.err),
+        (0, 0, 0, 0)
+    );
+    assert!(!daily.record(
+        PartMode::Production,
+        local_noon(yesterday),
+        Verdict::ErrInspect
+    ));
+    assert!(daily.record(
+        PartMode::Production,
+        local_noon(today),
+        Verdict::OkWithExcursion
+    ));
+    let stats = daily.snapshot();
+    assert_eq!((stats.total, stats.ok, stats.ng, stats.err), (1, 1, 0, 0));
+}
+
+#[test]
+fn interrupted_maintenance_parts_leave_production_totals_unchanged() {
+    let today = NaiveDate::from_ymd_opt(2025, 2, 9).unwrap();
+    let at = local_noon(today);
+    let mut daily = DailyStats::new(today, Stats::default());
+
+    for mode in [PartMode::MaintenanceCollect, PartMode::MaintenanceShadow] {
+        assert!(!daily.record(mode, at, Verdict::ErrInspect));
+    }
+    assert!(daily.record(PartMode::Production, at, Verdict::ErrInspect));
+
+    let stats = daily.snapshot();
+    assert_eq!((stats.total, stats.ok, stats.ng, stats.err), (1, 0, 0, 1));
+}
 
 /// 段配方在途件：samples_burst（cam1–cam3 共用触发、一个直线段 N_exp = 4），相机组序号 0–2、会话 11–13，
 /// 按计数账定帧计数基线（模拟相机本会话没见过帧时从 0 起）。
