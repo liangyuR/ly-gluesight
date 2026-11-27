@@ -586,7 +586,20 @@ pub fn gather(app: &AppHandle) -> Readiness {
     let host = host(app);
     let settings = host.settings();
     let maintenance = settings.maintenance.is_some();
-    let snapshot = host.shared.lock().unwrap().snapshot.clone();
+    let (measurement_workers, phase, fault, handshake) = {
+        let shared = host.shared.lock().unwrap();
+        shared
+            .snapshot
+            .as_deref()
+            .map_or((None, Phase::Idle, None, None), |snapshot| {
+                (
+                    Some(snapshot.measurement_workers),
+                    snapshot.phase,
+                    snapshot.fault.clone(),
+                    snapshot.plc_handshake.clone(),
+                )
+            })
+    };
     let library = host.recipes.list();
     let checked: Vec<(RecipeOption, Option<Vec<u8>>)> = library
         .iter()
@@ -655,7 +668,7 @@ pub fn gather(app: &AppHandle) -> Readiness {
             Err(status.message)
         }
     };
-    let workers = match snapshot.as_ref().map(|s| &s.measurement_workers) {
+    let workers = match measurement_workers {
         Some(w) if w.capacity > 0 && w.timed_out >= w.capacity => Err(format!(
             "测量工作线程全部超时未返回（{} / {}），来件不能检测",
             w.timed_out, w.capacity
@@ -675,21 +688,16 @@ pub fn gather(app: &AppHandle) -> Readiness {
         Err(error) => Check::Blocked(format!("持久追溯异常：{error}")),
     };
     let link = plc(app).status();
-    let handshake = snapshot.as_ref().and_then(|s| s.plc_handshake.as_ref());
     evaluate(Facts {
         plc_connected: link.state == LinkState::Connected,
         session_behind: link.state == LinkState::Connected
-            && handshake.is_some_and(|v| v.connection != Some(link.since)),
-        session: snapshot
-            .as_ref()
-            .and_then(|s| s.plc_handshake.as_ref())
-            .map(|v| v.phase),
-        session_message: snapshot
-            .as_ref()
-            .and_then(|s| s.plc_handshake.as_ref())
-            .and_then(|v| v.message.clone()),
-        phase: snapshot.as_ref().map_or(Phase::Idle, |s| s.phase),
-        fault: snapshot.as_ref().and_then(|s| s.fault.clone()),
+            && handshake
+                .as_ref()
+                .is_some_and(|v| v.connection != Some(link.since)),
+        session: handshake.as_ref().map(|v| v.phase),
+        session_message: handshake.and_then(|v| v.message),
+        phase,
+        fault,
         cameras,
         engine,
         workers,

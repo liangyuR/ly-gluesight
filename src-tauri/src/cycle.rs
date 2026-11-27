@@ -250,7 +250,7 @@ impl From<VerdictCounts> for Stats {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub stats_scope: HistoryScope,
@@ -335,7 +335,7 @@ impl From<&Recipe> for RecipeSummary {
 }
 
 struct Shared {
-    snapshot: Option<Snapshot>,
+    snapshot: Option<Arc<Snapshot>>,
     /// 当前（或刚结束的）一件用的配方快照
     part_recipe: Option<Arc<Recipe>>,
     settings: CycleSettings,
@@ -1426,7 +1426,7 @@ impl Machine {
             );
         }
         let active = self.current_recipe();
-        let snapshot = Snapshot {
+        let snapshot = Arc::new(Snapshot {
             stats_scope: self.stats_scope,
             measurement_workers: self.frame_pool.health().snapshot(),
             phase: self.phase,
@@ -1453,9 +1453,15 @@ impl Machine {
             maintenance: host.settings().maintenance,
             collection: self.collection.0.clone(),
             trial: self.collection.1.clone(),
-        };
-        host.shared.lock().unwrap().snapshot = Some(snapshot.clone());
-        let _ = self.app.emit("cycle://snapshot", snapshot);
+        });
+        let previous = host
+            .shared
+            .lock()
+            .unwrap()
+            .snapshot
+            .replace(Arc::clone(&snapshot));
+        drop(previous);
+        let _ = self.app.emit("cycle://snapshot", snapshot.as_ref());
     }
 
     async fn on_input(&mut self, input: Input) {
@@ -3039,7 +3045,7 @@ fn today_stats(app: &AppHandle, scope: HistoryScope) -> Stats {
 }
 
 #[tauri::command]
-pub fn cycle_snapshot(cycle: State<'_, CycleHost>) -> Option<Snapshot> {
+pub fn cycle_snapshot(cycle: State<'_, CycleHost>) -> Option<Arc<Snapshot>> {
     cycle.shared.lock().unwrap().snapshot.clone()
 }
 
