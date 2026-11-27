@@ -2451,7 +2451,7 @@ impl Machine {
             let burst = &mut part.burst;
             warnings = burst_warnings(&decided, |camera| burst.camera_name(camera).to_owned());
             let summary = burst::summary(&decided);
-            burst.judgement = Some(decided);
+            burst.set_judgement(decided);
             summary
         };
         let (sn, id, cycle_id) = (

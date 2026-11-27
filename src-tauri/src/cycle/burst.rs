@@ -6,13 +6,14 @@
 //! `Machine` 负责。
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
 use crate::frame::{CounterSource, Frame};
 use crate::frame_clock::{ClockStart, FrameClock, Stamp};
 use crate::frame_group::{loss_alarms, Grouper, Offer, MAX_SEQ};
-use crate::judge::{fault, Judgement};
+use crate::judge::{fault, Judgement, Verdict};
 use crate::measure::{FrameMeasured, MeasureError};
 use crate::plan::{wider_checks, PathSegment, SegmentChecks};
 use crate::recipe::Recipe;
@@ -52,6 +53,7 @@ struct BurstFrame {
     measuring_since: Option<Instant>,
     /// 测完后的指标（含没测成的状态与原因）
     metrics: Option<FrameMetrics>,
+    provisional_verdict: OnceLock<Verdict>,
     /// 送测用的走廊（段号）：到达时按预测段，收尾补测后改为补测用的段；这台相机不检测预测段时为空、不送测
     corridor: Option<u32>,
 }
@@ -76,7 +78,8 @@ pub(super) struct BurstPart {
     /// 判定前临时帧格结论的兜底允差（帧没记所测走廊时）：各段中较宽一档
     checks: SegmentChecks,
     /// 判定后存下，落库与结果显示用
-    pub(super) judgement: Option<BurstJudgement>,
+    judgement: Option<BurstJudgement>,
+    final_frame_verdicts: OnceLock<BTreeMap<(usize, u64), Verdict>>,
     warned: BTreeSet<(usize, Warning)>,
     /// 维护采集：只录图不送测，收尾只等收尾窗口
     pub(super) collect: bool,
@@ -162,6 +165,7 @@ impl BurstPart {
             trusted,
             checks,
             judgement: None,
+            final_frame_verdicts: OnceLock::new(),
             warned: BTreeSet::new(),
             collect: false,
             segments: recipe.path_segments.clone(),
@@ -173,6 +177,11 @@ impl BurstPart {
             post_wait: None,
             post_started: false,
         }
+    }
+
+    pub(super) fn set_judgement(&mut self, judgement: BurstJudgement) {
+        self.final_frame_verdicts.take();
+        self.judgement = Some(judgement);
     }
 
     /// 到达时这一帧送测用的走廊（段号）；不送测（这台相机不检测预测段、维护采集）为 None。
@@ -552,6 +561,7 @@ impl Part {
                         trigger_counter,
                         measuring_since: measuring.then_some(now),
                         metrics,
+                        provisional_verdict: OnceLock::new(),
                         corridor,
                     },
                 );
@@ -664,6 +674,7 @@ impl Part {
                 continue;
             };
             frame.corridor = Some(segment);
+            frame.provisional_verdict.take();
             match source {
                 Ok(file) => {
                     frame.measuring_since = Some(now);
@@ -805,20 +816,20 @@ impl Part {
         let burst = &self.burst;
         let settled = burst.judgement.is_some() || self.burst_deadline(Instant::now());
         // 判定后帧格按所在区域判（与历史同一口径）；判定前按这一帧所测走廊的段临时判
-        let decided: Option<BTreeMap<(usize, u64), crate::judge::Verdict>> =
-            burst.judgement.as_ref().map(|judgement| {
+        let decided = burst.judgement.as_ref().map(|judgement| {
+            burst.final_frame_verdicts.get_or_init(|| {
                 let regions: Vec<Region> =
                     judgement.regions.iter().map(|r| r.region.clone()).collect();
-                let metrics: Vec<FrameMetrics> = burst
+                let metrics = burst
                     .frames
                     .values()
-                    .filter_map(|frame| frame.metrics.clone())
-                    .collect();
-                burst_judge::frame_verdicts(&burst.segments, &regions, &metrics, &burst.cameras)
+                    .filter_map(|frame| frame.metrics.as_ref());
+                burst_judge::frame_verdicts(&burst.segments, &regions, metrics, &burst.cameras)
                     .into_iter()
                     .map(|v| ((v.camera, v.seq), v.verdict))
                     .collect()
-            });
+            })
+        });
         let provisional = |m: &FrameMetrics| {
             let checks = m
                 .corridor
@@ -826,23 +837,22 @@ impl Part {
                 .map_or(&burst.checks, |s| &s.checks);
             burst_judge::frame_verdict(m, checks)
         };
-        let groups = burst
-            .grouper
-            .groups()
-            .into_iter()
-            .map(|group| {
+        let group_count = burst.grouper.group_count();
+        let groups = (1..=group_count)
+            .map(|seq| {
                 let cells: Vec<FrameCellView> = (0..burst.cams.len())
-                    .map(|camera| match burst.frames.get(&(camera, group.seq)) {
+                    .map(|camera| match burst.frames.get(&(camera, seq)) {
                         Some(frame) => {
                             let (status, verdict) = match &frame.metrics {
                                 Some(m) => (
                                     FrameCellStatus::from(m.state),
-                                    match &decided {
-                                        Some(verdicts) => {
-                                            verdicts.get(&(camera, group.seq)).copied()
-                                        }
-                                        None => (m.state == FrameState::Measured)
-                                            .then(|| provisional(m)),
+                                    match decided {
+                                        Some(verdicts) => verdicts.get(&(camera, seq)).copied(),
+                                        None => (m.state == FrameState::Measured).then(|| {
+                                            *frame
+                                                .provisional_verdict
+                                                .get_or_init(|| provisional(m))
+                                        }),
                                     },
                                 ),
                                 None => (FrameCellStatus::Measuring, None),
@@ -870,17 +880,14 @@ impl Part {
                         },
                     })
                     .collect();
-                let incomplete = group.incomplete
-                    || cells.iter().any(|cell| {
-                        !matches!(
-                            cell.status,
-                            FrameCellStatus::Measured
-                                | FrameCellStatus::Measuring
-                                | FrameCellStatus::Waiting
-                        )
-                    });
+                let incomplete = cells.iter().any(|cell| {
+                    !matches!(
+                        cell.status,
+                        FrameCellStatus::Measured | FrameCellStatus::Measuring
+                    )
+                });
                 FrameGroupView {
-                    seq: group.seq,
+                    seq,
                     incomplete,
                     cells,
                 }
@@ -890,7 +897,7 @@ impl Part {
             cameras: burst.cameras.clone(),
             expected_total: self.recipe.expected_total(),
             device_triggers: self.device_triggers.map(u32::from),
-            group_count: burst.grouper.group_count(),
+            group_count,
             camera_frames: burst.grouper.camera_counts(),
             measured_frames: burst
                 .frames

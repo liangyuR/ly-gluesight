@@ -741,14 +741,14 @@ pub struct FrameVerdict {
 /// 区域划定后的逐帧结论（在线、历史与复测对照共用）：每帧按所在区域的检测相机与检查项判独立指标，与区域判定同一口径；
 /// 直线区域的局部跑偏落到偏离均值超限的帧。胶宽不均、整段胶偏只属于区域，不落到帧上。
 /// 不在区域检测相机里、没测成或不在任何区域的帧没有结论。按 (camera, seq) 排序。
-pub fn frame_verdicts(
+pub fn frame_verdicts<'a>(
     segments: &[PathSegment],
     regions: &[Region],
-    metrics: &[FrameMetrics],
+    metrics: impl IntoIterator<Item = &'a FrameMetrics>,
     cameras: &[String],
 ) -> Vec<FrameVerdict> {
     let frames: BTreeMap<(u64, usize), &FrameMetrics> = metrics
-        .iter()
+        .into_iter()
         .filter(|m| m.camera < cameras.len())
         .map(|m| ((m.seq, m.camera), m))
         .collect();
