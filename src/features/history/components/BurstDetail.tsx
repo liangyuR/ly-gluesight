@@ -417,7 +417,8 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       </Panel>
       <Panel title={viewing ? `${viewing}整件判定` : "原始整件判定"} className="side">
         <p className="reason-box">{displayReason(j.reason)}</p>
-        <RegionResultPanel judgement={j} segments={shown.segments} cameras={shown.cameras} expectedTotal={shown.expectedTotal}
+        <RegionResultPanel key={viewing && comparison ? `comparison:${comparison.id}` : "record"}
+          judgement={j} segments={shown.segments} cameras={shown.cameras} expectedTotal={shown.expectedTotal}
           onSelectGroup={seq => setSelection(prev => ({ ...prev, seq }))} />
         <div className="kv2">
           <span>记录号</span><b>#{s.id}</b>

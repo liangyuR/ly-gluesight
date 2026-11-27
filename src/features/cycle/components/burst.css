@@ -45,6 +45,8 @@
 .region-kv dt { color: var(--on-surface-variant); }
 .region-kv dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .region-groups { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; }
+.region-incomplete { display: grid; gap: 4px; min-width: 0; }
+.region-incomplete .qs-pagination-pages { flex-wrap: wrap; }
 .region-reason { margin: 0; font-size: 12px; color: var(--on-surface-variant); overflow-wrap: anywhere; }
 .region-extra { display: flex; flex-direction: column; gap: 4px; }
 .region-extra h4 { margin: 0; font-size: 12px; font-weight: 600; color: var(--on-surface-variant); }
