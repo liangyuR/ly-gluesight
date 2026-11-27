@@ -115,6 +115,41 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.queryByText(/不参与判定，原图与测量数据仅供诊断/)).toBeNull();
   });
 
+  it("对照相机重排且少一台 → 逐帧追溯与显示切换仍按相机身份定位", async () => {
+    const burst = detail.burst!;
+    const cameras = ["CAM-3", "CAM-1"];
+    const frames = burst.frames.flatMap(frame => {
+      const camera = cameras.indexOf(burst.cameras[frame.camera]);
+      return camera >= 0 && frame.metrics ? [{ ...frame.metrics, camera }] : [];
+    });
+    vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([{ ...comparison(), source: "raw", burst: {
+      segments: burst.segments, cameras, expectedTotal: burst.expectedTotal, judgement: burst.judgement, frames,
+    } } as Comparison]);
+
+    show("/history/1?comparison=compare-1");
+    const user = userEvent.setup();
+    const display = await screen.findByLabelText("显示结果", { selector: "select" });
+    const trace = within(screen.getByRole("table", { name: "逐帧追溯" }));
+    const cam1 = /^帧组 4 · CAM-1 ·/;
+    await user.click(screen.getByRole("button", { name: cam1 }));
+    expect(trace.getByRole("button", { name: "追溯 CAM-1 帧组 4" })).toHaveAttribute("aria-pressed", "true");
+    expect(trace.getByRole("button", { name: "追溯 CAM-2 帧组 4" })).toHaveAttribute("aria-pressed", "false");
+
+    await user.selectOptions(display, "original");
+    expect(screen.getByRole("button", { name: cam1, pressed: true })).toBeVisible();
+    await user.selectOptions(display, "comparison");
+    expect(screen.getByRole("button", { name: cam1, pressed: true })).toBeVisible();
+
+    await user.click(trace.getByRole("button", { name: "查看 CAM-2 帧组 6 原图" }));
+    expect(display).toHaveValue("original");
+    expect(trace.getByRole("button", { name: "追溯 CAM-2 帧组 6", pressed: true })).toBeVisible();
+    expect(await screen.findByRole("img", { name: "原始 SN SN-101 · CAM-2 · 帧组 6" })).toBeVisible();
+    expect(await screen.findByText(/CAM-2 · 帧组 6 逐站胶宽/)).toBeVisible();
+    await user.selectOptions(display, "comparison");
+    expect(screen.getByText("候选原图复测整件判定")).toBeVisible();
+    expect(screen.getByRole("button", { name: /^帧组 6 · CAM-3 ·/, pressed: true })).toBeVisible();
+  });
+
   it("加载旧对照期间重新复算 → 迟到的旧对照不能覆盖新结果", async () => {
     const old = { ...comparison(), judgement: { ...comparison().judgement, reason: "旧对照结果" } };
     vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([old]);

@@ -149,6 +149,12 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const groups = useMemo(() => shown === burst ? originalGroups : historyGroups(shown), [shown, burst, originalGroups]);
   const lastSeq = groups.at(-1)?.seq ?? 1;
   const [selection, setSelection] = useState({ camera: entry.camera, seq: entry.seq });
+  const shownCamera = useRef<string | undefined>(undefined);
+  shownCamera.current = shown.cameras[selection.camera];
+  const selectCameraIn = (cameras: string[]) => {
+    const camera = Math.max(0, cameras.indexOf(shownCamera.current ?? ""));
+    setSelection(prev => prev.camera === camera ? prev : { ...prev, camera });
+  };
   const [station, setStation] = useState<number | null>(null);
   useEffect(() => { setStation(null); }, [selection.camera, selection.seq, comparison?.id, showOriginal]);
   const [saved, setSaved] = useState<ComparisonSummary[]>([]);
@@ -183,7 +189,12 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   }, [frameKey, originalShown, burst, waitingForComparison]);
   const frame = originalShown && frameDetail?.key === frameKey ? frameDetail.frame ?? summaryFrame : summaryFrame;
   const frameLoading = originalShown && !!summaryFrame?.metrics && frameDetail?.key !== frameKey;
-  const selectFrame = useCallback((camera: number, seq: number) => setSelection({ camera, seq }), []);
+  const selectTraceFrame = useCallback((camera: number, seq: number) => {
+    setShowOriginal(true);
+    setSelection({ camera, seq });
+  }, []);
+  const traceCamera = originalShown ? selection.camera : shown.recordCameras?.[selection.camera];
+  const traceSelection = traceCamera == null ? null : { camera: traceCamera, seq: selection.seq };
   const step = (delta: number) => setSelection(prev => ({ ...prev, seq: Math.min(lastSeq, Math.max(groups[0]?.seq ?? 1, prev.seq + delta)) }));
   const stepRef = useRef(step);
   stepRef.current = step;
@@ -235,20 +246,25 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const rawReason = options ? candidateBlock || (options.raw.available ? "" : options.raw.reason ?? "") : "";
   const originalReason = options && !options.original.available ? options.original.reason ?? "" : "";
 
+  const displayComparison = (result: Comparison) => {
+    selectCameraIn(result.burst?.frames.length ? result.burst.cameras : burst.cameras);
+    setComparison(result);
+    setShowOriginal(false);
+  };
   const chooseComparison = async (id: string) => {
     const request = ++comparisonRequest.current;
-    if (!id) { setComparison(null); setLoadingComparison(""); return; }
+    if (!id) { selectCameraIn(burst.cameras); setComparison(null); setLoadingComparison(""); return; }
     setLoadingComparison(id); setError("");
     try {
       const result = await workspaceApi.comparisonGet(s.id, id);
-      if (alive.current && request === comparisonRequest.current && current.current.historyId === s.id) { setComparison(result); setShowOriginal(false); }
+      if (alive.current && request === comparisonRequest.current && current.current.historyId === s.id) displayComparison(result);
     } catch (e) { if (alive.current && request === comparisonRequest.current) setError(errorText(e)); }
     finally { if (alive.current && request === comparisonRequest.current) setLoadingComparison(""); }
   };
   const compare = async (run: (taskId: string) => Promise<Comparison>, guard: () => boolean) => {
     if (pending.current) return;
     pending.current = true; serial.current++; comparisonRequest.current++; setLoadingComparison(""); setWorking(true); setError("");
-    try { const result = await operation.run(run); if (guard()) { setComparison(result); setShowOriginal(false); setSaved(v => [comparisonSummary(result), ...v.filter(c => c.id !== result.id)].slice(0, 100)); } }
+    try { const result = await operation.run(run); if (guard()) { displayComparison(result); setSaved(v => [comparisonSummary(result), ...v.filter(c => c.id !== result.id)].slice(0, 100)); } }
     catch (e) { if (guard()) setError(errorText(e)); }
     finally { pending.current = false; if (alive.current) setWorking(false); }
   };
@@ -373,7 +389,11 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
     </Panel>}
     <div className="detail-grid burst">
       <Panel title="帧组与原图" detail={viewing ? `显示${viewing}结果` : compared ? "显示原始记录" : undefined} help="点击小方块选择相机与帧组查看原图，左右方向键切换帧组。格子颜色只表示本帧；上方色带是所在段的结论，胶宽不均、整段胶偏等整段性问题看色带。灰色为检测不完整，浅灰为本段不检测或未判定。选了带逐帧指标的对照时，可切换显示对照结果或原始记录。" actions={<>
-        {compared && <Select aria-label="显示结果" value={showOriginal ? "original" : "comparison"} onValueChange={value => setShowOriginal(value === "original")}
+        {compared && <Select aria-label="显示结果" value={showOriginal ? "original" : "comparison"} onValueChange={value => {
+          const original = value === "original";
+          selectCameraIn(original ? burst.cameras : compared.cameras);
+          setShowOriginal(original);
+        }}
           options={[{ value: "comparison", label: "对照结果" }, { value: "original", label: "原始记录" }]} />}
         <Button size="sm" leadingIcon={<SplitSquareHorizontal size={15} />} disabled={!!segmentBlock} title={segmentBlock || `到候选 ${segmentTarget} 的分段与示教页调整段边界，定位到帧组 ${selection.seq} 的对应位置；改完可返回本件`} onClick={openSegments}>调整分段</Button>
         <Select aria-label="历史相机选择" value={String(selection.camera)} onValueChange={value => setSelection(prev => ({ ...prev, camera: Number(value) }))}
@@ -427,7 +447,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
           <span>后续复检</span><b>{detail.retests.length ? detail.retests.map(r => <Link key={r} to={"/history/" + r} state={partState}>#{r} </Link>) : "—"}</b>
         </div>
       </Panel>
-      <BurstPartTrace detail={detail} burst={burst} selected={selection} onSelect={selectFrame} />
+      <BurstPartTrace detail={detail} burst={burst} selected={traceSelection} onSelect={selectTraceFrame} />
     </div>
   </div>;
 }
