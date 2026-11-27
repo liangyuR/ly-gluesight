@@ -20,6 +20,11 @@ struct ComparisonCache {
     decoded: Option<CachedComparison>,
 }
 
+enum InterruptedSaves {
+    Keep,
+    Remove,
+}
+
 struct CachedComparison {
     path: PathBuf,
     bytes: Vec<u8>,
@@ -91,7 +96,7 @@ impl Comparisons {
                 if !exists(&dir)? {
                     return Ok(());
                 }
-                let files = inventory(&dir, id, &mut cache.summaries)?;
+                let files = inventory(&dir, id, &mut cache.summaries, InterruptedSaves::Remove)?;
                 reconcile(files, id, None, &mut cache)?;
                 fs::remove_dir(&dir).map_err(error)
             })();
@@ -119,7 +124,12 @@ impl Comparisons {
             return Err("历史工件身份已改变，复测结果未保存".into());
         }
         let dir = directory(root, comparison.history_id, true)?;
-        let mut files = inventory(&dir, comparison.history_id, &mut cache.summaries)?;
+        let mut files = inventory(
+            &dir,
+            comparison.history_id,
+            &mut cache.summaries,
+            InterruptedSaves::Remove,
+        )?;
         let file = dir.join(format!("{}.json", comparison.id));
         let temporary = dir.join(format!("{}.tmp", comparison.id));
         checked_directory(&dir, false)?;
@@ -171,7 +181,12 @@ impl Comparisons {
         if !exists(&dir)? {
             return Ok(Vec::new());
         }
-        let mut files = inventory(&dir, history_id, &mut cache.summaries)?;
+        let mut files = inventory(
+            &dir,
+            history_id,
+            &mut cache.summaries,
+            InterruptedSaves::Keep,
+        )?;
         files.retain(|(_, saved)| saved.cycle_id == cycle);
         newest_first(&mut files);
         files
@@ -199,7 +214,12 @@ impl Comparisons {
         if !exists(&dir)? {
             return Ok(Vec::new());
         }
-        let mut files = inventory(&dir, history_id, &mut cache.summaries)?;
+        let mut files = inventory(
+            &dir,
+            history_id,
+            &mut cache.summaries,
+            InterruptedSaves::Keep,
+        )?;
         files.retain(|(_, saved)| saved.cycle_id == cycle);
         newest_first(&mut files);
         Ok(files
@@ -300,7 +320,8 @@ impl Comparisons {
                     }
                     checked_directory(&path, false)?;
                     let cycle = store.comparison_cycle(id)?;
-                    let files = inventory(&path, id, &mut cache.summaries)?;
+                    let files =
+                        inventory(&path, id, &mut cache.summaries, InterruptedSaves::Remove)?;
                     reconcile(files, id, cycle.as_deref(), &mut cache)?;
                     if cycle.is_none() {
                         fs::remove_dir(&path).map_err(error)?;
@@ -468,14 +489,24 @@ fn inventory(
     dir: &Path,
     history_id: i64,
     cache: &mut HashMap<PathBuf, CachedSummary>,
+    interrupted_saves: InterruptedSaves,
 ) -> Result<Vec<(PathBuf, ComparisonSummary)>, String> {
     checked_directory(dir, false)?;
     let mut files = Vec::new();
+    let mut interrupted = Vec::new();
     for entry in fs::read_dir(dir).map_err(error)? {
         let path = entry.map_err(error)?.path();
         let metadata = fs::symlink_metadata(&path).map_err(error)?;
         plain(&metadata)?;
-        if !metadata.is_file() || path.extension().and_then(|s| s.to_str()) != Some("json") {
+        let extension = path.extension().and_then(|extension| extension.to_str());
+        if metadata.is_file() && extension == Some("tmp") && interrupted_save_id(&path, history_id)
+        {
+            if matches!(interrupted_saves, InterruptedSaves::Remove) {
+                interrupted.push(path);
+            }
+            continue;
+        }
+        if !metadata.is_file() || extension != Some("json") {
             return Err(format!("未确认的复测目录项：{}", path.display()));
         }
         let modified = metadata.modified().ok();
@@ -507,7 +538,30 @@ fn inventory(
         };
         files.push((path, summary));
     }
+    for file in interrupted {
+        remove_checked(&file)?;
+    }
     Ok(files)
+}
+
+fn interrupted_save_id(path: &Path, history_id: i64) -> bool {
+    let Some((id, suffix)) = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.split_once('-'))
+    else {
+        return false;
+    };
+    let Some((timestamp, sequence)) = suffix.split_once('-') else {
+        return false;
+    };
+    id == history_id.to_string()
+        && timestamp
+            .parse::<i64>()
+            .is_ok_and(|value| value >= 0 && value.to_string() == timestamp)
+        && sequence
+            .parse::<u64>()
+            .is_ok_and(|value| value.to_string() == sequence)
 }
 
 fn newest_first(files: &mut [(PathBuf, ComparisonSummary)]) {
@@ -615,6 +669,75 @@ mod tests {
             serde_json::to_value(read().unwrap().as_ref()).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn interrupted_save_temporary_keeps_existing_results_readable_and_allows_retry() {
+        let (root, store, _, mut saved) = saved_comparison();
+        let comparisons = Comparisons::default();
+        let original_id = saved.id.clone();
+        let history_id = saved.history_id;
+        let dir = directory(&root.0, history_id, false).unwrap();
+        saved.id = format!("{history_id}-1700000000000-7");
+        saved.created_at = 1_700_000_000_000;
+        saved.candidate_revision = 7;
+        let temporary = dir.join(format!("{}.tmp", saved.id));
+        let truncated = b"{\"id\":";
+        fs::write(&temporary, truncated).unwrap();
+
+        let summaries = comparisons
+            .summaries(&root.0, &store, None, history_id)
+            .unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, original_id);
+        let listed = comparisons.list(&root.0, &store, None, history_id).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, original_id);
+        assert_eq!(fs::read(&temporary).unwrap(), truncated);
+
+        comparisons.save(&root.0, &store, &saved).unwrap();
+        assert!(!temporary.exists());
+        let published = comparisons
+            .get(&root.0, &store, history_id, &saved.id)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(published.as_ref()).unwrap(),
+            serde_json::to_value(&saved).unwrap()
+        );
+    }
+
+    #[test]
+    fn unrecognized_temporary_keeps_its_bytes_and_existing_comparison_when_save_is_rejected() {
+        let (root, store, comparisons, mut saved) = saved_comparison();
+        let history_id = saved.history_id;
+        let dir = directory(&root.0, history_id, false).unwrap();
+        let published = dir.join(format!("{}.json", saved.id));
+        let original = fs::read(&published).unwrap();
+        saved.id = format!("{history_id}-1700000000000-7");
+        let pending = dir.join(format!("{}.json", saved.id));
+        let interrupted = dir.join(format!("{}.tmp", saved.id));
+        fs::write(&interrupted, b"{\"id\":").unwrap();
+        let unrecognized = b"keep these unknown bytes";
+
+        for name in [
+            "unknown.tmp".to_owned(),
+            format!("{}-1700000000000-7.tmp", history_id + 1),
+        ] {
+            let temporary = dir.join(&name);
+            fs::write(&temporary, unrecognized).unwrap();
+            let error = comparisons
+                .summaries(&root.0, &store, None, history_id)
+                .err()
+                .unwrap();
+            assert!(error.contains("复测目录项"), "{error}");
+            let error = comparisons.save(&root.0, &store, &saved).unwrap_err();
+            assert!(error.contains("复测目录项"), "{error}");
+            assert_eq!(fs::read(&temporary).unwrap(), unrecognized);
+            assert_eq!(fs::read(&interrupted).unwrap(), b"{\"id\":");
+            assert_eq!(fs::read(&published).unwrap(), original);
+            assert!(!pending.exists());
+            fs::remove_file(temporary).unwrap();
+        }
     }
 
     #[test]
