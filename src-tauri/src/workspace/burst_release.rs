@@ -34,6 +34,7 @@ pub(super) fn burst_checks(
     let mut checks = vec![Check {
         advisory: false,
         name: "相机配置".into(),
+        teaching_targets: Vec::new(),
         passed: device.is_ok(),
         detail: device
             .err()
@@ -43,6 +44,7 @@ pub(super) fn burst_checks(
     checks.push(Check {
         advisory: false,
         name: "示教件".into(),
+        teaching_targets: Vec::new(),
         passed: w.teaching_piece.is_some(),
         detail: w.teaching_piece.as_ref().map_or_else(
             || "还没有示教件：先选示教件".into(),
@@ -66,28 +68,36 @@ pub(super) fn burst_checks(
 fn corridor_check(w: &Workspace) -> Check {
     let doc = &w.doc;
     let mut problems = Vec::new();
+    let mut teaching_targets = BTreeSet::new();
     if doc.inspect.len() != PLAN_CAMERAS {
         problems.push(format!(
             "段配方需要恰好 {PLAN_CAMERAS} 台计划相机共用一个触发，当前 {} 台",
             doc.inspect.len()
         ));
     }
-    problems.extend(
-        untaught_pairs(w).into_iter().map(|(camera, segment)| {
-            format!("第 {segment} 段相机 {camera}：走廊未示教或超出示教帧")
-        }),
-    );
-    problems.extend(
-        doc.inspect
-            .iter()
-            .filter(|i| i.mm_per_px.is_none())
-            .map(|i| format!("相机 {}：缺像素当量", i.camera)),
-    );
-    problems.extend(
-        crate::heading::issues(&doc.segments, &doc.inspect)
-            .into_iter()
-            .map(|i| i.message),
-    );
+    for (camera, segment) in untaught_pairs(w) {
+        problems.push(format!(
+            "第 {segment} 段相机 {camera}：走廊未示教或超出示教帧"
+        ));
+        teaching_targets.insert(TeachingTarget {
+            segment: Some(segment),
+            camera,
+        });
+    }
+    for inspect in doc.inspect.iter().filter(|i| i.mm_per_px.is_none()) {
+        problems.push(format!("相机 {}：缺像素当量", inspect.camera));
+        teaching_targets.insert(TeachingTarget {
+            segment: None,
+            camera: inspect.camera.clone(),
+        });
+    }
+    for issue in crate::heading::issues(&doc.segments, &doc.inspect) {
+        problems.push(issue.message);
+        teaching_targets.insert(TeachingTarget {
+            segment: issue.segment,
+            camera: issue.camera,
+        });
+    }
     let pairs: usize = doc
         .segments
         .iter()
@@ -96,6 +106,7 @@ fn corridor_check(w: &Workspace) -> Check {
     Check {
         advisory: false,
         name: "走廊示教".into(),
+        teaching_targets: teaching_targets.into_iter().collect(),
         passed: problems.is_empty(),
         detail: if problems.is_empty() {
             format!(
@@ -165,6 +176,7 @@ fn segment_check(w: &Workspace) -> Check {
     Check {
         advisory: false,
         name: "段帧数".into(),
+        teaching_targets: Vec::new(),
         passed: total.is_some()
             && (!multi || doc.segments.iter().all(|s| s.expected_frames.is_some())),
         detail: format!("{head}；{}", segments.join("；")),
@@ -206,6 +218,7 @@ fn x_ref_check(doc: &RecipeDoc) -> Option<Check> {
     (!items.is_empty()).then(|| Check {
         advisory: false,
         name: "胶偏参考 x_ref".into(),
+        teaching_targets: Vec::new(),
         passed: true,
         detail: items.join("；"),
     })
@@ -244,6 +257,7 @@ pub(super) fn teach_trial_check(trials: &[TeachTrial]) -> Option<Check> {
     Some(Check {
         advisory: (!failed.is_empty() || !incomplete.is_empty()) && !all,
         name: "示教帧试测".into(),
+        teaching_targets: Vec::new(),
         passed: failed.is_empty() && incomplete.is_empty(),
         detail: if failed.is_empty() && !incomplete.is_empty() {
             format!(
@@ -273,6 +287,7 @@ pub(super) fn graph_and_trial_checks(
     recipe: &Recipe,
     measure: impl FnOnce(vision::CorridorSet) -> Option<Check>,
 ) -> Vec<Check> {
+    let mut teaching_targets = BTreeSet::new();
     let result = release_teaching_frames(recipe, &w.camera_teaching).and_then(|frames| {
         let sizes: Vec<_> = frames
             .iter()
@@ -286,6 +301,10 @@ pub(super) fn graph_and_trial_checks(
             .into_iter()
             .map(|issue| {
                 let context = format!("第 {} 段相机 {}：", issue.segment, issue.camera);
+                teaching_targets.insert(TeachingTarget {
+                    segment: Some(issue.segment),
+                    camera: issue.camera,
+                });
                 if issue.reason.starts_with(&context) {
                     issue.reason
                 } else {
@@ -305,6 +324,7 @@ pub(super) fn graph_and_trial_checks(
     };
     let mut checks = vec![Check {
         name: "测量图".into(),
+        teaching_targets: teaching_targets.into_iter().collect(),
         passed,
         detail,
         advisory: false,
@@ -426,6 +446,7 @@ pub(super) fn publish_checks(app: &AppHandle, w: &Workspace) -> Result<Validatio
     ));
     checks.push(Check {
         name: "图像核心库".into(),
+        teaching_targets: Vec::new(),
         passed: engine.is_some(),
         detail: if engine.is_some() {
             "已加载兼容的图像核心库".into()

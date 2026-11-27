@@ -112,6 +112,14 @@ pub struct FrozenImage {
     pub history_id: Option<i64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeachingTarget {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segment: Option<u32>,
+    pub camera: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Check {
@@ -121,6 +129,8 @@ pub struct Check {
     /// 只提醒、不拦发布：没满足时照样能发布（如有段在示教帧上没测成，D-SB-59）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub advisory: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub teaching_targets: Vec<TeachingTarget>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

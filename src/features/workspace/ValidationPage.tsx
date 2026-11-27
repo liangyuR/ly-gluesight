@@ -1,6 +1,6 @@
 import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { Accordion, Button, Dialog } from "qing-steel";
 import "./validation.css";
@@ -13,8 +13,12 @@ import { Badge, KV, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./compon
 import { PlanPublishBody } from "./PlcParams";
 import type { Check } from "./types";
 import { NavigationPublication } from "./WorkspaceNavigation";
+import { corridorPath } from "./cameraTasks";
+import { recipeHref } from "./recipeRoutes";
+import { returnState } from "./returnNavigation";
 
 export default function ValidationPage() {
+  const location = useLocation();
   const {data,doc,dirty,frameDirty,navigationDirty,segmentDirty,busy,act,setError} = useWorkspace();
   const candidate = data ? JSON.stringify([data.workspace.doc.id,data.workspace.instanceId,data.workspace.doc.version]) : null;
   const pendingRelease = data?.workspace.pending;
@@ -61,7 +65,22 @@ export default function ValidationPage() {
   const liveRows=liveChecks.checks??(liveChecks.error?[{name:"发布前检查",passed:false,detail:liveChecks.error}]:[{name:"发布前检查",passed:false,detail:"正在核对设备、走廊示教与示教件基准…"}]);
   const checks:Check[]=[...stepChecks,...liveRows,...planCheck];
   const failedChecks=checks.filter(c=>!c.passed&&!c.advisory),passedChecks=checks.filter(c=>c.passed);
-  const checkRow=(c:Check)=><div key={c.name} className={"wp-check-row "+(c.passed?"passed":"")}>{c.passed?<CheckCircle2 size={20}/>:<AlertTriangle size={20}/>}<div><strong>{c.name}{!c.passed&&c.advisory&&"（提醒，不拦发布）"}</strong><p>{c.detail}</p></div></div>;
+  const checkRow = (c: Check) => {
+    const targets = !pendingRelease && !c.passed ? c.teachingTargets ?? [] : [];
+    return <div key={c.name} className={"wp-check-row " + (c.passed ? "passed" : "")}>
+      {c.passed ? <CheckCircle2 size={20} /> : <AlertTriangle size={20} />}
+      <div><strong>{c.name}{!c.passed && c.advisory && "（提醒，不拦发布）"}</strong><p>{c.detail}</p>
+        {targets.length > 0 && <div className="wp-actions wp-check-targets">{targets.map(({ camera, segment }) => {
+          const path = corridorPath(camera, segment);
+          return <Button asChild key={path} size="sm" variant="text">
+            <Link to={recipeHref(doc.id, path)} state={returnState(location, "发布前检查")}>
+              去示教 {camera} · {segment == null ? "相机参数" : `第 ${segment} 段`}
+            </Link>
+          </Button>;
+        })}</div>}
+      </div>
+    </div>;
+  };
   const publishBlocked=data.workspace.pending?"":planBlocked?planBlocked:liveChecks.error?liveChecks.error:!liveChecks.checks?"正在核对发布前检查":failedLive?`${failedLive.name}：${failedLive.detail}`:dirty||frameDirty||navigationDirty||segmentDirty?"候选配置有未保存修改，保存后再发布":"";
   const action=async(request:()=>ReturnType<typeof workspaceApi.publish>,message:string)=>{
     if(pending.current||!ready)return null;

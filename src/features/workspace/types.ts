@@ -30,7 +30,7 @@ export interface FrozenImage {
   exposureUs: number | null; gainDb: number | null; historyId: number | null;
 }
 /** 发布前检查的一项；advisory 为只提醒、不拦发布的项（如有段在示教帧上没测成）。 */
-export interface Check { name: string; passed: boolean; detail: string; advisory?: boolean }
+export interface Check { name: string; passed: boolean; detail: string; advisory?: boolean; teachingTargets?: { camera: string; segment?: number }[] }
 export interface Validation {
   revision: number; passed: boolean; checkedAt: number; environmentTag: unknown;
   checks: Check[];

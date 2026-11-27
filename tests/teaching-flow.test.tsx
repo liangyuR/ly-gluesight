@@ -5,6 +5,7 @@ import { createElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
+import ValidationPage from "../src/features/workspace/ValidationPage";
 import { WorkspaceProvider } from "../src/features/workspace/context";
 import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import { SnackbarProvider } from "qing-steel";
@@ -62,6 +63,7 @@ function renderWorkspace(path: string) {
   Object.assign(globalThis, { jest: { advanceTimersByTime: (ms: number) => vi.advanceTimersByTime(ms) } });
   const workspace = <MemoryRouter initialEntries={[path]}><SnackbarProvider><WorkspaceProvider><Routes>
     <Route path="/recipe/:recipeId/teach" element={createElement(inRecipe(TeachingPage))} />
+    <Route path="/recipe/:recipeId/validation" element={createElement(inRecipe(ValidationPage))} />
   </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>;
   render(workspace);
   // jsdom 没有样式表，逐级检查 pointer-events 只是空耗
@@ -94,6 +96,24 @@ const savingDoc = (candidate: WorkspaceView, gate?: Promise<void>): Handler => a
   response.workspace.revision = (revision as number) + 1;
   return response;
 };
+
+it("发布检查定位失败位置 → 打开指定相机的示教帧并可返回重新检查", async () => {
+  const candidate = corridorCandidate();
+  mockSite(candidate, { workspace_publish_checks: () => [{
+    name: "测量图", passed: false, detail: "出胶点需要重新标定",
+    teachingTargets: [{ camera: "CAM-1", segment: 3 }],
+  }] });
+  const user = renderWorkspace("/recipe/A/validation?from=overview");
+  const target = await screen.findByRole("link", { name: "去示教 CAM-1 · 第 3 段" });
+  await user.click(target);
+  expect(await screen.findByRole("img", { name: "CAM-1 · 1-3 · 示教帧" })).toBeVisible();
+  const frame = candidate.plan.cameraTeaching[0].segments.find(item => item.segment === 3)!.frame;
+  expect(workspaceApi.image).toHaveBeenLastCalledWith("A", frame.id);
+
+  await user.click(screen.getByRole("button", { name: "返回发布前检查" }));
+  expect(await screen.findByRole("link", { name: "去示教 CAM-1 · 第 3 段" })).toBeVisible();
+  expect(calls("workspace_publish_checks")).toEqual([{ id: "A", revision: 3 }, { id: "A", revision: 3 }]);
+});
 
 it("保存期间继续加点 → 不锁编辑、缩放与走廊不重置，保存回来后新点保留并按新修订再保存一次", async () => {
   stubSvgPointer({ pointerEvent: true });

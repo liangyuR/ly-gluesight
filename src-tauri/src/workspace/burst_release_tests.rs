@@ -175,6 +175,13 @@ fn publish_checks_report_graph_errors_for_each_affected_camera_before_measuring(
 
     let blocker = publish_blocker(&checks).unwrap();
     assert_eq!(blocker.name, "测量图");
+    assert_eq!(
+        blocker.teaching_targets,
+        ["cam1", "cam2", "cam3"].map(|camera| TeachingTarget {
+            segment: Some(1),
+            camera: camera.into(),
+        })
+    );
     for (camera, reason) in [
         ("cam1", "出胶点"),
         ("cam2", "找边搜索长度"),
@@ -187,4 +194,24 @@ fn publish_checks_report_graph_errors_for_each_affected_camera_before_measuring(
             "{blocker:?}"
         );
     }
+}
+
+#[test]
+fn archived_release_without_teaching_targets_remains_readable() {
+    let root = super::tests::ImportTestDir::new();
+    let doc = crate::recipe::samples_burst();
+    let path = root.0.join(format!("{}-v{}.json", doc.id, doc.version));
+    let old = json!({
+        "doc": doc, "bundleId": "original-bundle", "revision": 7, "validationSite": "real",
+        "validation": {
+            "revision": 7, "passed": true, "checkedAt": 1, "environmentTag": null,
+            "checks": [{"name": "走廊示教", "passed": true, "detail": "示教已完成"}]
+        }
+    });
+    std::fs::write(path, old.to_string()).unwrap();
+
+    let release = archived_release(&root.0, &doc.id, doc.version).unwrap();
+    assert_eq!(release.bundle_id, "original-bundle");
+    let corridor = check(&release.validation.checks, "走廊示教");
+    assert!(corridor.passed && corridor.teaching_targets.is_empty());
 }

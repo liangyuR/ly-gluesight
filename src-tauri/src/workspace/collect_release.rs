@@ -20,6 +20,7 @@ pub(super) fn collect_checks(doc: &RecipeDoc, production: Option<&Recipe>) -> Ve
     let mut checks = vec![Check {
         advisory: false,
         name: "计划相机".into(),
+        teaching_targets: Vec::new(),
         passed: distinct,
         detail: if distinct {
             format!("{} 共用一个触发", cameras.join("、"))
@@ -34,6 +35,7 @@ pub(super) fn collect_checks(doc: &RecipeDoc, production: Option<&Recipe>) -> Ve
     checks.push(Check {
         advisory: false,
         name: "段".into(),
+        teaching_targets: Vec::new(),
         passed: !doc.segments.is_empty(),
         detail: if doc.segments.is_empty() {
             "至少需要一段，可先放一个直线段占位".into()
@@ -45,6 +47,7 @@ pub(super) fn collect_checks(doc: &RecipeDoc, production: Option<&Recipe>) -> Ve
     checks.push(Check {
         advisory: false,
         name: "生产版本".into(),
+        teaching_targets: Vec::new(),
         passed: formal.is_none(),
         detail: match (formal, production) {
             (Some(r), _) => format!("已有正式版 v{}。{COLLECT_AFTER_FORMAL}", r.version),
