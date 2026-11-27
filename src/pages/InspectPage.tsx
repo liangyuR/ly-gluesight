@@ -10,7 +10,7 @@ import InspectionDiagnostics, { type DiagnosticGroup } from "../features/cycle/c
 import ContextHelp from "../features/cycle/components/ContextHelp";
 import { MaintenanceToggle } from "../features/cycle/components/MaintenanceMode";
 import PartResult from "../features/cycle/components/PartResult";
-import PreviousEvidence, { type EvidenceLocation } from "../features/cycle/components/PreviousEvidence";
+import PreviousEvidence, { usePreviousEvidence } from "../features/cycle/components/PreviousEvidence";
 import { errorText } from "../lib/errors";
 import {
   cycleApi,
@@ -36,7 +36,7 @@ export default function InspectPage() {
   const [view, setView] = useState<"image" | "part">("image");
   const [diagnostics, setDiagnostics] = useState<DiagnosticGroup | null>(null);
   const [seqSelection, setSeqSelection] = useState<{ scope: string; seq: number; camera?: number } | null>(null);
-  const [lastEvidence, setLastEvidence] = useState<EvidenceLocation | null>(null);
+  const { lastEvidence, setLastEvidence } = usePreviousEvidence();
   const [pendingRecipe, setPendingRecipe] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState("");
   const [action, setAction] = useState<"switch" | null>(null);

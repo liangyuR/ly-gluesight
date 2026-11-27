@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { createContext, useContext, useLayoutEffect, useRef, useState, type PropsWithChildren } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button, Card, IconButton } from "qing-steel";
 import { X } from "lucide-react";
@@ -7,12 +7,28 @@ import { historyReturnSearch } from "../../history/returnContext";
 import type { HistoryDetailState } from "../../history/types";
 import { errorText } from "../../../lib/errors";
 
-export interface EvidenceLocation {
+interface EvidenceLocation {
   cycleId: string;
   sn: string;
   seq: number;
   camera?: number;
   cameraName?: string;
+}
+
+const PreviousEvidenceContext = createContext<{
+  lastEvidence: EvidenceLocation | null;
+  setLastEvidence: (location: EvidenceLocation | null) => void;
+} | null>(null);
+
+export function PreviousEvidenceProvider({ children }: PropsWithChildren) {
+  const [lastEvidence, setLastEvidence] = useState<EvidenceLocation | null>(null);
+  return <PreviousEvidenceContext.Provider value={{ lastEvidence, setLastEvidence }}>{children}</PreviousEvidenceContext.Provider>;
+}
+
+export function usePreviousEvidence() {
+  const state = useContext(PreviousEvidenceContext);
+  if (!state) throw new Error("在线证据状态未初始化");
+  return state;
 }
 
 export default function PreviousEvidence({ evidence, onDismiss }: { evidence: EvidenceLocation; onDismiss: () => void }) {

@@ -1,17 +1,17 @@
-import { useState } from "react";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
-import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { useState, type ReactElement } from "react";
+import { act, render as renderUi, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TitlebarSlotsContext } from "../src/layout/TitlebarContent";
+import HistoryDetailPage from "../src/pages/HistoryDetailPage";
 import InspectPage from "../src/pages/InspectPage";
-import PreviousEvidence from "../src/features/cycle/components/PreviousEvidence";
+import PreviousEvidence, { PreviousEvidenceProvider } from "../src/features/cycle/components/PreviousEvidence";
 import { cycleApi, recipeApi, useCycle, useLayout } from "../src/features/cycle/api";
 import { burstImageApi } from "../src/features/workspace/burstImages";
 import { historyApi } from "../src/features/history/api";
-import type { HistoryDetailState } from "../src/features/history/types";
 import { plcApi } from "../src/features/plc/api";
-import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, frameMetrics, readiness, snapshot } from "./fixtures";
+import { burstJudgement, burstPartDetail, burstRecipe, burstSummary, burstWorkspaceView, frameMetrics, readiness, snapshot } from "./fixtures";
 import { burstPartView, burstResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
 import type { Readiness, Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
@@ -31,6 +31,7 @@ let state: Snapshot, layout: Recipe | null;
 let recipeList: RecipeSummary[];
 let report: Readiness;
 let values: Record<string, PointValue>;
+const render = (ui: ReactElement) => renderUi(ui, { wrapper: PreviousEvidenceProvider });
 const recipe = (id = "A") => burstRecipe({ id, name: `段配方 ${id}` });
 const candidate = (id = "A") => burstWorkspaceView(recipe(id));
 beforeEach(() => {
@@ -215,14 +216,17 @@ describe("在线检测段配方", () => {
     expect(screen.queryByRole("button", { name: "返回当前帧组" })).not.toBeInTheDocument();
   });
 
-  it("从完整性明细定位后遇到相同 SN 的下一件 → 继续跟随并可重试打开上一件历史帧", async () => {
+  it("从完整性明细定位后换件 → 在线跟随新件并保留可清除的历史回查位置", async () => {
     const previous = state.part!;
     vi.spyOn(historyApi, "idByCycle").mockResolvedValueOnce(null)
       .mockImplementation(async cycleId => cycleId === previous.cycleId ? 41 : 73);
+    const detail = burstPartDetail();
+    vi.spyOn(historyApi, "overview").mockResolvedValue({ ...detail, burst: null,
+      summary: { ...detail.summary, id: 41, sn: previous.sn, cycleId: previous.cycleId } });
+    vi.spyOn(historyApi, "neighbors").mockResolvedValue({ older: null, newer: null });
     function Destination() {
-      const { pathname, search, state: detailState } = useLocation();
-      const back = (detailState as HistoryDetailState).returnTo!;
-      return <><output aria-label="历史定位">{pathname}{search}</output><Link to={back.path}>{back.label}</Link></>;
+      const { pathname, search } = useLocation();
+      return <><output aria-label="历史定位">{pathname}{search}</output><HistoryDetailPage /></>;
     }
     const renderApp = () => <MemoryRouter initialEntries={["/inspect"]}><Routes>
       <Route path="/inspect" element={<InspectPage />} />
@@ -252,7 +256,16 @@ describe("在线检测段配方", () => {
     expect(await saved.findByRole("status")).toHaveTextContent("历史记录暂不可用");
     await user.click(saved.getByRole("button", { name: "继续查看证据" }));
     expect(await screen.findByLabelText("历史定位")).toHaveTextContent("/history/41?camera=1&seq=5&view=original");
-    await user.click(screen.getByRole("link", { name: "返回在线检测" }));
+    await user.click(await screen.findByRole("button", { name: "返回在线检测" }));
+    expect(screen.getByRole("region", { name: "CAM-2 帧组 12" })).toBeVisible();
+
+    const restored = within(screen.getByRole("region", { name: "上次定位的检测证据" }));
+    expect(restored.getByText(`SN ${previous.sn} · 帧组 5 · CAM-2`)).toBeVisible();
+    await user.click(restored.getByRole("button", { name: "继续查看证据" }));
+    expect(await screen.findByLabelText("历史定位")).toHaveTextContent("/history/41?camera=1&seq=5&view=original");
+    await user.click(await screen.findByRole("button", { name: "返回在线检测" }));
+    await user.click(screen.getByRole("button", { name: "清除回查位置" }));
+    expect(screen.queryByRole("region", { name: "上次定位的检测证据" })).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "CAM-2 帧组 12" })).toBeVisible();
   });
 
