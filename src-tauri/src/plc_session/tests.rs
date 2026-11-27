@@ -264,11 +264,18 @@ async fn part_result_is_taken_by_sequence_and_pc_returns_idle_without_plc_confir
         rig.arrive(seq, sn).await;
         rig.admit().await;
         assert_ne!(rig.plc.get(tag::RESULT_SEQ), seq, "工件结束前不得写结果");
+        assert_eq!(rig.session.part_timing().unwrap().ended_at, None);
         rig.end().await;
+        let timing = rig.session.part_timing().unwrap();
+        assert!(timing.ended_at.is_some());
         rig.session.report(&rig.engine, code, 0).await.unwrap();
         assert_eq!(rig.plc.result(), Some((code as u32, 0)));
         assert_eq!(rig.plc.text(tag::SN_ECHO), sn);
         let events = rig.part_events(seq, sn, "resultWritten").await;
+        assert_eq!(
+            (timing.part_seq, timing.received_at),
+            (seq, events[0]["receivedAt"].as_i64())
+        );
         assert_eq!(
             events.iter().map(|e| &e["event"]).collect::<Vec<_>>(),
             ["received", "ended", "resultWritten"]
@@ -281,6 +288,7 @@ async fn part_result_is_taken_by_sequence_and_pc_returns_idle_without_plc_confir
             (rig.session.phase(), rig.session.pending()),
             (SessionPhase::Idle, false)
         );
+        assert!(rig.session.part_timing().is_none());
     }
     rig.finish().await;
 }

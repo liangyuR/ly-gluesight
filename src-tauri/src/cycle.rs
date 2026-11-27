@@ -26,7 +26,9 @@ use crate::history;
 use crate::judge::{fault, Judgement, Verdict};
 use crate::measure::{self, FrameJob, FrameMeasured, FramePool};
 use crate::plc::PlcHost;
-use crate::plc_session::{PartSite, PlcSession, SessionEvent, SessionPhase, SessionView};
+use crate::plc_session::{
+    PartSite, PartTiming, PlcSession, SessionEvent, SessionPhase, SessionView,
+};
 use crate::recipe::{Recipe, RecipeStore, TriggerMode};
 use crate::recorder::{Recorder, Recorders, Recording};
 use crate::recording_health::{AlarmChange, RecordingAlarm, RecordingHealth};
@@ -202,11 +204,30 @@ pub struct ResultView {
     pub recipe_id: Option<String>,
     pub ts: i64,
     pub drain_ms: Option<u64>,
+    pub plc_write: Option<PlcWriteTrace>,
     #[serde(flatten)]
     pub judgement: Judgement,
     /// 段配方的判定；有值时 judgement 的 verdict / plc_code / fault_code / reason 与它相同。没有配方（拒收）时为 None
     pub burst: Option<BurstJudgement>,
     pub mode: crate::store::PartMode,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlcWriteState {
+    Written,
+    Failed,
+    NotWritten,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlcWriteTrace {
+    #[serde(flatten)]
+    timing: PartTiming,
+    state: PlcWriteState,
+    updated_at: i64,
+    message: Option<String>,
 }
 
 /// 当日计数，跨天清零。
@@ -2505,6 +2526,7 @@ impl Machine {
         } else {
             (judgement.plc_code, judgement.fault_code)
         };
+        let timing = self.s7.part_timing();
         let sent = self.s7.report(plc(&app), code, fault_code).await;
         drain_ms = sent
             .as_ref()
@@ -2523,6 +2545,16 @@ impl Machine {
                 .err()
                 .map(|error| format!("回写 PLC 失败：{error}")),
         };
+        let plc_write = timing.map(|timing| PlcWriteTrace {
+            timing,
+            state: if sent.is_ok() {
+                PlcWriteState::Written
+            } else {
+                PlcWriteState::Failed
+            },
+            updated_at: delivery.updated_at,
+            message: delivery.message.clone(),
+        });
         match self.current_cycle_id.as_deref() {
             Some(id) => host(&app).audit.submission(id, delivery, drain_ms),
             None => log("err", "PLC 交付", "缺少工件身份，交付状态未记录"),
@@ -2565,6 +2597,7 @@ impl Machine {
             recipe_id,
             ts: now_ms(),
             drain_ms,
+            plc_write,
             judgement,
             burst,
             mode,
@@ -2864,16 +2897,23 @@ impl Machine {
             };
             let judgement = Judgement::error(code, format!("{reason}，结果未回写"));
             self.count(judgement.verdict);
+            let delivery = PlcDelivery {
+                state: PlcDeliveryState::Failed,
+                updated_at: now_ms(),
+                message: Some(reason.to_owned()),
+            };
+            let plc_write = self.s7.part_timing().map(|timing| PlcWriteTrace {
+                timing,
+                state: PlcWriteState::NotWritten,
+                updated_at: delivery.updated_at,
+                message: delivery.message.clone(),
+            });
             if let Err(error) = self.record(
                 &sn,
                 self.part.as_ref().map(|p| p.recipe.id.clone()).as_deref(),
                 &judgement,
                 None,
-                PlcDelivery {
-                    state: PlcDeliveryState::Failed,
-                    updated_at: now_ms(),
-                    message: Some(reason.to_owned()),
-                },
+                delivery,
             ) {
                 log("err", "中断工件审计持久化失败", error);
             }
@@ -2894,6 +2934,7 @@ impl Machine {
                 recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()),
                 ts: now_ms(),
                 drain_ms: None,
+                plc_write,
                 judgement,
                 burst,
                 mode,
