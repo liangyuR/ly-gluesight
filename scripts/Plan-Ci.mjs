@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 export function selectValidation(paths, event) {
   return {
     required: event === "workflow_dispatch" || paths.some((path) => path !== "README.md" && !path.startsWith("docs/")),
-    rustFormat: paths.some((path) => path.endsWith(".rs")),
+    rustFormat: paths.some((path) => path.endsWith(".rs") || path === "rust-toolchain.toml" || path.endsWith("rustfmt.toml")),
   };
 }
 

@@ -78,8 +78,12 @@ jobs:
         run: |
           git diff --check $env:FORMAT_BASE $env:GITHUB_SHA
           if ($LASTEXITCODE -ne 0) { throw 'Changed files contain whitespace errors.' }
-          node scripts/Check-RustFormat.mjs --base $env:FORMAT_BASE --head $env:GITHUB_SHA
-          if ($LASTEXITCODE -ne 0) { throw 'Incremental Rust format check failed.' }
+          if ('${{ needs.changes.outputs.rust-format }}' -eq 'true') {
+            foreach ($manifest in 'src-tauri/Cargo.toml', 'tools/production-simulator/Cargo.toml') {
+              cargo fmt --check --manifest-path $manifest
+              if ($LASTEXITCODE -ne 0) { throw "Rust format check failed: $manifest. Run cargo fmt." }
+            }
+          }
       - name: CI routing regression
         if: matrix.shard == 1
         run: node --test scripts/Plan-Ci.test.mjs
