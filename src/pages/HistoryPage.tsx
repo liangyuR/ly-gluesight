@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CompositionEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Download, History, Package, PackageOpen, RefreshCw, Scale, Tag, Trash2 } from "lucide-react";
 import { Alert, Button, Card, Chip, EmptyState, IconButton, Pagination, SegmentedControl, Select, Stack, StatusBadge, Table, Text, TextField, type TableColumn } from "qing-steel";
@@ -11,8 +11,10 @@ import { flagBadges } from "../features/plan/vis";
 import { commonHistoryTags, displayReason, formatTime, HistoryExportDialog, HistoryImportDialog, HistoryRecordDialog, historyApi, partVerdict, RejudgeDialog, triggerModeLabel, verdictGroups, type HistoryDeleted, type HistoryDetailState, type HistoryListState, type HistoryListView, type HistoryPackagePreview, type HistoryPage as Page, type HistoryQuery, type PartMode } from "../features/history";
 
 type Item = Page["items"][number];
+type TextFilters = { sn: string; tag: string };
 
 const PAGE = 50;
+const TEXT_FILTER_DELAY_MS = 250;
 const DEFAULT_RANGE = "7d";
 const ranges: [string, string, number | null][] = [
   ["today", "今天", 0],
@@ -62,8 +64,8 @@ export default function HistoryPage() {
   const [range, setRange] = useState(restored?.range ?? (filter ? "all" : DEFAULT_RANGE));
   const [groups, setGroups] = useState<string[]>(restored?.groups ?? filter?.groups ?? []);
   const [mode, setMode] = useState(restored?.mode ?? modeOptions.find((m) => m.modes.join() === (filter?.modes ?? []).join())?.value ?? "all");
-  const [sn, setSn] = useState(restored?.sn ?? "");
-  const [tag, setTag] = useState(restored?.tag ?? "");
+  const [draft, setDraft] = useState<TextFilters>(() => ({ sn: restored?.sn ?? "", tag: restored?.tag ?? "" }));
+  const [{ sn, tag }, setAppliedText] = useState(draft);
   const [recipeId, setRecipeId] = useState(restored?.recipeId ?? filter?.recipeId ?? "");
   const [project, setProject] = useState(restored?.project ?? (filter?.currentProject ? CURRENT_PROJECT : ""));
   const [offset, setOffset] = useState(restored?.offset ?? 0);
@@ -89,6 +91,8 @@ export default function HistoryPage() {
   const resultsBody = useRef<HTMLDivElement>(null);
   const restoreRecord = useRef(initial?.focusRecordId);
   const visibleFocusedRecord = useRef<HTMLButtonElement | null>(null);
+  const textTimer = useRef<number | undefined>(undefined);
+  const composingText = useRef(false);
   const setMutationBusy = useCallback((busy: boolean) => { mutationBusy.current = busy; }, []);
 
   const currentId = projects.current?.id ?? null;
@@ -113,14 +117,48 @@ export default function HistoryPage() {
   const scope = useMemo(() => ({ query, view, projectBlocked }), [query, view, projectBlocked]);
   const currentScope = useRef(scope);
   const activeLoad = useRef<{ scope: typeof scope; pending: boolean } | null>(null);
-  const stale = result?.query !== query || result.view !== view;
-  const page = result && !(stale && (error || projectBlocked)) ? result.page : null;
+  const draftPending = draft.sn !== sn || draft.tag !== tag;
+  const staleView = result?.query !== query || result.view !== view;
+  const stale = draftPending || staleView;
+  const page = result && !(staleView && (error || projectBlocked)) ? result.page : null;
   const counts = page?.verdictFacets ?? page?.counts ?? null;
   const countedTotal = counts ? counts.ok + counts.excursion + counts.ng + counts.err : 0;
   const pending = stale && !!page;
-  const hasFilters = range !== DEFAULT_RANGE || groups.length > 0 || mode !== "all" || !!sn || !!tag || !!recipeId || !!project;
+  const hasFilters = range !== DEFAULT_RANGE || groups.length > 0 || mode !== "all" || !!draft.sn || !!draft.tag || !!recipeId || !!project;
+  const applyText = useCallback((next: TextFilters) => {
+    window.clearTimeout(textTimer.current);
+    setAppliedText(next);
+    setOffset(0);
+  }, []);
+  const setText = (field: keyof TextFilters, value: string) => setDraft(previous => ({ ...previous, [field]: value }));
+  const inputProps = (field: keyof TextFilters) => ({
+    value: draft[field],
+    onChange: (e: ChangeEvent<HTMLInputElement>) => setText(field, e.currentTarget.value),
+    onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter" && !e.nativeEvent.isComposing && !composingText.current && draftPending) applyText(draft);
+    },
+    onCompositionStart: () => {
+      composingText.current = true;
+      window.clearTimeout(textTimer.current);
+    },
+    onCompositionEnd: (e: CompositionEvent<HTMLInputElement>) => {
+      composingText.current = false;
+      setText(field, e.currentTarget.value);
+    },
+  });
+  const changeFilter = (change: () => void) => {
+    change();
+    applyText(draft);
+  };
+  const selectTag = (value: string) => {
+    const next = { ...draft, tag: value };
+    setDraft(next);
+    applyText(next);
+  };
   const resetFilters = () => {
-    setRange(DEFAULT_RANGE); setGroups([]); setMode("all"); setSn(""); setTag(""); setRecipeId(""); setProject(""); setOffset(0);
+    const empty = { sn: "", tag: "" };
+    setDraft(empty); applyText(empty);
+    setRange(DEFAULT_RANGE); setGroups([]); setMode("all"); setRecipeId(""); setProject("");
   };
   const openRecord = (id: number) => go(`/history/${id}`, {
     state: { query: result?.query ?? query, listView: result?.view ?? view, listRecordId: id } satisfies HistoryDetailState,
@@ -133,14 +171,14 @@ export default function HistoryPage() {
     if (focused && focused === document.activeElement) {
       focused.scrollIntoView?.({ block: "nearest", inline: "nearest" });
     }
-    if (view !== entryView.current) restoreRecord.current = undefined;
+    if (view !== entryView.current || draftPending) restoreRecord.current = undefined;
     const id = restoreRecord.current;
     if (id == null || !page || stale) return;
     restoreRecord.current = undefined;
     const opener = resultsBody.current?.querySelector<HTMLButtonElement>(`button[data-history-id="${id}"]`);
     opener?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
     opener?.focus({ preventScroll: true });
-  }, [page, stale, view]);
+  }, [page, stale, view, draftPending]);
   useLayoutEffect(() => {
     alive.current = true;
     return () => {
@@ -148,6 +186,13 @@ export default function HistoryPage() {
       if (activeLoad.current) activeLoad.current.pending = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!draftPending || composingText.current) return;
+    const timer = window.setTimeout(() => applyText(draft), TEXT_FILTER_DELAY_MS);
+    textTimer.current = timer;
+    return () => window.clearTimeout(timer);
+  }, [applyText, draft, draftPending]);
 
   useEffect(() => {
     setExported(null);
@@ -222,7 +267,7 @@ export default function HistoryPage() {
   };
 
   const exportCsv = async () => {
-    if (exportPending.current || loading || !page?.total) return;
+    if (exportPending.current || loading || stale || !page?.total) return;
     exportPending.current = true;
     setExporting(true); setExported(null); setOperationError("");
     const scope = query;
@@ -293,7 +338,7 @@ export default function HistoryPage() {
     {
       key: "tags",
       header: "人工 Tag",
-      render: (p) => <div className="hist-tags">{(p.tags ?? []).map(value => <Chip key={value} onClick={() => { setTag(value); setOffset(0); }}>{value}</Chip>)}</div>,
+      render: (p) => <div className="hist-tags">{(p.tags ?? []).map(value => <Chip key={value} onClick={() => selectTag(value)}>{value}</Chip>)}</div>,
     },
     {
       key: "project",
@@ -341,10 +386,10 @@ export default function HistoryPage() {
       <Card className="hist-filters">
         <Stack direction="column" align="stretch" gap={10}>
           <div className="hist-filter-row">
-            <SegmentedControl label="记录日期" options={rangeOptions} value={range} onValueChange={(value) => { setRange(value); setOffset(0); }} />
-            <SegmentedControl label="检测模式" options={modeOptions} value={mode} onValueChange={(value) => { setMode(value); setOffset(0); }} />
-            <TextField id="history-sn" aria-label="历史 SN" className="hist-sn-input" placeholder="筛选 SN" value={sn} onChange={(e) => { setSn(e.target.value); setOffset(0); }} />
-            <TextField id="history-tag" className="hist-tag-input" aria-label="历史 Tag" list="history-common-tags" placeholder="按 Tag 精确筛选" value={tag} onChange={(e) => { setTag(e.target.value); setOffset(0); }} />
+            <SegmentedControl label="记录日期" options={rangeOptions} value={range} onValueChange={value => changeFilter(() => setRange(value))} />
+            <SegmentedControl label="检测模式" options={modeOptions} value={mode} onValueChange={value => changeFilter(() => setMode(value))} />
+            <TextField id="history-sn" aria-label="历史 SN" className="hist-sn-input" placeholder="筛选 SN" {...inputProps("sn")} />
+            <TextField id="history-tag" className="hist-tag-input" aria-label="历史 Tag" list="history-common-tags" placeholder="按 Tag 精确筛选" {...inputProps("tag")} />
             <datalist id="history-common-tags">{commonHistoryTags.map(value => <option key={value} value={value} />)}</datalist>
             <Select
               id="history-project"
@@ -356,7 +401,7 @@ export default function HistoryPage() {
                 { value: CURRENT_PROJECT, label: projects.current ? `当前项目（${projects.current.name}）` : "当前项目" },
                 ...(projects.entries ?? []).filter((e) => e.id !== currentId).map((e) => ({ value: e.id, label: `${projectLabel(e)} · ${e.id}` })),
               ]}
-              onValueChange={(value) => { setProject(value); setOffset(0); }}
+              onValueChange={value => changeFilter(() => setProject(value))}
             />
             <Select
               id="history-recipe"
@@ -364,7 +409,7 @@ export default function HistoryPage() {
               className="hist-recipe"
               value={recipeId}
               options={[{ value: "", label: "全部配方" }, ...recipes.map((r) => ({ value: r.id, label: r.id }))]}
-              onValueChange={(value) => { setRecipeId(value); setOffset(0); }}
+              onValueChange={value => changeFilter(() => setRecipeId(value))}
             />
             {hasFilters && <Button variant="text" size="sm" onClick={resetFilters}>重置筛选</Button>}
           </div>
@@ -377,7 +422,7 @@ export default function HistoryPage() {
                     key={g.key}
                     selected={groups.includes(g.key)}
                     className={`hist-chip g-${g.key}`}
-                    onClick={() => { setGroups(groups.includes(g.key) ? groups.filter((x) => x !== g.key) : [...groups, g.key]); setOffset(0); }}
+                    onClick={() => changeFilter(() => setGroups(groups.includes(g.key) ? groups.filter(x => x !== g.key) : [...groups, g.key]))}
                   >
                     <span className="hist-dot" aria-hidden="true" />
                     {g.label}
@@ -394,7 +439,7 @@ export default function HistoryPage() {
               </Button>
               <span className="hist-actions-divider" aria-hidden="true" />
               <Button leadingIcon={<PackageOpen size={15} />} onClick={() => void pickPackage()} disabled={picking}>{picking ? "正在读取…" : "导入历史件"}</Button>
-              <IconButton aria-label="刷新" title="刷新" onClick={load} disabled={loading}><RefreshCw size={16} /></IconButton>
+              <IconButton aria-label="刷新" title="刷新" onClick={() => { if (draftPending) applyText(draft); else void load(); }} disabled={loading}><RefreshCw size={16} /></IconButton>
             </div>
           </div>
           <div className="hist-selection-bar" data-active={selected.length > 0 || undefined} role="toolbar" aria-label="已选历史件操作">
@@ -406,7 +451,7 @@ export default function HistoryPage() {
           </div>
           {notice && <Alert tone={notice.warnings.length ? "warn" : "ok"}>{notice.message}{notice.warnings.length > 0 && <ul className="hist-package-list">{notice.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}</Alert>}
           {loading && stale && <Text variant="label" muted role="status">正在加载历史记录…</Text>}
-          {exported && (
+          {exported && !draftPending && (
             <Alert tone="ok" action={<Button variant="text" size="sm" disabled={revealing} onClick={() => void reveal()}>{revealing ? "正在打开…" : "打开所在文件夹"}</Button>}>
               已导出：<span className="mono">{exported}</span>
             </Alert>
@@ -418,7 +463,7 @@ export default function HistoryPage() {
       </Card>
 
       <Card className="hist-results">
-        <div ref={resultsBody} className={`hist-results-body${pending ? " is-loading" : ""}`} aria-busy={loading} onClick={openRow}>
+        <div ref={resultsBody} className={`hist-results-body${pending ? " is-loading" : ""}`} aria-busy={loading || draftPending} onClick={openRow}>
           <Table<Item>
             className="hist-table"
             caption="历史记录"
@@ -441,7 +486,7 @@ export default function HistoryPage() {
             page={offset / PAGE + 1}
             pageSize={PAGE}
             pageSizeOptions={[PAGE]}
-            disabled={loading}
+            disabled={loading || draftPending}
             onPageChange={(next) => setOffset((next - 1) * PAGE)}
           />
         )}

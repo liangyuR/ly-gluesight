@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -21,6 +21,85 @@ const emitHistory = (event: string, payload: number | number[]) => {
   const handler = vi.mocked(listen).mock.calls.filter(([name]) => name === event).at(-1)?.[1];
   act(() => handler?.({ event, id: 1, payload }));
 };
+
+function mockTextFilteredHistory() {
+  const records = [burstPartSummary(1), { ...burstPartSummary(2), tags: ["待复核"] }];
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "project_current") return projects[0].meta;
+    if (command === "project_list") return projects;
+    if (command === "history_query") {
+      const { sn, tag } = (args as { query: HistoryQuery }).query;
+      return page(records.filter(item => (!sn || item.sn.includes(sn)) && (!tag || item.tags?.includes(tag))));
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+}
+
+it("文本筛选仅应用最终输入，回车立即查询一次，等待期间禁用旧结果导出", async () => {
+  mockTextFilteredHistory();
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await row(1);
+  const exportCsv = () => screen.getByRole("button", { name: "导出 CSV" });
+  await waitFor(() => expect(exportCsv()).toBeEnabled());
+  const start = queries().length;
+  const subsequentQueries = () => queries().slice(start);
+  const sn = screen.getByLabelText("历史 SN");
+  const tag = screen.getByLabelText("历史 Tag");
+
+  vi.useFakeTimers();
+  try {
+    fireEvent.change(sn, { target: { value: "SN-" } });
+    expect(exportCsv()).toBeDisabled();
+    await act(() => vi.advanceTimersByTimeAsync(150));
+    fireEvent.change(sn, { target: { value: "SN-102" } });
+    expect(sn).toHaveValue("SN-102");
+    await act(() => vi.advanceTimersByTimeAsync(249));
+    expect(subsequentQueries()).toEqual([]);
+
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    const snQuery = expect.objectContaining({ sn: "SN-102", offset: 0 });
+    expect(subsequentQueries()).toEqual([snQuery]);
+    expect(screen.getByRole("button", { name: "查看 SN SN-102 的记录" })).toBeVisible();
+    expect(exportCsv()).toBeEnabled();
+
+    fireEvent.change(tag, { target: { value: "待复核" } });
+    expect(exportCsv()).toBeDisabled();
+    expect(subsequentQueries()).toEqual([snQuery]);
+    await act(async () => { fireEvent.keyDown(tag, { key: "Enter", code: "Enter" }); });
+    const tagQuery = expect.objectContaining({ sn: "SN-102", tag: "待复核", offset: 0 });
+    expect(subsequentQueries()).toEqual([snQuery, tagQuery]);
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(subsequentQueries()).toEqual([snQuery, tagQuery]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("中文 Tag 合成期间暂停或按确认键 → 只在合成结束后查询最终文字", async () => {
+  mockTextFilteredHistory();
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await row(1);
+  const start = queries().length;
+  const tag = screen.getByLabelText("历史 Tag");
+
+  vi.useFakeTimers();
+  try {
+    fireEvent.compositionStart(tag);
+    fireEvent.change(tag, { target: { value: "daifuhe" } });
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    fireEvent.keyDown(tag, { key: "Enter", code: "Enter", isComposing: true });
+    expect(queries().slice(start)).toEqual([]);
+
+    fireEvent.change(tag, { target: { value: "待复核" } });
+    fireEvent.compositionEnd(tag, { data: "待复核" });
+    await act(() => vi.advanceTimersByTimeAsync(250));
+    expect(queries().slice(start)).toEqual([expect.objectContaining({ tag: "待复核", offset: 0 })]);
+    expect(screen.queryByRole("button", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 it("查询在途时连续换筛选 → 只查最后条件，其失败时隐去旧记录", async () => {
   const oldRefresh = deferred<ReturnType<typeof page>>();
