@@ -86,10 +86,9 @@ export function flagBadges(flags: Flags | null | undefined): PlanBadge[] {
   return all.filter(([on]) => on).map(([, badge]) => badge);
 }
 
-/** 一个区域的徽标：偏宽只预警下的预警、不完整组个数、胶偏未判原因、未分段原因。 */
+/** 一个区域的徽标：偏宽只预警下的预警、胶偏未判原因、未分段原因。 */
 export function regionBadges(result: RegionResult): PlanBadge[] {
   const out: PlanBadge[] = (result.warnings ?? []).map(w => ({ key: `warning-${w}`, label: widthWarningText[w], tone: "warn" }));
-  if (result.incompleteGroups.length) out.push({ key: "incomplete", label: `不完整组 ${result.incompleteGroups.length}`, tone: "warn" });
   if (result.offsetUnjudged) out.push({ key: "offsetUnjudged", label: offsetUnjudgedText[result.offsetUnjudged], tone: "neutral" });
   if (result.region.kind.type === "unsegmented") out.push({ key: "unsegmented", label: unsegReasonText[result.region.kind.reason], tone: "neutral" });
   return out;

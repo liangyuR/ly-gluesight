@@ -1,4 +1,5 @@
-import { Button, StatusBadge } from "qing-steel";
+import { useId, useState } from "react";
+import { Button, Pagination, StatusBadge } from "qing-steel";
 import { verdictLabel, verdictTone } from "../../history/meta";
 import type { BurstJudgement, LossAlarm, PathSegment, RegionResult } from "../../plan/types";
 import { expectedText, passCountText, regionBadges, regionKindLabel, regionSegments, uncheckedText, uninspectedText } from "../../plan/vis";
@@ -13,6 +14,54 @@ export function lossAlarmText(alarm: LossAlarm, cameras: string[] = []) {
 }
 
 const mm = (v: number) => v.toFixed(2);
+const INCOMPLETE_PAGE_SIZE = 32;
+
+function groupRange(first: number, last: number) {
+  return first === last ? String(first) : `${first}–${last}`;
+}
+
+function incompleteSummary(sequences: number[]) {
+  let first = sequences[0], last = first;
+  const end = sequences[sequences.length - 1];
+  if (end - first + 1 === sequences.length) return groupRange(first, end);
+  const ranges: string[] = [];
+  for (let index = 1; index < sequences.length; index++) {
+    const next = sequences[index];
+    if (next !== last + 1) {
+      ranges.push(groupRange(first, last));
+      if (ranges.length === 3) return `${ranges.join("、")} 等`;
+      first = next;
+    }
+    last = next;
+  }
+  return [...ranges, groupRange(first, last)].join("、");
+}
+
+function IncompleteGroups({ sequences, region, onSelect }: { sequences: number[]; region: string; onSelect?: (seq: number) => void }) {
+  const [page, setPage] = useState<number | null>(null);
+  const detailId = useId();
+  const expanded = page !== null;
+  const current = Math.min(page ?? 1, Math.ceil(sequences.length / INCOMPLETE_PAGE_SIZE));
+  const start = (current - 1) * INCOMPLETE_PAGE_SIZE;
+  const first = sequences[0];
+  return <div className="region-incomplete" role="group" aria-label={`${region} · 不完整帧组`}>
+    <div className="region-groups">
+      <span className="muted">不完整帧组 {sequences.length} 个 · {incompleteSummary(sequences)}</span>
+      {onSelect && <Button size="sm" variant="tonal" aria-label={`查看首个帧组 ${first}`} onClick={() => onSelect(first)}>定位首个</Button>}
+      {sequences.length > 1 && <Button size="sm" variant="text" aria-expanded={expanded}
+        aria-controls={expanded ? detailId : undefined} onClick={() => setPage(expanded ? null : 1)}>{expanded ? "收起列表" : "展开列表"}</Button>}
+    </div>
+    {expanded && <div id={detailId} className="region-incomplete">
+      <div className="region-groups">
+        {sequences.slice(start, start + INCOMPLETE_PAGE_SIZE).map(seq => onSelect
+          ? <Button key={seq} size="sm" variant="tonal" aria-label={`查看帧组 ${seq}`} onClick={() => onSelect(seq)}>{seq}</Button>
+          : <span key={seq} className="mono">{seq}</span>)}
+      </div>
+      {sequences.length > INCOMPLETE_PAGE_SIZE && <Pagination label={`${region} · 不完整帧组分页`} total={sequences.length}
+        page={current} pageSize={INCOMPLETE_PAGE_SIZE} showPageSize={false} onPageChange={setPage} />}
+    </div>}
+  </div>;
+}
 
 /** 区域覆盖的段：用来写检测区间与全长（段长未知时不写）。 */
 function coveredSegments(region: RegionResult, segments: PathSegment[]) {
@@ -22,6 +71,7 @@ function coveredSegments(region: RegionResult, segments: PathSegment[]) {
 
 function RegionItem({ result, segments, cameras, onSelectGroup }: { result: RegionResult; segments: PathSegment[]; cameras: string[]; onSelectGroup?: (seq: number) => void }) {
   const skipped = result.region.kind.type === "skipped";
+  const name = regionKindLabel(result.region.kind);
   const badges = regionBadges(result);
   const covered = coveredSegments(result, segments);
   const lengths = covered.map(s => s.lengthMm);
@@ -31,7 +81,7 @@ function RegionItem({ result, segments, cameras, onSelectGroup }: { result: Regi
     : result.region.kind.type === "corner" ? "弯道不判" : result.region.kind.type === "skipped" ? "跳过不检" : "—";
   return <li className="region-item" data-tone={skipped ? "neutral" : verdictTone(result.verdict)} data-kind={result.region.kind.type}>
     <div className="region-head">
-      <strong>{regionKindLabel(result.region.kind)}</strong>
+      <strong>{name}</strong>
       <StatusBadge tone={skipped ? "neutral" : verdictTone(result.verdict)}>{skipped ? "生产跳过" : verdictLabel[result.verdict]}</StatusBadge>
     </div>
     {skipped && <p className="muted">不参与判定，测量数据仅供诊断。</p>}
@@ -45,10 +95,7 @@ function RegionItem({ result, segments, cameras, onSelectGroup }: { result: Regi
       <dt>各相机帧数</dt>
       <dd>{result.cameraFrames.map((n, c) => cameras[c] ? `${cameras[c]} ${n}` : String(n)).join(" · ") || "—"}</dd>
     </dl>
-    {!!result.incompleteGroups.length && <div className="region-groups">
-      <span className="muted">不完整的帧组</span>
-      {result.incompleteGroups.map(seq => <Button key={seq} size="sm" variant="tonal" aria-label={`查看帧组 ${seq}`} disabled={!onSelectGroup} onClick={() => onSelectGroup?.(seq)}>{seq}</Button>)}
-    </div>}
+    {!!result.incompleteGroups.length && <IncompleteGroups sequences={result.incompleteGroups} region={name} onSelect={onSelectGroup} />}
     {result.reason && <p className="region-reason">{result.reason}</p>}
     {!!result.mixAlarmGroups?.length && <div className="region-groups">
       <StatusBadge tone="ng">PC 混胶色差报警</StatusBadge>

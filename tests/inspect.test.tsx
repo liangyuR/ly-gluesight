@@ -208,6 +208,43 @@ describe("在线检测段配方", () => {
     expect(screen.queryByRole("region", { name: "CAM-2 帧组 5" })).not.toBeInTheDocument();
   });
 
+  it("长件的不完整帧组以摘要显示 → 展开分页后可定位原帧号，换件重新收起", async () => {
+    const sequences = [2, 3, ...Array.from({ length: 998 }, (_, index) => 6 + index * 2)];
+    const sample = burstJudgement().regions[0];
+    state = burstState({ groupCount: 2000, regions: [{ ...sample, region: { ...sample.region, lastSeq: 2000 },
+      frameCount: 2000, incompleteGroups: sequences }] });
+    const part = state.part!;
+    const template = part.burst.groups[0];
+    const missing = new Set(sequences);
+    part.burst.groupCount = 2000;
+    part.burst.groups = Array.from({ length: 2000 }, (_, index) => {
+      const seq = index + 1;
+      return { ...template, seq, incomplete: missing.has(seq), cells: missing.has(seq) ? [
+        template.cells[0], { status: "missing", verdict: null, frameCounter: null }, template.cells[2],
+      ] : template.cells };
+    });
+    const user = userEvent.setup();
+    const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const incomplete = () => within(screen.getByRole("group", { name: /不完整帧组$/ }));
+    const frameButtons = () => incomplete().queryAllByRole("button", { name: /^查看帧组 \d+$/ });
+    expect(incomplete().getByText("不完整帧组 1000 个 · 2–3、6、8 等")).toBeVisible();
+    expect(frameButtons()).toHaveLength(0);
+    await user.click(incomplete().getByRole("button", { name: "查看首个帧组 2" }));
+    expect(screen.getByRole("region", { name: "CAM-1 帧组 2" })).toBeVisible();
+
+    await user.click(incomplete().getByRole("button", { name: "展开列表" }));
+    expect(frameButtons()).toHaveLength(32);
+    await user.click(incomplete().getByRole("button", { name: "第 32 页" }));
+    expect(frameButtons()).toHaveLength(8);
+    await user.click(incomplete().getByRole("button", { name: "查看帧组 2000" }));
+    expect(screen.getByRole("region", { name: "CAM-1 帧组 2000" })).toBeVisible();
+
+    state = { ...state, part: { ...part, cycleId: "next" }, result: { ...state.result!, cycleId: "next" } };
+    page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(frameButtons()).toHaveLength(0);
+    expect(incomplete().getByRole("button", { name: "展开列表" })).toBeVisible();
+  });
+
   it("断胶判定有单帧证据 → 从结果定位异常原图并显示对应的实测断胶长度", async () => {
     const burst = burstJudgement();
     burst.regions[0] = { ...burst.regions[0], verdict: "NG_GAP", reason: "断胶" };

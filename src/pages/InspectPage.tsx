@@ -51,6 +51,7 @@ export default function InspectPage() {
   const settled = phase === "IDLE" || phase === "FAULT";
   const candidateResult = settled ? (snapshot?.result ?? null) : null;
   const result = candidateResult && (!part || (candidateResult.cycleId === part.cycleId && candidateResult.recipeId === part.recipeId)) ? candidateResult : null;
+  const resultScope = result ? `${result.cycleId}:${result.ts}` : "current";
   const partResult = result && part && result.cycleId === part.cycleId ? result : null;
   const burst = part?.burst ?? null;
   const burstJudgement = result?.burst ?? null;
@@ -169,7 +170,7 @@ export default function InspectPage() {
         </div>
 
         <aside className="prod-side" aria-label="整件结果">
-          <PartResult key={result ? `${result.cycleId}:${result.ts}` : "current"} phase={phase} result={result} part={part}
+          <PartResult key={resultScope} phase={phase} result={result} part={part}
             segments={burstSegments} onLocate={selectGroup} />
           <Stats snapshot={snapshot} />
           <Progress snapshot={snapshot} result={partResult} onDiagnostics={() => setDiagnostics("capture")} />
@@ -178,7 +179,7 @@ export default function InspectPage() {
               <h3 className="panel-title">检测区域结果</h3>
               <ContextHelp label="区域结果说明">整件按区域（直线、弯道、未分段）分别判；每个区域写帧数、胶宽范围、胶偏或未判原因。未分段区域只跑每帧独立检测、不判胶偏。缺帧只标检测不完整，不改 OK/NG。</ContextHelp>
             </div>
-            <RegionResultPanel judgement={burstJudgement} segments={burstSegments} cameras={burst?.cameras ?? summary?.cameras}
+            <RegionResultPanel key={resultScope} judgement={burstJudgement} segments={burstSegments} cameras={burst?.cameras ?? summary?.cameras}
               expectedTotal={burst ? burst.expectedTotal : undefined} onSelectGroup={burst ? selectGroup : undefined} />
           </Card>
         </aside>

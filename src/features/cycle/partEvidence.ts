@@ -59,12 +59,27 @@ function applicableCameras(region: Region, segment: PathSegment | undefined, cam
   return cameras.flatMap((name, i) => !segment.cameras.length || segment.cameras.includes(name) ? [i] : []);
 }
 
-function incompleteCameras(sequences: readonly number[], groups: ReadonlyMap<number, FrameGroupView>, relevant: readonly number[], names: readonly string[]) {
+// 在线快照按帧号升序生成，正常情况下从 1 连续编号。
+function firstGroupAtOrAfter(groups: readonly FrameGroupView[], seq: number) {
+  let low = 0, high = groups.length;
+  while (low < high) {
+    const mid = low + Math.floor((high - low) / 2);
+    if (groups[mid].seq < seq) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+function incompleteGroupEvidence(sequences: readonly number[], groups: readonly FrameGroupView[], relevant: readonly number[], names: readonly string[]) {
   const findings = new Map<string, CameraCoverageEvidence>();
+  const dense = groups.at(-1)?.seq === groups.length;
+  let firstSeq: number | null = null;
   for (const seq of sequences) {
-    const group = groups.get(seq);
+    const group = groups[dense ? seq - 1 : firstGroupAtOrAfter(groups, seq)];
+    if (group?.seq !== seq) continue;
+    firstSeq ??= seq;
     for (const camera of relevant) {
-      const status = group?.cells[camera]?.status;
+      const status = group.cells[camera]?.status;
       if (!isIncomplete(status)) continue;
       const key = `${camera}:${status}`;
       const finding = findings.get(key);
@@ -72,19 +87,19 @@ function incompleteCameras(sequences: readonly number[], groups: ReadonlyMap<num
       else findings.set(key, { camera, name: names[camera], status, sequences: [seq] });
     }
   }
-  return [...findings.values()];
+  return { cameras: [...findings.values()], firstSeq };
 }
 
 function defectEvidence(region: Region, verdict: Verdict, reason: string, groups: readonly FrameGroupView[], cameras: readonly string[]): DefectEvidence {
   let contextSeq: number | null = null;
   let measuredSeq: number | null = null;
-  for (const group of groups) {
-    if (group.seq < region.firstSeq || group.seq > region.lastSeq) continue;
+  for (let index = firstGroupAtOrAfter(groups, region.firstSeq); index < groups.length; index++) {
+    const group = groups[index];
+    if (group.seq > region.lastSeq) break;
     contextSeq ??= group.seq;
-    if (group.cells.some(cell => cell.status === "measured")) measuredSeq ??= group.seq;
     const camera = group.cells.findIndex((cell, i) => i < cameras.length && cell.status === "measured" && cell.verdict === verdict);
-    if (camera < 0) continue;
-    return { region, verdict, reason, frame: { seq: group.seq, camera, name: cameras[camera] }, locateSeq: group.seq };
+    if (camera >= 0) return { region, verdict, reason, frame: { seq: group.seq, camera, name: cameras[camera] }, locateSeq: group.seq };
+    if (measuredSeq === null && group.cells.some(cell => cell.status === "measured")) measuredSeq = group.seq;
   }
   return { region, verdict, reason, frame: null, locateSeq: measuredSeq ?? contextSeq };
 }
@@ -102,19 +117,20 @@ export function buildPartEvidence(result: ResultView, burst: PartViewBurst | nul
   const defects: DefectEvidence[] = [];
   const groups = burst?.groups ?? [];
   const names = burst?.cameras ?? [];
-  const bySeq = new Map(groups.map(group => [group.seq, group]));
+  const productNg = isNg(result.verdict);
   for (const entry of judgement?.regions ?? []) {
-    const { region } = entry;
-    if (region.kind.type === "skipped") continue;
-    const segmentNumber = region.kind.type === "unsegmented" ? null : region.kind.segment;
-    const segment = segments.find(candidate => candidate.index === segmentNumber);
-    if (entry.incompleteGroups.length) {
-      const sequences = entry.incompleteGroups;
-      const cameras = incompleteCameras(sequences, bySeq, applicableCameras(region, segment, names), names);
-      coverage.affected.push({ region, sequences, cameras, locateSeq: cameras[0]?.sequences[0] ?? sequences.find(seq => bySeq.has(seq)) ?? null });
+    const { region, incompleteGroups: sequences, offsetUnjudged } = entry;
+    const { kind } = region;
+    if (kind.type === "skipped") continue;
+    const segment = kind.type !== "unsegmented" && (sequences.length || offsetUnjudged)
+      ? segments.find(candidate => candidate.index === kind.segment)
+      : undefined;
+    if (sequences.length) {
+      const { cameras, firstSeq } = incompleteGroupEvidence(sequences, groups, applicableCameras(region, segment, names), names);
+      coverage.affected.push({ region, sequences, cameras, locateSeq: cameras[0]?.sequences[0] ?? firstSeq });
     }
-    if (entry.offsetUnjudged) coverage.offsetUnjudged.push({ region, reason: entry.offsetUnjudged, camera: segment?.offsetRef?.camera ?? null });
-    if (isNg(result.verdict) && isNg(entry.verdict)) defects.push(defectEvidence(region, entry.verdict, entry.reason, groups, names));
+    if (offsetUnjudged) coverage.offsetUnjudged.push({ region, reason: offsetUnjudged, camera: segment?.offsetRef?.camera ?? null });
+    if (productNg && isNg(entry.verdict)) defects.push(defectEvidence(region, entry.verdict, entry.reason, groups, names));
   }
   return { coverage, defects };
 }

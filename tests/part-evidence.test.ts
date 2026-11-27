@@ -36,28 +36,39 @@ it("工件判定 OK 且检测不完整 → 按区域保留覆盖问题，只定�
   expect(buildPartEvidence(result, burst, []).coverage.affected[0]).toEqual({
     region: judgement.regions[1].region, sequences: [5, 6], locateSeq: 5, cameras: [],
   });
+  const sparse = { ...burst, groups: burst.groups.filter(group => group.seq !== 5) };
+  expect(buildPartEvidence(result, sparse, [segment]).coverage.affected[0]).toEqual({
+    region: judgement.regions[1].region, sequences: [5, 6], locateSeq: 6, cameras: [],
+  });
 });
 
 it("区域 NG 与单帧 NG 并存 → 区分区域复核起点和同结论的实际异常帧", () => {
   const { burst } = burstPartView();
   const result = burstResult();
   const judgement = result.burst!;
-  const sample = judgement.regions[0];
+  const sample = { ...judgement.regions[0], incompleteGroups: [], offsetUnjudged: null };
   result.verdict = judgement.verdict = "NG_GAP";
   judgement.regions = [
     { ...sample, region: { kind: { type: "skipped", segment: 1 }, firstSeq: 1, lastSeq: 3 }, verdict: "OK" },
     { ...sample, region: { kind: { type: "straight", segment: 1 }, firstSeq: 4, lastSeq: 7 }, verdict: "NG_WIDTH", reason: "胶宽不均" },
-    { ...sample, region: { kind: { type: "straight", segment: 2 }, firstSeq: 8, lastSeq: 12 }, verdict: "NG_GAP", reason: "断胶" },
+    { ...sample, region: { kind: { type: "straight", segment: 2 }, firstSeq: 8, lastSeq: 8 }, verdict: "NG_GAP", reason: "断胶" },
+    { ...sample, region: { kind: { type: "straight", segment: 3 }, firstSeq: 9, lastSeq: 10 }, verdict: "NG_GAP", reason: "断胶" },
+    { ...sample, region: { kind: { type: "straight", segment: 4 }, firstSeq: 11, lastSeq: 12 }, verdict: "NG_WIDTH", reason: "胶宽不均" },
   ];
   burst.groups[1].cells[0].verdict = "NG_WIDTH";
   burst.groups[8].cells[1].verdict = "NG_GAP";
   burst.groups[9].cells[0].verdict = "NG_GAP";
-  burst.groups = burst.groups.filter(group => group.seq !== 4);
+  for (const index of [4, 10, 11]) {
+    burst.groups[index].cells = burst.groups[index].cells.map(() => ({ status: "missing", verdict: null, frameCounter: null }));
+  }
+  burst.groups = burst.groups.filter(group => group.seq !== 4 && group.seq !== 8);
 
   const evidence = buildPartEvidence(result, burst, [pathSegment(1, "straight"), pathSegment(2, "straight")]);
 
   expect(evidence.defects).toEqual([
-    { region: judgement.regions[1].region, verdict: "NG_WIDTH", reason: "胶宽不均", frame: null, locateSeq: 5 },
-    { region: judgement.regions[2].region, verdict: "NG_GAP", reason: "断胶", frame: { seq: 9, camera: 1, name: "CAM-2" }, locateSeq: 9 },
+    { region: judgement.regions[1].region, verdict: "NG_WIDTH", reason: "胶宽不均", frame: null, locateSeq: 6 },
+    { region: judgement.regions[2].region, verdict: "NG_GAP", reason: "断胶", frame: null, locateSeq: null },
+    { region: judgement.regions[3].region, verdict: "NG_GAP", reason: "断胶", frame: { seq: 9, camera: 1, name: "CAM-2" }, locateSeq: 9 },
+    { region: judgement.regions[4].region, verdict: "NG_WIDTH", reason: "胶宽不均", frame: null, locateSeq: 11 },
   ]);
 });
