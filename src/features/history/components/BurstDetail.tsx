@@ -241,17 +241,34 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   useEffect(() => {
     let live = true;
     const mine = ++serial.current;
+    const initialChoice = comparisonRequest.current;
+    const active = () => live && mine === serial.current;
     setSaved([]);
-    // 列出这件记录所有候选的对照（不只记录所属配方的）
-    void workspaceApi.comparisonSummaries(s.id).then(async v => {
-      if (!live || mine !== serial.current) return;
-      setSaved(v);
-      const target = wanted && v.find(c => c.id === wanted);
-      if (target) {
-        const result = await workspaceApi.comparisonGet(s.id, target.id);
-        if (live && mine === serial.current) setComparison(previous => previous ?? result);
+    const load = async () => {
+      if (wanted) {
+        try {
+          const result = await workspaceApi.comparisonGet(s.id, wanted);
+          if (active() && comparisonRequest.current === initialChoice) {
+            setComparison(previous => previous ?? result);
+            setSaved([comparisonSummary(result)]);
+          }
+        } catch (e) {
+          if (active() && comparisonRequest.current === initialChoice) setError(errorText(e));
+        }
       }
-    }).catch(e => live && mine === serial.current && setError(errorText(e))).finally(() => live && setSettled(true));
+      if (!live) return;
+      setSettled(true);
+      try {
+        const summaries = await workspaceApi.comparisonSummaries(s.id);
+        if (live) {
+          const ids = new Set(summaries.map(summary => summary.id));
+          setSaved(previous => [...previous.filter(summary => !ids.has(summary.id)), ...summaries]);
+        }
+      } catch (e) {
+        if (active()) setError(errorText(e));
+      }
+    };
+    void load();
     return () => { live = false; };
   }, [s.id, s.recipeId, ws.data?.workspace.revision, wanted]);
 

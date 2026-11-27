@@ -10,7 +10,7 @@ import { burstImageApi } from "../src/features/workspace/burstImages";
 import { useWorkspace } from "../src/features/workspace/context";
 import { scheduleFrameRead } from "../src/features/workspace/previewCache";
 import * as desktop from "../src/lib/desktop";
-import { burstJudgement, burstPartDetail, burstWorkspaceView, frameMetrics, workspaceState } from "./fixtures";
+import { burstJudgement, burstPartDetail, burstWorkspaceView, deferred, frameMetrics, workspaceState } from "./fixtures";
 import type { Comparison } from "../src/features/workspace/types";
 import type { HistoryDetailState } from "../src/features/history/types";
 
@@ -371,6 +371,31 @@ describe("历史详情（段配方记录）", () => {
     expect(await screen.findByText("1 / 1 个区域与原结果不同", { exact: false })).toBeVisible();
     const row = within(screen.getByRole("table", { name: "逐区域比对" })).getAllByRole("row")[1];
     expect(row).toHaveTextContent(/段 1–3 · 未分段.*OK.*NG · 胶宽超差.*结论.*不同/);
+  });
+
+  it("打开指定对照链接 → 先显示判定并请求对应帧的叠图", async () => {
+    const burst = detail.burst!;
+    const target: Comparison = { ...comparison(), source: "raw", burst: {
+      segments: burst.segments, cameras: burst.cameras, expectedTotal: burst.expectedTotal, judgement: burst.judgement,
+      frames: burst.frames.flatMap(frame => frame.metrics ? [frame.metrics] : []),
+    } };
+    const inventory = deferred<Comparison[]>();
+    const newer = { ...comparison(), id: "compare-new", judgement: { ...detail.judgement, reason: "列表等待期间的新复测" } };
+    vi.mocked(workspaceApi.comparisonGet).mockResolvedValue(target);
+    vi.mocked(workspaceApi.comparisonSummaries).mockReturnValue(inventory.promise);
+    vi.mocked(workspaceApi.compare).mockResolvedValue(newer);
+    show("/history/1?comparison=compare-1&seq=2");
+
+    expect(await screen.findByText("候选原图复测整件判定")).toBeVisible();
+    await waitFor(() => expect(workspaceApi.recordFrameView).toHaveBeenCalledWith(detail.summary.id, target.id, 0, 2, expect.any(AbortSignal)));
+    expect(workspaceApi.historyFrameView).not.toHaveBeenCalled();
+
+    await userEvent.click(await screen.findByRole("button", { name: "按候选规则重判" }));
+    expect(await screen.findByText("列表等待期间的新复测")).toBeVisible();
+    await act(async () => inventory.resolve([target, { ...comparison(), id: "compare-2" }]));
+    const picker = screen.getByLabelText<HTMLSelectElement>("已保存对照结果", { selector: "select" });
+    expect(picker).toHaveValue(newer.id);
+    expect(Array.from(picker.options, option => option.value)).toEqual(["", newer.id, target.id, "compare-2"]);
   });
 
   it("从试测“看详情”带对照进入 → 帧组与整件判定按对照的逐帧指标显示，原图上的测站与胶宽折线联动，可切回原始记录", async () => {
