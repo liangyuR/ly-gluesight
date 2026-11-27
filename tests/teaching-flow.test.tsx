@@ -174,6 +174,25 @@ it("走廊自动保存期间开启逐帧定向 → 保存结果回来开关保�
   expect(saves[1].revision).toBe(saves[0].revision + 1);
 });
 
+it("按点距重排遇到等距拐点 → 保留先出现的点，并按新的点距保存", async () => {
+  const candidate = corridorCandidate(inspect => {
+    inspect.segments = [{ segment: 1, corridor: [[10, 10], [30, 11], [34, 11], [70, 10]] }];
+  });
+  mockSite(candidate, { workspace_save_doc: savingDoc(candidate) });
+  renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
+  fireEvent.change(screen.getByRole("spinbutton", { name: "走廊点间距" }), { target: { value: "20" } });
+  fireEvent.click(screen.getByRole("button", { name: "应用到当前走廊" }));
+
+  const expected = [[10, 10], [20, 10.5], [30, 11], [43.3, 10.7], [56.7, 10.3], [70, 10]];
+  expect(image.querySelector('[aria-label="中线叠加"] polyline')).toHaveAttribute("points", expected.map(point => point.join(",")).join(" "));
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(await screen.findByText("草稿已保存")).toBeVisible();
+  const saves = calls("workspace_save_doc") as { doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(saves.map(save => save.doc.inspect![1].segments)).toEqual([[{ segment: 1, corridor: expected }]]);
+});
+
 it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在这一段的示教帧上提取一次", async () => {
   stubSvgPointer({ pointerEvent: true });
   const candidate = corridorCandidate();
