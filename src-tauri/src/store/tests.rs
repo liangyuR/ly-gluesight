@@ -29,6 +29,36 @@ impl Drop for TestDb {
 }
 
 #[test]
+fn appending_a_recipe_revision_accepts_legacy_fields_and_rechecks_changed_snapshots() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let append = |cycle| store.insert(&burst_part(&recipe, cycle, &judgement, &burst));
+    append("snapshot-first").unwrap();
+    append("snapshot-unchanged").unwrap();
+
+    let conn = Connection::open(db.path()).unwrap();
+    conn.execute(
+        "UPDATE recipe_snapshots SET json = json_set(json, '$.planVersion', 14)
+         WHERE project_id = ?1 AND revision_id = ?2",
+        params![store.project(), recipe.revision_id],
+    )
+    .unwrap();
+    append("snapshot-legacy").unwrap();
+
+    conn.execute(
+        "UPDATE recipe_snapshots SET json = json_set(json, '$.name', '另一份配方')
+         WHERE project_id = ?1 AND revision_id = ?2",
+        params![store.project(), recipe.revision_id],
+    )
+    .unwrap();
+    assert!(append("snapshot-conflicting").is_err());
+    assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 3);
+}
+
+#[test]
 fn manual_tags_survive_reopen_and_keep_history_filter_counts_neighbors_and_rejudge_aligned() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

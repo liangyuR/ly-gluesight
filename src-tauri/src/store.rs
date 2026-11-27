@@ -380,10 +380,16 @@ pub struct StoredMeasurement {
 
 pub struct Store {
     conn: Mutex<Connection>,
+    checked_recipe_snapshot: Mutex<Option<CheckedRecipeSnapshot>>,
     path: PathBuf,
     backup_path: Option<PathBuf>,
     /// 当前项目：新记录归它，统计与候选实例按它
     project: String,
+}
+
+struct CheckedRecipeSnapshot {
+    stored_json: String,
+    recipe_json: String,
 }
 
 fn verdict_str(v: Verdict) -> String {
@@ -1032,6 +1038,7 @@ impl Store {
         }
         Ok(Self {
             conn: Mutex::new(conn),
+            checked_recipe_snapshot: Mutex::new(None),
             path: path.to_path_buf(),
             backup_path,
             project: project.into(),
@@ -1151,28 +1158,36 @@ impl Store {
         }
         if let Some(recipe) = r.recipe {
             let json = serde_json::to_string(recipe).map_err(|e| e.to_string())?;
-            let previous: Option<(String, u32, String)> = tx.query_row(
-                "SELECT recipe_id,version,json FROM recipe_snapshots WHERE project_id = ?1 AND revision_id = ?2", params![self.project, recipe.revision_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            ).optional().map_err(db_err)?;
-            if let Some((id, version, previous)) = previous {
+            if let Some((id, version, stored_json)) =
+                snapshot_raw(&tx, &self.project, &recipe.revision_id)?
+            {
                 if id != recipe.id || version != recipe.version {
                     return Err("原配方快照 ID 或版本损坏，拒绝追加记录".into());
                 }
-                let previous = Recipe::from_snapshot(
-                    serde_json::from_str(&previous).map_err(|e| e.to_string())?,
-                )?;
-                if serde_json::to_value(&previous).map_err(|e| e.to_string())?
-                    != serde_json::to_value(recipe).map_err(|e| e.to_string())?
-                {
-                    return Err("相同配方修订号对应了不同快照，拒绝覆盖原记录".into());
+                let mut checked = self.checked_recipe_snapshot.lock().unwrap();
+                if !checked.as_ref().is_some_and(|snapshot| {
+                    snapshot.stored_json == stored_json && snapshot.recipe_json == json
+                }) {
+                    let previous = Recipe::from_snapshot(
+                        serde_json::from_str(&stored_json).map_err(|e| e.to_string())?,
+                    )?;
+                    if serde_json::to_value(&previous).map_err(|e| e.to_string())?
+                        != serde_json::to_value(recipe).map_err(|e| e.to_string())?
+                    {
+                        return Err("相同配方修订号对应了不同快照，拒绝覆盖原记录".into());
+                    }
+                    *checked = Some(CheckedRecipeSnapshot {
+                        stored_json,
+                        recipe_json: json,
+                    });
                 }
+            } else {
+                tx.execute(
+                    "INSERT INTO recipe_snapshots (project_id, revision_id, recipe_id, version, json) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![self.project, recipe.revision_id, recipe.id, recipe.version, json],
+                )
+                .map_err(db_err)?;
             }
-            tx.execute(
-                "INSERT OR IGNORE INTO recipe_snapshots (project_id, revision_id, recipe_id, version, json) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![self.project, recipe.revision_id, recipe.id, recipe.version, json],
-            )
-            .map_err(db_err)?;
         }
         let retest_of: Option<i64> = if r.sn.is_empty() {
             None
