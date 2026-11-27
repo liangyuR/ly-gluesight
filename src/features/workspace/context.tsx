@@ -1,5 +1,5 @@
 import { errorText } from "../../lib/errors";
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from "react";
 import { cameraApi, type CameraConfig } from "../camera";
 import { recipeApi, type UnavailableRecipe } from "../cycle/api";
 import type { Recipe, RecipeDoc, RecipeSummary } from "../cycle/types";
@@ -45,7 +45,7 @@ interface WorkspaceContextValue {
   setError: (message: string) => void;
 }
 const Context = createContext<WorkspaceContextValue | null>(null);
-const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const equal = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b);
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [list, setList] = useState<RecipeSummary[]>([]);
@@ -83,14 +83,24 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const cameraSources=useRef<Record<string, string>>({});
   const dirty = !!doc && !!data && !equal(doc, data.workspace.doc);
   const latestDoc = useRef(doc); latestDoc.current = doc;
-  // 草稿与候选里已保存的走廊比较（按 f32），不同才算未保存
-  const savedCorridor = (key: string) => savedDraft(data?.workspace.doc, key);
-  const frameDirty = Object.keys(corridorDrafts).some(key => !sameCorridor(corridorDrafts[key], savedCorridor(key)));
+  const savedDoc = data?.workspace.doc;
+  const spacing = doc?.spacing;
+  const { frameDirty, pendingCorridor, unsavable } = useMemo(() => {
+    let frameDirty = false;
+    let pendingCorridor: [string, CameraTeachDraft] | undefined;
+    let unsavable = false;
+    for (const entry of Object.entries(corridorDrafts)) {
+      const [key, draft] = entry;
+      if (sameCorridor(draft, savedDraft(savedDoc, key))) continue;
+      frameDirty = true;
+      if (spacing === undefined) break;
+      if (corridorStationError(draft, spacing)) unsavable = true;
+      else pendingCorridor ??= entry;
+      if (pendingCorridor && unsavable) break;
+    }
+    return { frameDirty, pendingCorridor, unsavable };
+  }, [corridorDrafts, savedDoc, spacing]);
   const navigationDirty = !!navigationDraft && !equal(navigationDraft.map, data?.navigation?.map);
-  // 按站距不足三站的走廊草稿不自动保存（lyFlow 会把有胶的帧测成无胶），原因在示教页显示
-  const changedDrafts = Object.entries(corridorDrafts).filter(([key, draft]) => !sameCorridor(draft, savedCorridor(key)));
-  const pendingCorridor = doc ? changedDrafts.find(([, draft]) => !corridorStationError(draft, doc.spacing)) : undefined;
-  const unsavable = !!doc && changedDrafts.some(([, draft]) => !!corridorStationError(draft, doc.spacing));
   const pendingSave = dirty || saving || !!pendingCorridor;
   navigationDirtyRef.current = navigationDirty;
   segmentDirtyRef.current = segmentDirty;
@@ -237,7 +247,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!data || !doc || busy || saving || !desktopAvailable()) return;
     const corridor = pendingCorridor;
     if (!dirty && !corridor) { setUrgent(false); setSaveState(frameDirty ? "pending" : "saved"); return; }
-    const signature = JSON.stringify([doc, corridor, saveRetry]);
+    const makeSignature = () => JSON.stringify([doc, corridor, saveRetry]);
+    const signature = failedSave.current ? makeSignature() : undefined;
     if (failedSave.current === signature) return;
     setSaveState("pending");
     const timer = setTimeout(async () => {
@@ -259,7 +270,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         if (edited && !dirty) setDoc(previous => previous && withCorridor(previous, corridor![0], corridor![1]));
         setError("");
       } catch (e) {
-        if (current()) { failedSave.current = signature; setSaveState("failed"); setError(errorText(e)); }
+        if (current()) { failedSave.current = signature ?? makeSignature(); setSaveState("failed"); setError(errorText(e)); }
       } finally { savingRef.current = false; setSaving(false); }
     }, urgent ? 0 : 900);
     return () => clearTimeout(timer);

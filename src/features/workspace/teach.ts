@@ -2,13 +2,29 @@ import type { DetectParams, RecipeDoc } from "../cycle/types";
 import type { CameraInspect, CameraTeachDraft, InspectWindow, MeasureMode, PathSegment, SegmentCorridor } from "../plan/types";
 import { pathLength } from "./teachingPath";
 
-const canonical = (v: unknown): unknown => Array.isArray(v) ? v.map(canonical)
-  : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map(key => [key, canonical((v as Record<string, unknown>)[key])]))
-  : typeof v === "number" ? Math.fround(v) : v;
+function comparableF32(value: number | null) {
+  if (value === null) return null;
+  const rounded = Math.fround(value);
+  return Number.isFinite(rounded) ? rounded : null;
+}
+
+const sameF32 = (a: number | null, b: number | null) => a === b || comparableF32(a) === comparableF32(b);
+
+function samePoints(a: CameraTeachDraft["corridor"], b: CameraTeachDraft["corridor"]) {
+  return a === b || (a.length === b.length
+    && a.every(([x, y], i) => sameF32(x, b[i][0]) && sameF32(y, b[i][1])));
+}
+
+function sameWindow(a: InspectWindow | null, b: InspectWindow | null) {
+  return a === b || (!!a && !!b && sameF32(a.startMm, b.startMm) && sameF32(a.lengthMm, b.lengthMm));
+}
 
 /** 按 f32 比较：后端以 f32 存走廊与参数，取回的值与草稿在 f32 精度内相同就算没改。 */
 export function sameCorridor(a: CameraTeachDraft | undefined, b: CameraTeachDraft | undefined) {
-  return JSON.stringify(canonical(a ?? null)) === JSON.stringify(canonical(b ?? null));
+  return a === b || (!!a && !!b
+    && sameF32(a.mmPerPx, b.mmPerPx)
+    && sameWindow(a.window, b.window)
+    && samePoints(a.corridor, b.corridor));
 }
 
 /** 测量区间终点（距出胶点）上限（mm），与后端校验一致。 */
@@ -162,7 +178,7 @@ export function withCorridor(doc: RecipeDoc, key: string, draft: CameraTeachDraf
   const target = parseDraftKey(key);
   if (!target) return doc;
   const before = doc.inspect?.find(item => item.camera === target.camera)?.segments?.find(item => item.segment === target.segment);
-  const moved = JSON.stringify(canonical(before?.corridor ?? [])) !== JSON.stringify(canonical(draft.corridor));
+  const moved = !samePoints(before?.corridor ?? [], draft.corridor);
   return withSegmentCorridor(doc, target.camera, target.segment, { corridor: draft.corridor, ...(moved ? { colorModel: undefined } : {}) });
 }
 

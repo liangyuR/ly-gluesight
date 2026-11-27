@@ -103,4 +103,37 @@ describe("候选工作台的主流程保护", () => {
     expect(result.current.saveState).toBe("saved");
     expect(result.current.frameDirty).toBe(false);
   });
+
+  it("夹有站数不足的走廊草稿 → 按输入顺序保存其余草稿并保留不足的段", async () => {
+    const { result } = await openBurst();
+    const first = { corridor: [[10, 10], [40, 10]] as [number, number][], mmPerPx: .1, window: null };
+    const short = { ...first, corridor: [[10, 10], [20, 10]] as [number, number][] };
+    const third = { ...first, corridor: [[10, 10], [55, 10]] as [number, number][] };
+    const save = vi.mocked(workspaceApi.saveDoc).mockImplementation(async (_, revision, doc) => {
+      const next = burstView();
+      next.workspace.revision = revision + 1;
+      next.workspace.doc = doc;
+      return next;
+    });
+    vi.useFakeTimers();
+    act(() => {
+      result.current.setCorridorDraft("CAM-1#3", third);
+      result.current.setCorridorDraft("CAM-1#2", short);
+      result.current.setCorridorDraft("CAM-1#1", first);
+    });
+    expect(result.current.pendingSave).toBe(true);
+    expect(result.current.unsavable).toBe(true);
+
+    await act(() => vi.advanceTimersByTimeAsync(900));
+    await act(() => vi.advanceTimersByTimeAsync(900));
+    const unchanged = [[10, 30], [90, 30]];
+    expect(save.mock.calls.map(([, revision, doc]) => [revision, doc.inspect![0].segments!.map(segment => segment.corridor)])).toEqual([
+      [3, [unchanged, unchanged, third.corridor]],
+      [4, [first.corridor, unchanged, third.corridor]],
+    ]);
+    expect(result.current.corridorDrafts).toEqual({ "CAM-1#2": short });
+    expect(result.current.frameDirty).toBe(true);
+    expect(result.current.unsavable).toBe(true);
+    expect(result.current.pendingSave).toBe(false);
+  });
 });
