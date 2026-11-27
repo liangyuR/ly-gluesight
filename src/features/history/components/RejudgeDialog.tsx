@@ -1,6 +1,7 @@
 import { Fragment, useState } from "react";
 import { Alert, Button, Dialog, List, ListItem, NumberField, SegmentedControl, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
 import type { Verdict } from "../../cycle/types";
+import { OperationStatus, type OperationLabels } from "../../workspace/operation";
 import { formatTime, verdictGroups, verdictLabel, verdictTone } from "../meta";
 import { useRejudgeTask, type RejudgeOptions, type RejudgeScope } from "../rejudgeTask";
 import type { KindOverride, Overrides } from "../types";
@@ -15,6 +16,12 @@ const recipeOptions = [
   { value: "recorded", label: "记录当时的配方版本" },
   { value: "current", label: "当前配方" },
 ];
+const rejudgeLabels: OperationLabels = {
+  preparing: "正在准备重判",
+  rejudging: "正在重判",
+  cancelling: "正在取消",
+  cancelled: "已取消，本次没有结果",
+};
 
 const isNg = (v: Verdict) => v.startsWith("NG");
 const isOk = (v: Verdict) => v.startsWith("OK");
@@ -28,13 +35,14 @@ export default function RejudgeDialog({ scope, originalScope, onUseCurrentScope,
   onOpenRecord: (id: number) => void;
   onClose: () => void;
 }) {
-  const { task, run } = useRejudgeTask();
+  const { task, operation, run } = useRejudgeTask();
   const scopedTask = task?.scope === scope ? task : null;
   const [options, setOptions] = useState<RejudgeOptions>(() => scopedTask?.options
     ?? { useCurrentRecipe: false, overrides: { straight: {}, corner: {} } });
   const { useCurrentRecipe, overrides } = options;
   const matchingTask = scopedTask?.options === options ? scopedTask : null;
   const running = task?.status === "running";
+  const showProgress = matchingTask?.status === "running" || matchingTask?.status === "cancelled";
   const result = matchingTask?.status === "completed" ? matchingTask.result : null;
   const error = matchingTask?.status === "failed" ? matchingTask.error : "";
   const invalid = Object.values(overrides).some(value => typeof value === "number" && !Number.isFinite(value)) ||
@@ -92,7 +100,8 @@ export default function RejudgeDialog({ scope, originalScope, onUseCurrentScope,
       }
     >
       <Stack direction="column" align="stretch" gap={14}>
-        {running && <div role="status">正在重判。收起后可从历史页查看进度和结果。</div>}
+        {showProgress && <OperationStatus operation={operation} label="批量重判" labels={rejudgeLabels} unit="件" />}
+        {matchingTask?.status === "running" && <Text muted>收起后可从历史页查看进度和结果。取消时会等待当前工件处理结束。</Text>}
         {originalScope && <Text muted>此任务使用原筛选范围，当前历史列表的筛选已变化。</Text>}
         <SegmentedControl label="重判使用的配方" options={recipeOptions} disabled={running} value={useCurrentRecipe ? "current" : "recorded"} onValueChange={(value) => setOptions(current => ({ ...current, useCurrentRecipe: value === "current" }))} />
         <div className="rj-params">

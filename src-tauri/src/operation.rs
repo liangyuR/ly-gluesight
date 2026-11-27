@@ -192,21 +192,38 @@ impl Operation {
     }
 
     pub fn measuring(&self, total: usize) -> Result<(), String> {
+        self.begin_work("measuring", total)
+    }
+
+    pub(crate) fn rejudging(&self, total: usize) -> Result<(), String> {
+        self.begin_work("rejudging", total)
+    }
+
+    fn begin_work(&self, stage: &'static str, total: usize) -> Result<(), String> {
         self.progress.lock().unwrap().0.total = total as u64;
-        self.stage("measuring")
+        self.stage(stage)
     }
 
     pub fn advance(&self, state: FrameState) -> Result<(), String> {
+        self.advance_counts(
+            state == FrameState::Error,
+            matches!(
+                state,
+                FrameState::Missing | FrameState::NotInspected | FrameState::Unmeasured
+            ),
+        )
+    }
+
+    pub(crate) fn advance_record(&self, skipped: bool) -> Result<(), String> {
+        self.advance_counts(false, skipped)
+    }
+
+    fn advance_counts(&self, failed: bool, skipped: bool) -> Result<(), String> {
         {
             let mut progress = self.progress.lock().unwrap();
             progress.0.completed += 1;
-            match state {
-                FrameState::Error => progress.0.failed += 1,
-                FrameState::Missing | FrameState::NotInspected | FrameState::Unmeasured => {
-                    progress.0.skipped += 1
-                }
-                _ => {}
-            }
+            progress.0.failed += u64::from(failed);
+            progress.0.skipped += u64::from(skipped);
         }
         self.emit(false);
         self.check()

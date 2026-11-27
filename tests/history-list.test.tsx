@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { expect, it, vi } from "vitest";
 import { RejudgeTaskProvider } from "../src/features/history/rejudgeTask";
 import type { HistoryQuery, RejudgeResult } from "../src/features/history/types";
+import type { OperationProgress } from "../src/features/workspace/operation";
 import HistoryDetailPage from "../src/pages/HistoryDetailPage";
 import HistoryPage from "../src/pages/HistoryPage";
 import { burstPartDetail, burstPartSummary, deferred } from "./fixtures";
@@ -20,12 +21,21 @@ const meta = (id: string, name: string) => ({ schema: 1, id, name, description: 
 const projects = [{ id: "line-a", current: true, error: null, meta: meta("line-a", "A 线") }, { id: "line-b", current: false, error: null, meta: meta("line-b", "B 线") }];
 const page = (items: ReturnType<typeof burstPartSummary>[]) => ({ total: items.length, counts: { ok: items.length, excursion: 0, ng: 0, err: 0 }, items });
 const queries = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "history_query").map(([, args]) => (args as { query: HistoryQuery }).query);
+const rejudgeCalls = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "history_rejudge");
 const emitHistory = (event: string, payload: number | number[]) => {
   const handler = vi.mocked(listen).mock.calls.filter(([name]) => name === event).at(-1)?.[1];
   act(() => handler?.({ event, id: 1, payload }));
 };
+const emitRejudgeProgress = (payload: OperationProgress) => {
+  const event = "operation://progress";
+  const handler = vi.mocked(listen).mock.calls.filter(([name]) => name === event).at(-1)![1];
+  act(() => handler({ event, id: 1, payload }));
+};
 
-function mockTextFilteredHistory(rejudge?: () => Promise<RejudgeResult>) {
+function mockTextFilteredHistory(rejudge?: () => Promise<RejudgeResult>, operation?: {
+  cancel: (taskId: string) => Promise<boolean>;
+  status: (taskId: string) => OperationProgress | null;
+}) {
   const records = [burstPartSummary(1), { ...burstPartSummary(2), tags: ["待复核"] }];
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "recipe_list") return { recipes: [], errors: [] };
@@ -37,6 +47,8 @@ function mockTextFilteredHistory(rejudge?: () => Promise<RejudgeResult>) {
     }
     if (rejudge) {
       if (command === "history_rejudge") return rejudge();
+      if (command === "operation_status") return operation?.status((args as { taskId: string }).taskId) ?? null;
+      if (command === "operation_cancel" && operation) return operation.cancel((args as { taskId: string }).taskId);
       if (command === "history_overview") return { ...burstPartDetail(), summary: records[0], burst: null };
       if (command === "history_neighbors") return { older: null, newer: null };
     }
@@ -67,8 +79,12 @@ it("收起重判后离开页面并换筛选 → 重开同一任务，结果按�
   await waitFor(() => expect(open).toBeEnabled());
   await user.click(open);
   await user.click(dialog().getByRole("button", { name: "重判当前筛选（1 件）" }));
-  const originalRequest = { request: expect.objectContaining({ query: expect.objectContaining({ sn: "SN-101" }) }) };
-  expect(invoke).toHaveBeenCalledWith("history_rejudge", originalRequest);
+  await waitFor(() => expect(rejudgeCalls()).toHaveLength(1));
+  const { taskId } = rejudgeCalls()[0][1] as { taskId: string };
+  expect(taskId).toEqual(expect.any(String));
+  const originalRequest = { request: expect.objectContaining({ query: expect.objectContaining({ sn: "SN-101" }) }), taskId };
+  expect(rejudgeCalls()).toEqual([["history_rejudge", originalRequest]]);
+  emitRejudgeProgress({ taskId, stage: "rejudging", completed: 0, total: 1, failed: 0, skipped: 0, elapsedMs: 200 });
 
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog", { name: "批量重判" })).not.toBeInTheDocument();
@@ -81,11 +97,10 @@ it("收起重判后离开页面并换筛选 → 重开同一任务，结果按�
   expect(await row(2)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "查看重判进度" }));
 
-  expect(dialog().getByRole("status")).toHaveTextContent("正在重判");
+  expect(dialog().getByRole("status", { name: "批量重判进度" })).toHaveTextContent("正在重判");
   expect(dialog().getByText(/此任务使用原筛选范围/)).toBeVisible();
   expect(dialog().getByRole("button", { name: "重判中…" })).toBeDisabled();
-  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "history_rejudge"))
-    .toEqual([["history_rejudge", originalRequest]]);
+  expect(rejudgeCalls()).toEqual([["history_rejudge", originalRequest]]);
 
   await act(async () => pending.resolve({
     ...rejudgeResult,
@@ -125,6 +140,71 @@ it("第二次重判开始即清除旧矩阵，失败后显示错误并可重试"
   await user.click(retry());
   expect(await dialog.findByRole("table", { name: "判定变化矩阵" })).toBeVisible();
   expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("当前重判显示件数并收到取消回执 → 等待原请求结束，舍弃部分结果后可重试", async () => {
+  const pending = deferred<RejudgeResult>();
+  const retried = deferred<RejudgeResult>();
+  const cancel = deferred<boolean>();
+  let taskId = "";
+  const progress = (id: string, stage: OperationProgress["stage"]): OperationProgress => ({
+    taskId: id, stage, completed: 1, total: 2, failed: 0, skipped: 0, elapsedMs: 500,
+  });
+  mockTextFilteredHistory(vi.fn<() => Promise<RejudgeResult>>()
+    .mockReturnValueOnce(pending.promise).mockReturnValueOnce(retried.promise), {
+    cancel: () => cancel.promise,
+    status: id => id === taskId ? progress(id, "cancelled") : null,
+  });
+  const user = userEvent.setup();
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await row(1);
+  await user.click(screen.getByRole("button", { name: "批量重判" }));
+  const dialog = within(screen.getByRole("dialog", { name: "批量重判" }));
+  await user.click(dialog.getByRole("button", { name: "重判当前筛选（2 件）" }));
+  await waitFor(() => expect(rejudgeCalls()).toHaveLength(1));
+  taskId = (rejudgeCalls()[0][1] as { taskId: string }).taskId;
+  expect(taskId).toEqual(expect.any(String));
+  const event = "operation://progress";
+  const oldListener = vi.mocked(listen).mock.calls.filter(([name]) => name === event).at(-1)![1];
+
+  const status = () => dialog.getByRole("status", { name: "批量重判进度" });
+  const cancelButton = () => dialog.getByRole("button", { name: "取消" });
+  const matrix = () => dialog.queryByRole("table", { name: "判定变化矩阵" });
+  expect(cancelButton()).toBeDisabled();
+  emitRejudgeProgress(progress(taskId, "rejudging"));
+  expect(status()).toHaveTextContent("正在重判");
+  expect(status()).toHaveTextContent("已处理 1 / 2 件");
+  expect(dialog.getByRole("progressbar", { name: "批量重判完成进度" })).toHaveAttribute("value", "50");
+  expect(cancelButton()).toBeEnabled();
+
+  await user.click(cancelButton());
+  expect(invoke).toHaveBeenCalledWith("operation_cancel", { taskId });
+  await act(async () => cancel.resolve(true));
+  expect(status()).toHaveTextContent("正在取消");
+  expect(cancelButton()).toBeDisabled();
+  expect(dialog.getByRole("button", { name: "重判中…" })).toBeDisabled();
+  expect(matrix()).not.toBeInTheDocument();
+  await user.click(cancelButton());
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "operation_cancel"))
+    .toEqual([["operation_cancel", { taskId }]]);
+  expect(rejudgeCalls()).toHaveLength(1);
+
+  await act(async () => pending.reject("OPERATION_CANCELLED: 任务已取消"));
+  expect(invoke).toHaveBeenCalledWith("operation_status", { taskId });
+  expect(status()).toHaveTextContent("已取消，本次没有结果");
+  expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+  expect(matrix()).not.toBeInTheDocument();
+  await user.click(dialog.getByRole("button", { name: "再次重判" }));
+  await waitFor(() => expect(rejudgeCalls()).toHaveLength(2));
+  const retryId = (rejudgeCalls()[1][1] as { taskId: string }).taskId;
+  expect(retryId).toEqual(expect.any(String));
+  expect(retryId).not.toBe(taskId);
+  act(() => oldListener({ event, id: 1, payload: progress(taskId, "rejudging") }));
+  expect(status()).toHaveTextContent("正在准备重判");
+  emitRejudgeProgress(progress(retryId, "rejudging"));
+  expect(status()).toHaveTextContent("已处理 1 / 2 件");
+  await act(async () => retried.resolve(rejudgeResult));
+  expect(await dialog.findByRole("table", { name: "判定变化矩阵" })).toBeVisible();
 });
 
 it("文本筛选仅应用最终输入，回车立即查询一次，等待期间禁用旧结果导出", async () => {

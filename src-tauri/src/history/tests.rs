@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::operation::{Operation, Operations, CANCELLED_MESSAGE};
 use crate::recipe::RecipeDoc;
 use crate::segmentation::Region;
 use crate::store::burst_fixture;
@@ -110,6 +111,7 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_limit_only_change() {
             |_, _| Ok(Some(original.clone())),
             |_| Some(candidate.clone()),
             |_| Ok(frames.clone()),
+            None,
         )
         .unwrap();
         match rejudged {
@@ -166,6 +168,7 @@ fn rejudge_counts_arrived_but_uninspected_frame_as_present() {
         |_, _| Ok(Some(recipe.clone())),
         |_| None,
         |_| Ok(frames.clone()),
+        None,
     )
     .unwrap();
     let [change] = result.changes.as_slice() else {
@@ -173,4 +176,46 @@ fn rejudge_counts_arrived_but_uninspected_frame_as_present() {
     };
     assert_eq!(change.to, Verdict::Ok);
     assert!(change.flags.as_ref().is_some_and(|flags| !flags.incomplete));
+}
+
+#[test]
+fn cancelling_rejudge_during_a_read_counts_finished_and_skipped_records_then_stops() {
+    let recipe = Arc::new(burst_doc().build().unwrap());
+    let (row, frames) = burst_row(&recipe);
+    let id = row.id;
+    let (mut skipped, _) = burst_row(&recipe);
+    skipped.id = id - 1;
+    skipped.verdict = Verdict::ErrInspect;
+    let (mut remaining, _) = burst_row(&recipe);
+    remaining.id = id + 1;
+
+    let operations = Operations::default();
+    let task_id = "cancel-history-rejudge";
+    let operation =
+        Operation::with_events(operations.clone(), Some(task_id.into()), |_| {}).unwrap();
+    let mut reads = Vec::new();
+    let result = operation.run(|operation| {
+        rejudge_rows(
+            vec![skipped, row, remaining],
+            &RejudgeRequest::default(),
+            "default",
+            |_, _| Ok(Some(recipe.clone())),
+            |_| None,
+            |record_id| {
+                reads.push(record_id);
+                if record_id == id {
+                    assert!(operations.cancel(task_id));
+                }
+                Ok(frames.clone())
+            },
+            Some(operation),
+        )
+    });
+    assert_eq!(result.unwrap_err(), CANCELLED_MESSAGE);
+    assert_eq!(reads, [id]);
+    let progress = serde_json::to_value(operations.status(task_id).unwrap()).unwrap();
+    assert_eq!(progress["stage"], "cancelled");
+    assert_eq!(progress["completed"], 2);
+    assert_eq!(progress["skipped"], 1);
+    assert_eq!(progress["total"], 3);
 }

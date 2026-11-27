@@ -12,6 +12,7 @@ use crate::burst_judge::{self, BurstJudgement, Flags, FrameState};
 use crate::cycle::CycleHost;
 use crate::frame_group::GroupCoverage;
 use crate::judge::Verdict;
+use crate::operation::Operation;
 use crate::plan::{PathSegment, SegmentKind, WidthCheck};
 use crate::recipe::Recipe;
 use crate::segmentation::RegionKind;
@@ -284,24 +285,35 @@ const REJUDGE_LIMIT: usize = 5000;
 pub async fn history_rejudge(
     app: AppHandle,
     request: RejudgeRequest,
+    task_id: Option<String>,
 ) -> Result<RejudgeResult, String> {
+    let operation = task_id
+        .map(|id| Operation::start(&app, Some(id)))
+        .transpose()?;
     tauri::async_runtime::spawn_blocking(move || {
-        let store = app.state::<Store>();
-        let cycle = app.state::<CycleHost>();
-        let reader = store.rejudge_reader()?;
-        let rows = reader.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
-        rejudge_rows(
-            rows,
-            &request,
-            store.project(),
-            |project, revision_id| {
-                reader
-                    .recipe_snapshot(project, revision_id)
-                    .map(|r| r.map(Arc::new))
-            },
-            |id| cycle.recipe(id),
-            |id| reader.burst_frames(id),
-        )
+        let run = |operation: Option<&Operation>| {
+            let store = app.state::<Store>();
+            let cycle = app.state::<CycleHost>();
+            let reader = store.rejudge_reader()?;
+            let rows = reader.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
+            rejudge_rows(
+                rows,
+                &request,
+                store.project(),
+                |project, revision_id| {
+                    reader
+                        .recipe_snapshot(project, revision_id)
+                        .map(|r| r.map(Arc::new))
+                },
+                |id| cycle.recipe(id),
+                |id| reader.burst_frames(id),
+                operation,
+            )
+        };
+        match operation {
+            Some(operation) => operation.run(|operation| run(Some(operation))),
+            None => run(None),
+        }
     })
     .await
     .map_err(|e| e.to_string())?
@@ -400,8 +412,12 @@ fn rejudge_rows(
     mut snapshot: impl FnMut(&str, &str) -> Result<Option<Arc<Recipe>>, String>,
     mut current: impl FnMut(&str) -> Option<Arc<Recipe>>,
     mut burst_frames: impl FnMut(i64) -> Result<Vec<FrameRecord>, String>,
+    operation: Option<&Operation>,
 ) -> Result<RejudgeResult, String> {
     let limit_hit = rows.len() > REJUDGE_LIMIT;
+    if let Some(operation) = operation {
+        operation.rejudging(rows.len().min(REJUDGE_LIMIT))?;
+    }
     let mut originals = HashMap::new();
     let mut candidates = HashMap::new();
     let mut matrix: HashMap<(Verdict, Verdict), u64> = HashMap::new();
@@ -409,6 +425,9 @@ fn rejudge_rows(
     let mut skip_reasons = Vec::new();
     let (mut total, mut skipped) = (0, 0);
     for row in rows.into_iter().take(REJUDGE_LIMIT) {
+        if let Some(operation) = operation {
+            operation.check()?;
+        }
         let mut skip = |kind: SkipKind| {
             skipped += 1;
             if skip_reasons.len() < 300 {
@@ -420,17 +439,18 @@ fn rejudge_rows(
                     reason: kind.reason().into(),
                 });
             }
+            operation.map_or(Ok(()), |operation| operation.advance_record(true))
         };
         if row.verdict == Verdict::ErrInspect {
-            skip(SkipKind::ErrResult);
+            skip(SkipKind::ErrResult)?;
             continue;
         }
         let Some(burst) = &row.burst else {
-            skip(SkipKind::NoTable);
+            skip(SkipKind::NoTable)?;
             continue;
         };
         let Some(revision_id) = row.recipe_revision.as_deref() else {
-            skip(SkipKind::NoRevision);
+            skip(SkipKind::NoRevision)?;
             continue;
         };
         let key = format!("{}/{revision_id}", row.project_id);
@@ -438,34 +458,34 @@ fn rejudge_rows(
             snapshot(&row.project_id, revision_id)
         })?
         else {
-            skip(SkipKind::SnapshotMissing);
+            skip(SkipKind::SnapshotMissing)?;
             continue;
         };
         let frames = burst_frames(row.id)?;
         if frames.is_empty() {
-            skip(SkipKind::NoTable);
+            skip(SkipKind::NoTable)?;
             continue;
         }
         if row.recipe_id.as_deref() != Some(original.id.as_str())
             || revision_id != original.revision_id
             || !burst_layout_matches(&original, burst, &frames)
         {
-            skip(SkipKind::LayoutMismatch);
+            skip(SkipKind::LayoutMismatch)?;
             continue;
         }
         let recipe = if request.use_current_recipe {
             if row.project_id != current_project {
-                skip(SkipKind::OtherProject);
+                skip(SkipKind::OtherProject)?;
                 continue;
             }
             let Some(candidate) =
                 cached_recipe(&mut candidates, &original.id, || Ok(current(&original.id)))?
             else {
-                skip(SkipKind::NoCandidate);
+                skip(SkipKind::NoCandidate)?;
                 continue;
             };
             if !same_measurement_layout(&original, &candidate) {
-                skip(SkipKind::LayoutChanged);
+                skip(SkipKind::LayoutChanged)?;
                 continue;
             }
             candidate
@@ -485,6 +505,9 @@ fn rejudge_rows(
                 reason: j.reason,
                 flags: Some(j.flags),
             });
+        }
+        if let Some(operation) = operation {
+            operation.advance_record(false)?;
         }
     }
     let mut matrix: Vec<_> = matrix

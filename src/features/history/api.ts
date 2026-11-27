@@ -21,8 +21,8 @@ export const historyApi = {
   frameDetail: (id: number, camera: number, seq: number, signal?: AbortSignal) =>
     readFrameDetail(() => desktopCall<PartDetail>("history_frame_detail", { id, camera, seq }), signal),
   neighbors: (id: number, query: HistoryQuery | null) => call<{ older: number | null; newer: number | null }>("history_neighbors", { id, query }, () => ({ older: null, newer: null })),
-  rejudge: (request: RejudgeRequest) =>
-    desktopCall<RejudgeResult>("history_rejudge", { request }),
+  rejudge: (request: RejudgeRequest, taskId?: string) =>
+    desktopCall<RejudgeResult>("history_rejudge", { request, taskId }),
   exportCsv: (query: HistoryQuery) => desktopCall<string>("history_export", { query }),
   reveal: (path: string) => desktopCall<void>("reveal_path", { path }),
   packageTarget: (count: number) => desktopCall<string | null>("history_package_target", { count }),
