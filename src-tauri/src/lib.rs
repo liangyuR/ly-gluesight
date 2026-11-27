@@ -456,6 +456,14 @@ fn start_services(
     }
     open_project(app, &root)?;
     applog::set_project(&project::current_id(app));
+    let (removed, errors) = project::remove_feasibility_leftovers(&root);
+    if !removed.is_empty() {
+        let removed: Vec<_> = removed.iter().map(|file| file.display().to_string()).collect();
+        tracing::info!("已删除飞拍模拟参数残留：{}", removed.join("、"));
+    }
+    if !errors.is_empty() {
+        tracing::warn!("飞拍模拟参数残留删除失败：{}", errors.join("；"));
+    }
     let leftovers = project::legacy_leftovers(&root);
     if !leftovers.is_empty() {
         tracing::warn!(

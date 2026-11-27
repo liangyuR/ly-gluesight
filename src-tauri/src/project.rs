@@ -238,11 +238,10 @@ pub fn project_list(app: AppHandle) -> Result<Vec<ProjectEntry>, String> {
     list(&crate::storage::root(&app))
 }
 
-const LEGACY: [&str; 13] = [
+const LEGACY: [&str; 12] = [
     "config/cameras.json",
     "config/plc.json",
     "config/cycle.json",
-    "config/feasibility.json",
     "calib",
     "recipes",
     "workspaces",
@@ -259,6 +258,28 @@ pub fn legacy_leftovers(data: &Path) -> Vec<&'static str> {
         .into_iter()
         .filter(|name| data.join(name).exists())
         .collect()
+}
+
+/// 飞拍模拟已删除，参数文件 `config/feasibility.json` 不再读写：删掉资料目录根下与各项目里的残留。
+pub fn remove_feasibility_leftovers(data: &Path) -> (Vec<PathBuf>, Vec<String>) {
+    let projects = std::fs::read_dir(projects_root(data))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+        .map(|entry| entry.path());
+    let (mut removed, mut errors) = (Vec::new(), Vec::new());
+    for file in std::iter::once(data.to_path_buf())
+        .chain(projects)
+        .map(|base| base.join("config").join("feasibility.json"))
+        .filter(|file| file.is_file())
+    {
+        match std::fs::remove_file(&file) {
+            Ok(()) => removed.push(file),
+            Err(error) => errors.push(format!("{}：{error}", file.display())),
+        }
+    }
+    (removed, errors)
 }
 
 pub fn open_target(data: &Path, id: &str) -> Result<ProjectMeta, String> {

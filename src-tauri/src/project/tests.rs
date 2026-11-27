@@ -130,3 +130,26 @@ fn referenced_cycles_cover_every_project_and_only_history_rounds() {
         ["c-a"]
     );
 }
+
+#[test]
+fn feasibility_leftovers_at_root_and_in_projects_then_only_those_files_are_removed() {
+    let data = TempDir::new("feasibility");
+    add(&data.0, "line-a");
+    add(&data.0, "line-b");
+    let bases = [
+        data.0.clone(),
+        dir(&data.0, "line-a"),
+        dir(&data.0, "line-b"),
+    ];
+    for base in &bases {
+        std::fs::create_dir_all(base.join("config")).unwrap();
+        std::fs::write(base.join("config/feasibility.json"), "{}").unwrap();
+        std::fs::write(base.join("config/cameras.json"), "{}").unwrap();
+    }
+    let (removed, errors) = remove_feasibility_leftovers(&data.0);
+    assert_eq!((removed.len(), errors.len()), (3, 0));
+    for base in &bases {
+        assert!(!base.join("config/feasibility.json").exists());
+        assert!(base.join("config/cameras.json").exists());
+    }
+}

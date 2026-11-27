@@ -168,7 +168,7 @@ PLC 通讯只关心工件，不记录、不核对项目。正常切换要求没�
 
 ## 七、旧资料不迁移
 
-旧资料全部抛弃、不迁移：新版本不读取根目录下的 `config/cameras.json`、`plc.json`、`cycle.json`、`feasibility.json`、`calib/`、`recipes/`、`workspaces/`、`vision/releases/`、`recipe-capture/`、`inspection.db`、`records/`、`audit-spool/`，首次启动新建空的默认项目。软件不自动删除这些旧文件，启动时检测到它们就写一条提示日志，由人工清理。
+旧资料全部抛弃、不迁移：新版本不读取根目录下的 `config/cameras.json`、`plc.json`、`cycle.json`、`calib/`、`recipes/`、`workspaces/`、`vision/releases/`、`recipe-capture/`、`inspection.db`、`records/`、`audit-spool/`，首次启动新建空的默认项目。软件不自动删除这些旧文件，启动时检测到它们就写一条提示日志，由人工清理。已删除的飞拍模拟参数文件 `config/feasibility.json` 例外：资料目录根下与各项目里的残留在启动时自动删除，删除和失败都写日志。
 
 ## 八、代码改动点
 
