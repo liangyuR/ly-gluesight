@@ -1,5 +1,4 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { Alert, Button, Dialog, List, ListItem, NumberField, SegmentedControl, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
 import type { Verdict } from "../../cycle/types";
 import { historyApi } from "../api";
@@ -23,8 +22,7 @@ const isOk = (v: Verdict) => v.startsWith("OK");
 const orDefault = (value: number | "") => (value === "" ? undefined : value);
 
 /** 用存储的测量表批量重判：可选当前配方与试算参数，输出判定变化矩阵。 */
-export default function RejudgeDialog({ query, total, onClose }: { query: HistoryQuery; total: number; onClose: () => void }) {
-  const navigate = useNavigate();
+export default function RejudgeDialog({ query, total, onOpenRecord, onClose }: { query: HistoryQuery; total: number; onOpenRecord: (id: number) => void; onClose: () => void }) {
   const [useCurrent, setUseCurrent] = useState(false);
   const [overrides, setOverrides] = useState<Overrides>({ straight: {}, corner: {} });
   const [result, setResult] = useState<RejudgeResult | null>(null);
@@ -128,7 +126,7 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
               {released > 0 && <StatusBadge tone="ng">NG→OK {released} 件：放宽后可能放过真实缺陷，请逐件复核</StatusBadge>}
             </Stack>
             {!!result.skipReasons.length && <List className="rj-changes" aria-label="跳过原因">
-              {result.skipReasons.map(item => <ListItem key={item.id} title={<span className="sn">SN {item.sn}</span>} description={item.reason} onClick={() => navigate(`/history/${item.id}`)} />)}
+              {result.skipReasons.map(item => <ListItem key={item.id} title={<span className="sn">SN {item.sn}</span>} description={item.reason} onClick={() => onOpenRecord(item.id)} />)}
             </List>}
             <Table<Verdict> caption="判定变化矩阵" rows={order} columns={matrixColumns} rowKey={(v) => v} />
             {result.changes.length > 0 && (
@@ -142,7 +140,7 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
                       <StatusBadge tone={verdictTone(c.from)}>{verdictLabel[c.from]}</StatusBadge>→<StatusBadge tone={verdictTone(c.to)}>{verdictLabel[c.to]}</StatusBadge>
                     </>}
                     description={c.reason}
-                    onClick={() => navigate(`/history/${c.id}`)}
+                    onClick={() => onOpenRecord(c.id)}
                   />
                 ))}
               </List>

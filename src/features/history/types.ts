@@ -20,9 +20,25 @@ export interface RecordingEvidence {
 export type RecordSource = "real";
 export type HistoryScope = "real";
 
-/** 进入历史详情时的路由 state：历史列表带筛选（前后件按它导航）；其他页面（如试测）带返回目标，返回按钮回到那里。 */
-/** 历史详情的地址状态：列表筛选、返回目标；从分段与示教页返回时带回离开时的滚动位置。 */
-export type HistoryDetailState = { query?: HistoryQuery; returnTo?: { path: string; label: string }; scrollTop?: number };
+/** 历史详情的地址状态：前后件筛选、列表视图、其他返回目标及详情滚动位置。 */
+export type HistoryDetailState = { query?: HistoryQuery; listView?: HistoryListView; returnTo?: { path: string; label: string }; scrollTop?: number };
+
+export interface HistoryListView {
+  range: string;
+  groups: string[];
+  mode: string;
+  sn: string;
+  tag: string;
+  recipeId: string;
+  project: string;
+  offset: number;
+}
+
+export interface HistoryListState {
+  filter?: HistoryFilter;
+  view?: HistoryListView;
+  historyNotice?: { message: string; warnings: string[] };
+}
 
 export interface HistoryQuery {
   scope?: HistoryScope;

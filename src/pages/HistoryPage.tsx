@@ -8,7 +8,7 @@ import { useProjectDirectory } from "../features/project/hooks";
 import { projectLabel, recordProject } from "../features/project/rules";
 import { errorText } from "../lib/errors";
 import { flagBadges } from "../features/plan/vis";
-import { commonHistoryTags, displayReason, formatTime, HistoryExportDialog, HistoryImportDialog, HistoryRecordDialog, historyApi, partVerdict, RejudgeDialog, triggerModeLabel, verdictGroups, type HistoryDeleted, type HistoryFilter, type HistoryPackagePreview, type HistoryPage as Page, type HistoryQuery, type PartMode } from "../features/history";
+import { commonHistoryTags, displayReason, formatTime, HistoryExportDialog, HistoryImportDialog, HistoryRecordDialog, historyApi, partVerdict, RejudgeDialog, triggerModeLabel, verdictGroups, type HistoryDeleted, type HistoryDetailState, type HistoryListState, type HistoryListView, type HistoryPackagePreview, type HistoryPage as Page, type HistoryQuery, type PartMode } from "../features/history";
 
 type Item = Page["items"][number];
 
@@ -56,16 +56,18 @@ export default function HistoryPage() {
   const recipes = useRecipes();
   const projects = useProjectDirectory();
   const location = useLocation();
-  const [initial] = useState(() => (location.state as { filter?: HistoryFilter } | null)?.filter ?? null);
-  const [range, setRange] = useState(initial ? "all" : DEFAULT_RANGE);
-  const [groups, setGroups] = useState<string[]>(initial?.groups ?? []);
-  const [mode, setMode] = useState(modeOptions.find((m) => m.modes.join() === (initial?.modes ?? []).join())?.value ?? "all");
-  const [sn, setSn] = useState("");
-  const [tag, setTag] = useState("");
-  const [recipeId, setRecipeId] = useState(initial?.recipeId ?? "");
-  const [project, setProject] = useState(initial?.currentProject ? CURRENT_PROJECT : "");
-  const [offset, setOffset] = useState(0);
-  const [result, setResult] = useState<{ page: Page; query: HistoryQuery; offset: number } | null>(null);
+  const [initial] = useState(() => location.state as HistoryListState | null);
+  const restored = initial?.view;
+  const filter = initial?.filter;
+  const [range, setRange] = useState(restored?.range ?? (filter ? "all" : DEFAULT_RANGE));
+  const [groups, setGroups] = useState<string[]>(restored?.groups ?? filter?.groups ?? []);
+  const [mode, setMode] = useState(restored?.mode ?? modeOptions.find((m) => m.modes.join() === (filter?.modes ?? []).join())?.value ?? "all");
+  const [sn, setSn] = useState(restored?.sn ?? "");
+  const [tag, setTag] = useState(restored?.tag ?? "");
+  const [recipeId, setRecipeId] = useState(restored?.recipeId ?? filter?.recipeId ?? "");
+  const [project, setProject] = useState(restored?.project ?? (filter?.currentProject ? CURRENT_PROJECT : ""));
+  const [offset, setOffset] = useState(restored?.offset ?? 0);
+  const [result, setResult] = useState<{ page: Page; query: HistoryQuery; view: HistoryListView } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [operationError, setOperationError] = useState("");
@@ -75,7 +77,7 @@ export default function HistoryPage() {
   const [rejudge, setRejudge] = useState<{ query: HistoryQuery; total: number } | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [recordAction, setRecordAction] = useState<"tags" | "delete" | null>(null);
-  const [notice, setNotice] = useState<{ message: string; warnings: string[] } | null>(() => (location.state as { historyNotice?: { message: string; warnings: string[] } } | null)?.historyNotice ?? null);
+  const [notice, setNotice] = useState(initial?.historyNotice ?? null);
   const [packageIds, setPackageIds] = useState<number[] | null>(null);
   const [packagePreview, setPackagePreview] = useState<HistoryPackagePreview | null>(null);
   const [picking, setPicking] = useState(false);
@@ -103,10 +105,11 @@ export default function HistoryPage() {
     }),
     [range, groups, sn, tag, recipeId, mode, projectId],
   );
-  const scope = useMemo(() => ({ query, offset, projectBlocked }), [query, offset, projectBlocked]);
+  const view = useMemo<HistoryListView>(() => ({ range, groups, mode, sn, tag, recipeId, project, offset }), [range, groups, mode, sn, tag, recipeId, project, offset]);
+  const scope = useMemo(() => ({ query, view, projectBlocked }), [query, view, projectBlocked]);
   const currentScope = useRef(scope);
   const activeLoad = useRef<{ scope: typeof scope; pending: boolean } | null>(null);
-  const stale = result?.query !== query || result.offset !== offset;
+  const stale = result?.query !== query || result.view !== view;
   const page = result && !(stale && (error || projectBlocked)) ? result.page : null;
   const counts = page?.verdictFacets ?? page?.counts ?? null;
   const countedTotal = counts ? counts.ok + counts.excursion + counts.ng + counts.err : 0;
@@ -115,7 +118,7 @@ export default function HistoryPage() {
   const resetFilters = () => {
     setRange(DEFAULT_RANGE); setGroups([]); setMode("all"); setSn(""); setTag(""); setRecipeId(""); setProject(""); setOffset(0);
   };
-  const navigate = (to: string) => go(to, { state: { query: result?.query ?? query } });
+  const navigate = (to: string) => go(to, { state: { query: result?.query ?? query, listView: result?.view ?? view } satisfies HistoryDetailState });
 
   useLayoutEffect(() => { currentScope.current = scope; }, [scope]);
   useLayoutEffect(() => {
@@ -138,7 +141,8 @@ export default function HistoryPage() {
   const load = useCallback(async function load() {
     if (!alive.current) return;
     const scope = currentScope.current;
-    const { query, offset, projectBlocked } = scope;
+    const { query, view, projectBlocked } = scope;
+    const { offset } = view;
     if (projectBlocked) {
       if (activeLoad.current) activeLoad.current.pending = false;
       setLoading(false);
@@ -159,7 +163,7 @@ export default function HistoryPage() {
         if (!request.pending) setOffset(Math.max(0, Math.ceil(p.total / PAGE) - 1) * PAGE);
         return;
       }
-      setResult({ page: p, query, offset });
+      setResult({ page: p, query, view });
       setSelected(previous => previous.filter(key => p.items.some(item => String(item.id) === key)));
     } catch (e) {
       if (alive.current && currentScope.current === scope && !request.pending) setError(errorText(e));
@@ -173,7 +177,7 @@ export default function HistoryPage() {
   }, []);
 
   useEffect(() => { if (activeLoad.current?.scope !== scope) void load(); }, [load, scope]);
-  useEffect(() => subscribe<number>("history://inserted", () => { if (currentScope.current.offset === 0) void load(); }), [load]);
+  useEffect(() => subscribe<number>("history://inserted", () => { if (currentScope.current.view.offset === 0) void load(); }), [load]);
   useEffect(() => subscribe<number[]>("history://changed", () => { if (!mutationBusy.current) void load(); }), [load]);
 
   const selectedItems = page?.items.filter(item => selected.includes(String(item.id))) ?? [];
@@ -412,7 +416,7 @@ export default function HistoryPage() {
           />
         )}
       </Card>
-      {rejudge && <RejudgeDialog query={rejudge.query} total={rejudge.total} onClose={() => setRejudge(null)} />}
+      {rejudge && <RejudgeDialog query={rejudge.query} total={rejudge.total} onOpenRecord={id => navigate(`/history/${id}`)} onClose={() => setRejudge(null)} />}
       {recordAction && <HistoryRecordDialog action={recordAction} ids={selected.map(Number)} initialTags={selectedTags} onClose={() => setRecordAction(null)} onSaved={savedTags} onDeleted={deletedRecords} onBusyChange={setMutationBusy} />}
       {packageIds && <HistoryExportDialog ids={packageIds} onClose={() => setPackageIds(null)} />}
       {packagePreview && <HistoryImportDialog preview={packagePreview} projectName={projects.current?.name} onClose={() => setPackagePreview(null)} onImported={load} />}

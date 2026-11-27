@@ -5,8 +5,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { expect, it, vi } from "vitest";
 import type { HistoryQuery } from "../src/features/history/types";
+import HistoryDetailPage from "../src/pages/HistoryDetailPage";
 import HistoryPage from "../src/pages/HistoryPage";
-import { burstPartSummary, deferred } from "./fixtures";
+import { burstPartDetail, burstPartSummary, deferred } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
@@ -126,6 +127,48 @@ it("后续页刷新期间先收到越界结果 → 最新查询仍有记录时�
   await act(async () => early.resolve(slice(50, [])));
   expect(await row(2)).toBeVisible();
   expect(queries().slice(before).map(query => query.offset)).toEqual([50, 50]);
+});
+
+it("从筛选后的第二页打开工件再返回 → 恢复原筛选并查询原页", async () => {
+  const part = { ...burstPartSummary(1), projectId: "line-b", tags: ["待复核"] };
+  const filteredPage = { project: "line-b", tag: "待复核", offset: 50 };
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "project_current") return projects[0].meta;
+    if (command === "project_list") return projects;
+    if (command === "history_query") {
+      const { offset, project, tag } = (args as { query: HistoryQuery }).query;
+      const matching = offset === 50 && project === filteredPage.project && tag === filteredPage.tag;
+      return { ...page([matching ? part : burstPartSummary(51)]), total: 51 };
+    }
+    if (command === "history_overview") return { ...burstPartDetail(), summary: part, burst: null };
+    if (command === "history_neighbors") return { older: null, newer: null };
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  const user = userEvent.setup();
+  render(<MemoryRouter initialEntries={["/history"]}><Routes>
+    <Route path="/history" element={<HistoryPage />} />
+    <Route path="/history/:id" element={<HistoryDetailPage />} />
+  </Routes></MemoryRouter>);
+
+  await row(51);
+  const project = () => screen.getByLabelText("历史项目", { selector: "select" });
+  const tag = () => screen.getByLabelText("历史 Tag");
+  await waitFor(() => expect(project()).toHaveTextContent("B 线 · line-b"));
+  await user.selectOptions(project(), "line-b");
+  await user.type(tag(), "待复核");
+  const next = screen.getByRole("button", { name: "下一页" });
+  await waitFor(() => expect(next).toBeEnabled());
+  await user.click(next);
+  await user.click(await row(1));
+
+  const back = await screen.findByRole("button", { name: "返回历史列表" });
+  const beforeReturn = queries().length;
+  await user.click(back);
+  expect(await row(1)).toBeVisible();
+  expect(project()).toHaveValue("line-b");
+  expect(tag()).toHaveValue("待复核");
+  expect(queries()[beforeReturn]).toMatchObject(filteredPage);
 });
 
 // 防的回归：历史页默认只看当前项目（看不到其他项目的记录），或选“当前项目”后查询没带项目编号、仍混入其他项目的记录

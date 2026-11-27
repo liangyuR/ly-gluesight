@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import { Alert, Card, IconButton, Stack, StatusBadge, Text } from "qing-steel";
-import { displayReason, formatTime, HistoryRecordActions, historyApi, partVerdict, triggerModeLabel, type HistoryDetailState, type PartDetail } from "../features/history";
+import { displayReason, formatTime, HistoryRecordActions, historyApi, partVerdict, triggerModeLabel, type HistoryDetailState, type HistoryListState, type PartDetail } from "../features/history";
 import BurstHistoryDetail from "../features/history/components/BurstDetail";
 import { subscribe } from "../features/plc";
 import { Panel } from "../features/workspace/components";
@@ -18,7 +18,10 @@ export default function HistoryDetailPage() {
   const { id } = useParams(), navigate = useNavigate(), location = useLocation();
   const state = location.state as HistoryDetailState | null;
   const listQuery = state?.query ?? null;
-  const back = { onBack: () => navigate(state?.returnTo?.path ?? "/history"), backLabel: state?.returnTo?.label ?? "返回历史列表" };
+  const returnPath = state?.returnTo?.path ?? "/history";
+  const returnState: HistoryListState | undefined = state?.listView ? { view: state.listView } : undefined;
+  const partState: HistoryDetailState = { ...state, scrollTop: undefined };
+  const back = { onBack: () => navigate(returnPath, { state: returnState }), backLabel: state?.returnTo?.label ?? "返回历史列表" };
   const [neighborResult, setNeighborResult] = useState<NeighborResult | null>(null);
   const activeNeighborResult = useRef<NeighborResult | null>(null);
   const neighbors = neighborResult?.locationKey === location.key ? neighborResult.neighbors : EMPTY_NEIGHBORS;
@@ -100,7 +103,7 @@ export default function HistoryDetailPage() {
     const current = activeNeighborResult.current;
     if (target != null && current?.locationKey === location.key &&
         (target === current.neighbors.older || target === current.neighbors.newer)) {
-      navigate("/history/" + target, { state: { ...state, scrollTop: undefined } });
+      navigate("/history/" + target, { state: partState });
     }
   };
   if (!detail || detail.summary.id !== Number(id)) return error ? <div className="stack"><IconButton onClick={back.onBack} aria-label={back.backLabel}><ArrowLeft size={18} /></IconButton><Alert tone="ng">{error}</Alert></div> : <Text muted>加载中…</Text>;
@@ -108,9 +111,9 @@ export default function HistoryDetailPage() {
   const actions = <HistoryRecordActions key={detail.summary.id} id={detail.summary.id} tags={detail.summary.tags ?? []}
       onBusyChange={setMutationBusy}
       onSaved={tags => { refreshPending.current = false; setDetail(current => current?.summary.id === detail.summary.id ? { ...current, summary: { ...current.summary, tags } } : current); reload(); }}
-      onDeleted={result => { refreshPending.current = false; navigate(state?.returnTo?.path ?? "/history", { replace: true, state: { historyNotice: { message: `已删除 ${result.deleted} 件历史记录。`, warnings: result.warnings } } }); }} />;
-  if (detail.burst) return <BurstHistoryDetail key={detail.summary.id} detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} foreignProject={foreignProject} actions={actions} {...back} />;
-  return <PlainHistoryDetail detail={detail} neighbors={neighbors} onOpen={openPart} foreignProject={foreignProject} actions={actions} {...back} />;
+      onDeleted={result => { refreshPending.current = false; navigate(returnPath, { replace: true, state: { ...returnState, historyNotice: { message: `已删除 ${result.deleted} 件历史记录。`, warnings: result.warnings } } }); }} />;
+  if (detail.burst) return <BurstHistoryDetail key={detail.summary.id} detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} partState={partState} foreignProject={foreignProject} actions={actions} {...back} />;
+  return <PlainHistoryDetail detail={detail} neighbors={neighbors} onOpen={openPart} partState={partState} foreignProject={foreignProject} actions={actions} {...back} />;
 }
 
 /** 记录不属于当前项目时的提示；当前项目还没读到时不提示。 */
@@ -121,7 +124,7 @@ function foreignProjectNote(projectId: string, projects: ProjectDirectory): stri
 }
 
 /** 没有帧记录的记录（如工件身份分配失败）：只有整件结论与追溯信息。 */
-function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel, foreignProject, actions }: { detail: PartDetail; neighbors: Neighbors; onOpen: (target: number | null) => void; onBack: () => void; backLabel: string; foreignProject: string; actions: ReactNode }) {
+function PlainHistoryDetail({ detail, neighbors, onOpen, partState, onBack, backLabel, foreignProject, actions }: { detail: PartDetail; neighbors: Neighbors; onOpen: (target: number | null) => void; partState: HistoryDetailState; onBack: () => void; backLabel: string; foreignProject: string; actions: ReactNode }) {
   const s = detail.summary;
   return <div className="stack hist-detail">
     <Card className="detail-head">
@@ -147,8 +150,8 @@ function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel, fore
         <span>记录号</span><b>#{s.id}</b>
         <span>配方修订</span><b>{s.recipeRevision ?? "—"}</b>
         <span>软件版本</span><b>{detail.softwareVersion}</b>
-        <span>复检自</span><b>{s.retestOf ? <Link to={"/history/" + s.retestOf}>#{s.retestOf}</Link> : "—"}</b>
-        <span>后续复检</span><b>{detail.retests.length ? detail.retests.map(r => <Link key={r} to={"/history/" + r}>#{r} </Link>) : "—"}</b>
+        <span>复检自</span><b>{s.retestOf ? <Link to={"/history/" + s.retestOf} state={partState}>#{s.retestOf}</Link> : "—"}</b>
+        <span>后续复检</span><b>{detail.retests.length ? detail.retests.map(r => <Link key={r} to={"/history/" + r} state={partState}>#{r} </Link>) : "—"}</b>
       </div>
     </Panel>
   </div>;

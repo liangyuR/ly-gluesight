@@ -118,11 +118,12 @@ function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, 
  * 历史详情：按区域展示整件的段布置与区域结论、帧组条、按 (相机, seq) 选的原图与每相机帧表。
  * 只处理 PartDetail.burst 非空的记录。
  */
-export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, onBack, backLabel = "返回历史列表", foreignProject = "", actions }: {
+export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, partState, onBack, backLabel = "返回历史列表", foreignProject = "", actions }: {
   detail: PartDetail;
   burst: PartDetailBurst;
   neighbors: { older: number | null; newer: number | null };
   onOpen: (target: number | null) => void;
+  partState: HistoryDetailState;
   onBack: () => void;
   /** 返回按钮的说明：从历史列表进来为“返回历史列表”，从试测进来为“返回试测” */
   backLabel?: string;
@@ -426,8 +427,8 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
           <span>软件版本</span><b>{detail.softwareVersion}</b>
           <span>收尾耗时</span><b>{s.drainMs ?? "—"} ms</b>
           <span>触发计数（参考）</span><b>{burst.deviceTriggers ?? "—"}</b>
-          <span>复检自</span><b>{s.retestOf ? <Link to={"/history/" + s.retestOf}>#{s.retestOf}</Link> : "—"}</b>
-          <span>后续复检</span><b>{detail.retests.length ? detail.retests.map(r => <Link key={r} to={"/history/" + r}>#{r} </Link>) : "—"}</b>
+          <span>复检自</span><b>{s.retestOf ? <Link to={"/history/" + s.retestOf} state={partState}>#{s.retestOf}</Link> : "—"}</b>
+          <span>后续复检</span><b>{detail.retests.length ? detail.retests.map(r => <Link key={r} to={"/history/" + r} state={partState}>#{r} </Link>) : "—"}</b>
         </div>
       </Panel>
       <BurstPartTrace detail={detail} burst={burst} selected={selection} onSelect={selectFrame} />

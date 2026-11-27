@@ -68,6 +68,25 @@ beforeEach(() => {
   });
 });
 
+it.each([
+  { kind: "分段", hasBurst: true },
+  { kind: "普通", hasBurst: false },
+])("$kind 详情打开复检件 → 沿用历史筛选并能返回试测", async ({ hasBurst }) => {
+  if (!hasBurst) detail.burst = null;
+  detail.retests = [2];
+  overview = async id => id === 1 ? detail : { ...detail, summary: burstPartSummary(id), retests: [] };
+  const query = { tag: "待复核" };
+  show({ query, returnTo: { path: "/recipe/calibration", label: "返回试测" } });
+
+  const retest = await screen.findByRole("link", { name: "#2" });
+  expect(retest).toHaveAttribute("href", "/history/2");
+  await userEvent.click(retest);
+  expect(await screen.findByText("SN SN-102")).toBeVisible();
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("history_neighbors", { id: 2, query }));
+  await userEvent.click(screen.getByRole("button", { name: "返回试测" }));
+  expect(screen.getByText("试测页")).toBeVisible();
+});
+
 it("邻件失效且刷新期间有新件入库 → 按钮和快捷键只使用最新邻件", async () => {
   const stale = deferred<Neighbors>();
   const latest = deferred<Neighbors>();
