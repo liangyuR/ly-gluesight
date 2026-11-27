@@ -172,6 +172,9 @@ fn history_comparison_reads_frame_metadata_and_rejects_changed_malformed_metrics
             .unwrap(),
         1
     );
+    assert!(store
+        .comparison_input(id, HistoryCompareInput::RawImages)
+        .is_err());
     assert!(store.history_comparison_record(id).is_err());
 }
 
@@ -1265,11 +1268,37 @@ fn inverted_history_region_returns_a_detail_error_and_preserves_import_read() {
     let recipe = burst_fixture::recipe();
     let (judgement, burst) =
         burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(4));
+    let cycle = "inverted-region";
     let id = store
-        .insert(&burst_part(&recipe, "inverted-region", &judgement, &burst))
+        .insert(&burst_part(&recipe, cycle, &judgement, &burst))
         .unwrap();
+    let files = BTreeMap::from([(FrameKey { camera: 0, seq: 1 }, "cam1/1.pgm".into())]);
+    assert!(store.update_frame_raw_files(cycle, &files).unwrap());
     let original = store.detail(id).unwrap();
-    assert!(!original.burst.as_ref().unwrap().frame_verdicts.is_empty());
+    let original_burst = original.burst.as_ref().unwrap();
+    assert!(!original_burst.frame_verdicts.is_empty());
+    let (stored, stored_recipe) = store
+        .comparison_input(id, HistoryCompareInput::StoredMetrics)
+        .unwrap();
+    let stored = stored.burst.unwrap();
+    assert_eq!(stored_recipe.unwrap().revision_id, recipe.revision_id);
+    assert_eq!(stored.frames, original_burst.frames);
+    assert!(stored.frame_verdicts.is_empty());
+    let (raw, raw_recipe) = store
+        .comparison_input(id, HistoryCompareInput::RawImages)
+        .unwrap();
+    let raw = raw.burst.unwrap();
+    assert_eq!(raw_recipe.unwrap().revision_id, recipe.revision_id);
+    let expected_raw_frames: Vec<_> = original_burst
+        .frames
+        .iter()
+        .map(|frame| FrameRecord {
+            metrics: None,
+            ..frame.clone()
+        })
+        .collect();
+    assert_eq!(raw.frames, expected_raw_frames);
+    assert!(raw.frame_verdicts.is_empty());
 
     Connection::open(db.path())
         .unwrap()
@@ -1284,6 +1313,13 @@ fn inverted_history_region_returns_a_detail_error_and_preserves_import_read() {
 
     let error = store.detail_overview(id).unwrap_err();
     assert!(error.contains("帧组起止序号颠倒"), "{error}");
+    for input in [
+        HistoryCompareInput::StoredMetrics,
+        HistoryCompareInput::RawImages,
+    ] {
+        let error = store.comparison_input(id, input).unwrap_err();
+        assert!(error.contains("帧组起止序号颠倒"), "{error}");
+    }
     let (summary, recording) = store.history_import_record(id).unwrap();
     assert_eq!(summary.burst, original.summary.burst);
     assert_eq!(

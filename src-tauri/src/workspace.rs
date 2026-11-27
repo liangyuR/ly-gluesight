@@ -12,7 +12,7 @@ use crate::frame::FrameImage;
 use crate::judge::{self, Verdict};
 use crate::recipe::{Recipe, RecipeDoc, RecipeStage};
 use crate::release::ValidationSite;
-use crate::store::Store;
+use crate::store::{HistoryCompareInput, Store};
 use crate::vision;
 
 pub(crate) mod agent;
@@ -1309,15 +1309,23 @@ async fn compare_at(
                 .comparison_snapshot(&id, revision, instance_id)?;
             let recipe = w.doc.build()?;
             let store = app.state::<Store>();
-            let detail = store.detail(history_id)?;
+            let input = if raw {
+                HistoryCompareInput::RawImages
+            } else {
+                HistoryCompareInput::StoredMetrics
+            };
+            let (detail, original) = store.comparison_input(history_id, input)?;
             // 任意候选都能复测任意记录（不看型号、配方编号与所属项目）；按规则重判仍需记录的配方快照
-            let original = store.record_recipe(&detail.summary)?;
+            let original = match original {
+                Some(original) => Some(original),
+                None => store.record_recipe(&detail.summary)?.map(Arc::new),
+            };
             let (judgement, burst) = burst_history::compare(
                 &app,
                 &w,
                 &recipe,
                 &detail,
-                original.as_ref(),
+                original.as_deref(),
                 raw,
                 operation,
             )?;
@@ -1417,7 +1425,8 @@ pub async fn workspace_compare_original(
     tauri::async_runtime::spawn_blocking(move || {
         operation.run(|operation| {
             let store = app.state::<Store>();
-            let detail = store.detail(history_id)?;
+            let (detail, original) =
+                store.comparison_input(history_id, HistoryCompareInput::RawImages)?;
             if !detail.recording.available {
                 return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into());
             }
@@ -1434,9 +1443,14 @@ pub async fn workspace_compare_original(
             if detail.summary.recipe_revision.is_none() {
                 return Err("历史记录缺少配方快照身份".into());
             }
-            let original = store
-                .record_recipe(&detail.summary)?
-                .ok_or("原始配方快照缺失；不能使用当前配方替代")?;
+            let original = match original {
+                Some(original) => original,
+                None => Arc::new(
+                    store
+                        .record_recipe(&detail.summary)?
+                        .ok_or("原始配方快照缺失；不能使用当前配方替代")?,
+                ),
+            };
             let bundle = record_bundle(&app, &detail.summary.project_id, &original.id, bundle_id)?;
             let engine = app
                 .state::<vision::VisionHost>()
@@ -1454,7 +1468,7 @@ pub async fn workspace_compare_original(
                 bundle_id: Some(bundle_id.into()),
                 candidate_id: original.id.clone(),
                 candidate_revision: 0,
-                candidate_recipe: original,
+                candidate_recipe: Arc::unwrap_or_clone(original),
                 original_verdict: detail.summary.verdict,
                 judgement,
                 measurements: Vec::new(),

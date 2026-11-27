@@ -147,8 +147,9 @@ pub(super) fn judge_frames(
 pub(crate) fn repair_shadow_regions(store: &Store) -> Result<(usize, Vec<String>), String> {
     let (mut repaired, mut skipped) = (0, Vec::new());
     for id in store.shadow_parts_without_regions()? {
-        let detail = match store.detail(id) {
-            Ok(detail) => detail,
+        let (detail, recipe) = match store.comparison_input(id, HistoryCompareInput::StoredMetrics)
+        {
+            Ok(input) => input,
             Err(error) => {
                 skipped.push(format!("记录 #{id} 读取失败，未补回：{error}"));
                 continue;
@@ -158,7 +159,7 @@ pub(crate) fn repair_shadow_regions(store: &Store) -> Result<(usize, Vec<String>
             continue;
         };
         let s = &detail.summary;
-        let Some(recipe) = store.record_recipe(s)? else {
+        let Some(recipe) = recipe else {
             skipped.push(format!("记录 #{id} 的原配方快照缺失"));
             continue;
         };

@@ -365,10 +365,16 @@ pub struct PartDetail {
     pub burst: Option<PartDetailBurst>,
 }
 
+pub(crate) enum HistoryCompareInput {
+    StoredMetrics,
+    RawImages,
+}
+
 enum DetailScope<'a> {
     Full,
     Overview,
     ComparisonOptions,
+    ComparisonInput(HistoryCompareInput),
     Frame(usize, u64),
     FrameByCamera(&'a str, u64),
     WithoutFrameVerdicts,
@@ -1898,6 +1904,14 @@ impl Store {
         Ok((detail, original))
     }
 
+    pub(crate) fn comparison_input(
+        &self,
+        id: i64,
+        input: HistoryCompareInput,
+    ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
+        self.read_detail(id, DetailScope::ComparisonInput(input))
+    }
+
     pub fn detail_frame(&self, id: i64, camera: usize, seq: u64) -> Result<PartDetail, String> {
         self.detail_frame_with_recipe(id, camera, seq)
             .map(|(detail, _)| detail)
@@ -2007,6 +2021,7 @@ impl Store {
             DetailScope::Full
             | DetailScope::Overview
             | DetailScope::ComparisonOptions
+            | DetailScope::ComparisonInput(_)
             | DetailScope::WithoutFrameVerdicts => (None, None),
         };
         let (judgement, frames, triggers, software_version, recording, burst_judgement) =
@@ -2051,7 +2066,7 @@ impl Store {
                 let judgement: BurstJudgement = serde_json::from_str(&judgement)
                     .map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?;
                 let with_verdicts = matches!(scope, DetailScope::Full | DetailScope::Overview);
-                if with_verdicts
+                if (with_verdicts || matches!(scope, DetailScope::ComparisonInput(_)))
                     && judgement
                         .regions
                         .iter()
@@ -2060,7 +2075,9 @@ impl Store {
                     return Err(format!("记录 {id} 的区域判定损坏：帧组起止序号颠倒"));
                 }
                 let frames = match scope {
-                    DetailScope::ComparisonOptions | DetailScope::Overview => {
+                    DetailScope::ComparisonOptions
+                    | DetailScope::ComparisonInput(HistoryCompareInput::RawImages)
+                    | DetailScope::Overview => {
                         self.history_frames_with_metric_cache(id, raw_frames, with_verdicts)?
                     }
                     _ => decode_frame_rows(raw_frames)?,
