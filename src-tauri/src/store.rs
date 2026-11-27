@@ -381,6 +381,7 @@ pub struct StoredMeasurement {
 pub struct Store {
     conn: Mutex<Connection>,
     checked_recipe_snapshot: Mutex<Option<CheckedRecipeSnapshot>>,
+    history_recipe_snapshot: Mutex<Option<HistoryRecipeSnapshot>>,
     path: PathBuf,
     backup_path: Option<PathBuf>,
     /// 当前项目：新记录归它，统计与候选实例按它
@@ -390,6 +391,12 @@ pub struct Store {
 struct CheckedRecipeSnapshot {
     stored_json: String,
     recipe_json: String,
+}
+
+struct HistoryRecipeSnapshot {
+    project: String,
+    raw: RawSnapshot,
+    recipe: Arc<Recipe>,
 }
 
 fn verdict_str(v: Verdict) -> String {
@@ -739,20 +746,13 @@ fn snapshot_raw(
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(db_err)
 }
 
-fn decode_snapshot(
-    snapshot: Option<RawSnapshot>,
-    revision_id: &str,
-) -> Result<Option<Recipe>, String> {
-    snapshot
-        .map(|(id, version, json)| {
-            let recipe =
-                Recipe::from_snapshot(serde_json::from_str(&json).map_err(|e| e.to_string())?)?;
-            if recipe.revision_id != revision_id || recipe.id != id || recipe.version != version {
-                return Err("原配方快照身份或版本损坏".into());
-            }
-            Ok(recipe)
-        })
-        .transpose()
+fn decode_snapshot(snapshot: &RawSnapshot, revision_id: &str) -> Result<Recipe, String> {
+    let (id, version, json) = snapshot;
+    let recipe = Recipe::from_snapshot(serde_json::from_str(json).map_err(|e| e.to_string())?)?;
+    if recipe.revision_id != revision_id || recipe.id != *id || recipe.version != *version {
+        return Err("原配方快照身份或版本损坏".into());
+    }
+    Ok(recipe)
 }
 
 fn backup_old_database(conn: Connection, path: &Path, version: i64) -> Result<PathBuf, String> {
@@ -1040,6 +1040,7 @@ impl Store {
         Ok(Self {
             conn: Mutex::new(conn),
             checked_recipe_snapshot: Mutex::new(None),
+            history_recipe_snapshot: Mutex::new(None),
             path: path.to_path_buf(),
             backup_path,
             project: project.into(),
@@ -1832,7 +1833,7 @@ impl Store {
         id: i64,
         camera: usize,
         seq: u64,
-    ) -> Result<(PartDetail, Recipe), String> {
+    ) -> Result<(PartDetail, Arc<Recipe>), String> {
         let (detail, recipe) = self.detail_selected(id, Some((camera, seq)))?;
         if detail
             .burst
@@ -1868,17 +1869,18 @@ impl Store {
         &self,
         id: i64,
         selected: Option<(usize, u64)>,
-    ) -> Result<(PartDetail, Option<Recipe>), String> {
+    ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
         let mut conn = open_read_only(&self.path)?;
         let snapshot = conn.transaction().map_err(db_err)?;
-        Self::detail_from_snapshot(snapshot, id, selected)
+        self.detail_from_snapshot(snapshot, id, selected)
     }
 
     fn detail_from_snapshot(
+        &self,
         snapshot: Transaction<'_>,
         id: i64,
         selected: Option<(usize, u64)>,
-    ) -> Result<(PartDetail, Option<Recipe>), String> {
+    ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
         const N: usize = SUMMARY_LEN;
         let (summary, judgement, frames, triggers, software_version, recording, burst_judgement) = snapshot
             .query_row(
@@ -1919,8 +1921,8 @@ impl Store {
                     .recipe_revision
                     .as_deref()
                     .ok_or_else(|| format!("记录 {id} 是段配方记录却没有配方快照身份"))?;
-                let recipe = decode_snapshot(raw_snapshot, revision)?
-                    .ok_or_else(|| format!("记录 {id} 的原配方快照缺失"))?;
+                let raw = raw_snapshot.ok_or_else(|| format!("记录 {id} 的原配方快照缺失"))?;
+                let recipe = self.history_recipe(raw, &summary.project_id, revision)?;
                 let judgement: BurstJudgement = serde_json::from_str(&judgement)
                     .map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?;
                 let frames = decode_frame_rows(raw_frames)?;
@@ -1988,7 +1990,36 @@ impl Store {
         let Some(id) = Self::find_id_by_cycle(&snapshot, cycle_id)? else {
             return Ok(None);
         };
-        Self::detail_from_snapshot(snapshot, id, None).map(|(detail, _)| Some(detail))
+        self.detail_from_snapshot(snapshot, id, None)
+            .map(|(detail, _)| Some(detail))
+    }
+
+    fn history_recipe(
+        &self,
+        raw: RawSnapshot,
+        project: &str,
+        revision: &str,
+    ) -> Result<Arc<Recipe>, String> {
+        if let Some(cached) = self
+            .history_recipe_snapshot
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|cached| {
+                cached.project == project
+                    && cached.recipe.revision_id == revision
+                    && cached.raw == raw
+            })
+        {
+            return Ok(Arc::clone(&cached.recipe));
+        }
+        let recipe = Arc::new(decode_snapshot(&raw, revision)?);
+        *self.history_recipe_snapshot.lock().unwrap() = Some(HistoryRecipeSnapshot {
+            project: project.to_owned(),
+            raw,
+            recipe: Arc::clone(&recipe),
+        });
+        Ok(recipe)
     }
 
     /// 记录所属项目 `project` 的配方快照：配方编号与修订号只在项目内唯一。
@@ -1998,7 +2029,9 @@ impl Store {
         revision_id: &str,
     ) -> Result<Option<Recipe>, String> {
         let raw = snapshot_raw(&self.conn.lock().unwrap(), project, revision_id)?;
-        decode_snapshot(raw, revision_id)
+        raw.as_ref()
+            .map(|snapshot| decode_snapshot(snapshot, revision_id))
+            .transpose()
     }
 
     /// 一条记录的原配方快照；记录没有配方修订号时为 None。

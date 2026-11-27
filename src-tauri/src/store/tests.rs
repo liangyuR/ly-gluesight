@@ -60,6 +60,48 @@ fn appending_a_recipe_revision_accepts_legacy_fields_and_rechecks_changed_snapsh
 }
 
 #[test]
+fn reading_history_rechecks_cached_recipe_after_snapshot_content_or_identity_changes() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let id = store
+        .insert(&burst_part(
+            &recipe,
+            "history-snapshot-edit",
+            &judgement,
+            &burst,
+        ))
+        .unwrap();
+    let read = || {
+        store
+            .detail_frame_with_recipe(id, 0, 1)
+            .map(|(_, recipe)| recipe)
+    };
+    assert_eq!(read().unwrap().name, recipe.name);
+
+    let conn = Connection::open(db.path()).unwrap();
+    conn.execute(
+        "UPDATE recipe_snapshots
+         SET json = json_set(json, '$.name', '更新后的快照', '$.expert', json('{\"trackSharpMin\":0.6}'))
+         WHERE project_id = ?1 AND revision_id = ?2",
+        params![store.project(), recipe.revision_id],
+    )
+    .unwrap();
+    let updated = read().unwrap();
+    assert_eq!(updated.name, "更新后的快照");
+    assert!(!same_measurement_layout(&updated, &recipe));
+
+    conn.execute(
+        "UPDATE recipe_snapshots SET version = version + 1 WHERE project_id = ?1 AND revision_id = ?2",
+        params![store.project(), recipe.revision_id],
+    )
+    .unwrap();
+    assert!(read().is_err());
+}
+
+#[test]
 fn manual_tags_survive_reopen_and_keep_history_filter_counts_neighbors_and_rejudge_aligned() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
