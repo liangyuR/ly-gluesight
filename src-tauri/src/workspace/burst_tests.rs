@@ -319,7 +319,7 @@ fn rules_comparison_uses_frame_identity_and_keeps_unmeasured_tail_and_station_da
         frame.metrics = None;
     }
 
-    let (judgement, metrics) =
+    let (judgement, metrics, _) =
         super::burst_history::judge_stored_comparison(&recipe, &recipe.plan_cameras(), burst);
     assert_eq!(judgement.group_count, 4);
     assert!(judgement.flags.incomplete);

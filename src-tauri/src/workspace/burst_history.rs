@@ -8,7 +8,7 @@
 //! - 区域：按候选（或原发布包）的段重新划分，本轮只有 `Unsegmented`；按规则重判沿用记录里的区域（与历史重判同一口径）。
 
 use super::*;
-use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
+use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState, FrameVerdict};
 use crate::frame_group::{GroupCoverage, LossAlarm};
 use crate::passes::PassRules;
 use crate::plan::PathSegment;
@@ -58,20 +58,19 @@ impl ComparisonBurst {
         recipe: &Recipe,
         judgement: BurstJudgement,
         frames: Vec<FrameMetrics>,
+        frame_verdicts: Vec<FrameVerdict>,
         sizes: Vec<[u32; 2]>,
     ) -> Self {
-        let mut burst = Self {
+        Self {
             segments: recipe.path_segments.clone(),
             cameras: recipe.plan_cameras(),
             expected_total: recipe.expected_total(),
             judgement,
             frames,
             sizes,
-            frame_verdicts: Vec::new(),
+            frame_verdicts,
             unmeasured: Vec::new(),
-        };
-        burst.fill_verdicts();
-        burst
+        }
     }
 }
 
@@ -128,9 +127,38 @@ pub(super) fn judge_frames(
     loss: &[LossAlarm],
     passes: PassRules,
 ) -> BurstJudgement {
+    judge_frames_with_output(
+        segments,
+        boundary_guard,
+        expected_total,
+        cameras,
+        metrics,
+        loss,
+        passes,
+        false,
+    )
+    .0
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn judge_frames_with_output(
+    segments: &[PathSegment],
+    boundary_guard: u32,
+    expected_total: Option<u32>,
+    cameras: &[String],
+    metrics: &[FrameMetrics],
+    loss: &[LossAlarm],
+    passes: PassRules,
+    include_frame_verdicts: bool,
+) -> (BurstJudgement, Vec<FrameVerdict>) {
     let coverage = match metric_group_coverage(metrics, cameras.len()) {
         Ok(coverage) => coverage,
-        Err(error) => return BurstJudgement::error(judge::fault::INVALID_POINTS, error),
+        Err(error) => {
+            return (
+                BurstJudgement::error(judge::fault::INVALID_POINTS, error),
+                Vec::new(),
+            )
+        }
     };
     let total = coverage.group_count;
     let outcome = segment_part(segments, total, passes);
@@ -142,7 +170,7 @@ pub(super) fn judge_frames(
         boundary_guard,
         passes,
     );
-    burst_judge::judge(
+    burst_judge::judge_with_output(
         segments,
         expected_total,
         &regions,
@@ -151,6 +179,7 @@ pub(super) fn judge_frames(
         cameras,
         loss,
         passes,
+        include_frame_verdicts,
     )
 }
 
@@ -347,7 +376,7 @@ pub(super) fn judge_stored_comparison(
     recipe: &Recipe,
     cameras: &[String],
     burst: &mut PartDetailBurst,
-) -> (BurstJudgement, Vec<FrameMetrics>) {
+) -> (BurstJudgement, Vec<FrameMetrics>, Vec<FrameVerdict>) {
     let regions: Vec<Region> = burst
         .judgement
         .regions
@@ -355,8 +384,8 @@ pub(super) fn judge_stored_comparison(
         .map(|result| result.region.clone())
         .collect();
     let metrics = take_stored_metrics(&mut burst.frames);
-    let judgement = match metric_group_coverage(&metrics, cameras.len()) {
-        Ok(coverage) => burst_judge::judge(
+    let (judgement, frame_verdicts) = match metric_group_coverage(&metrics, cameras.len()) {
+        Ok(coverage) => burst_judge::judge_with_output(
             &recipe.path_segments,
             recipe.expected_total(),
             &regions,
@@ -365,10 +394,14 @@ pub(super) fn judge_stored_comparison(
             cameras,
             &burst.judgement.alarms,
             recipe.pass_rules(&burst.judgement.passes),
+            true,
         ),
-        Err(error) => BurstJudgement::error(judge::fault::INVALID_POINTS, error),
+        Err(error) => (
+            BurstJudgement::error(judge::fault::INVALID_POINTS, error),
+            Vec::new(),
+        ),
     };
-    (judgement, metrics)
+    (judgement, metrics, frame_verdicts)
 }
 
 /// 录制原图齐：录制证据完整，且除缺帧外每帧都有原图引用（与前端历史详情 `rawComplete` 同一口径）。
@@ -1039,7 +1072,7 @@ pub(super) fn compare(
     let legacy = "这条历史是旧拍照点记录，不能用段配方候选对照";
     let cameras = recipe.plan_cameras();
     let mut unmeasured = Vec::new();
-    let (judgement, metrics) = if raw {
+    let (judgement, metrics, frame_verdicts) = if raw {
         let burst = detail.burst.as_ref().ok_or(legacy)?;
         let coverage = prepare_raw_coverage(detail, burst, recipe, w)?;
         let (measurer, skipped) = CandidateMeasurer::from_coverage(app, w, recipe, coverage)?;
@@ -1108,7 +1141,7 @@ pub(super) fn compare(
             Some(operation),
         )?;
         operation.stage("summarizing")?;
-        let judgement = judge_frames(
+        let (judgement, frame_verdicts) = judge_frames_with_output(
             &recipe.path_segments,
             recipe.boundary_guard,
             recipe.expected_total(),
@@ -1116,8 +1149,9 @@ pub(super) fn compare(
             &metrics,
             &loss,
             recipe.pass_rules(&burst.judgement.passes),
+            true,
         );
-        (judgement, metrics)
+        (judgement, metrics, frame_verdicts)
     } else {
         let burst = detail.burst.as_mut().ok_or(legacy)?;
         if let Some(reason) = rules_blocker(burst, original, recipe) {
@@ -1129,7 +1163,7 @@ pub(super) fn compare(
     // 叠图按这些尺寸重建测量图；还没示教帧的相机没有走廊，尺寸用不到
     let sizes = super::burst::taught_sizes(w);
     let conclusion = summary(&judgement);
-    let mut compared = ComparisonBurst::of(recipe, judgement, metrics, sizes);
+    let mut compared = ComparisonBurst::of(recipe, judgement, metrics, frame_verdicts, sizes);
     compared.unmeasured = unmeasured;
     Ok((conclusion, compared))
 }
@@ -1150,7 +1184,7 @@ pub(super) fn reproduce_original(
         return Err(reason);
     }
     let mut reader = FrameReader::new(app, detail)?;
-    let (judgement, metrics) = reproduce::measure_burst_with_operation(
+    let (judgement, metrics, frame_verdicts) = reproduce::measure_burst_with_operation(
         prepared,
         &burst.frames,
         &burst.judgement.alarms,
@@ -1161,6 +1195,12 @@ pub(super) fn reproduce_original(
     )?;
     Ok((
         summary(&judgement),
-        ComparisonBurst::of(&prepared.recipe, judgement, metrics, Vec::new()),
+        ComparisonBurst::of(
+            &prepared.recipe,
+            judgement,
+            metrics,
+            frame_verdicts,
+            Vec::new(),
+        ),
     ))
 }

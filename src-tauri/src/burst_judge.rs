@@ -405,7 +405,34 @@ pub(crate) fn judge<'a>(
     loss: &[LossAlarm],
     passes: PassRules,
 ) -> BurstJudgement {
+    judge_with_output(
+        segments,
+        expected_total,
+        regions,
+        coverage,
+        metrics,
+        cameras,
+        loss,
+        passes,
+        false,
+    )
+    .0
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn judge_with_output<'a>(
+    segments: &[PathSegment],
+    expected_total: Option<u32>,
+    regions: &[Region],
+    coverage: GroupCoverage<impl Iterator<Item = u64>>,
+    metrics: impl IntoIterator<Item = &'a FrameMetrics>,
+    cameras: &[String],
+    loss: &[LossAlarm],
+    passes: PassRules,
+    include_frame_verdicts: bool,
+) -> (BurstJudgement, Vec<FrameVerdict>) {
     let frames = index_metrics(metrics, cameras.len());
+    let mut frame_verdicts = include_frame_verdicts.then(FrameVerdictIndex::new);
     let mut judgement = judge_regions(
         segments,
         expected_total,
@@ -414,13 +441,20 @@ pub(crate) fn judge<'a>(
         &frames,
         cameras,
         loss,
+        frame_verdicts.as_mut(),
     );
     judgement.passes = passes.part.to_vec();
     judgement.expected_passes = passes.taught.map(|taught| taught.len() as u32);
     judgement.flags.pass_count_anomaly = passes.mismatch();
-    judgement
+    (
+        judgement,
+        frame_verdicts
+            .map(frame_verdict_results)
+            .unwrap_or_default(),
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn judge_regions(
     segments: &[PathSegment],
     expected_total: Option<u32>,
@@ -429,6 +463,7 @@ fn judge_regions(
     frames: &FrameMetricsIndex<'_>,
     cameras: &[String],
     loss: &[LossAlarm],
+    mut verdicts: Option<&mut FrameVerdictIndex>,
 ) -> BurstJudgement {
     let group_count = u32::try_from(coverage.group_count).unwrap_or(u32::MAX);
     if regions
@@ -490,7 +525,7 @@ fn judge_regions(
         .zip(covered_by_region)
         .map(|(region, covered)| {
             let scope = RegionScope::new(cameras, region, covered);
-            judge_region(&part, region, scope, &mut evidence)
+            judge_region(&part, region, scope, &mut evidence, verdicts.as_deref_mut())
         })
         .collect();
     let unavailable = evidence.reported && !evidence.usable;
@@ -725,10 +760,19 @@ fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding
 
 /// 一帧按给定检查项的独立结论：只看这一帧的指标，不含区域级的均匀性与胶偏。区域划定前的在线帧格用它（检查项取所测走廊的段）。
 pub fn frame_verdict(frame: &FrameMetrics, checks: &SegmentChecks) -> Verdict {
+    with_frame_evidence(frame, || findings_verdict(&judge_frame(frame, checks)))
+}
+
+fn with_frame_evidence(frame: &FrameMetrics, verdict: impl FnOnce() -> Verdict) -> Verdict {
     if frame.measurement_evidence.is_some() && !frame.has_usable_evidence() {
-        return Verdict::ErrInspect;
+        Verdict::ErrInspect
+    } else {
+        verdict()
     }
-    judge_frame(frame, checks)
+}
+
+fn findings_verdict(findings: &BTreeSet<Finding>) -> Verdict {
+    findings
         .iter()
         .map(|f| f.verdict())
         .max()
@@ -744,6 +788,19 @@ pub struct FrameVerdict {
     pub verdict: Verdict,
 }
 
+type FrameVerdictIndex = BTreeMap<(usize, u64), Verdict>;
+
+fn frame_verdict_results(verdicts: FrameVerdictIndex) -> Vec<FrameVerdict> {
+    verdicts
+        .into_iter()
+        .map(|((camera, seq), verdict)| FrameVerdict {
+            camera,
+            seq,
+            verdict,
+        })
+        .collect()
+}
+
 /// 区域划定后的逐帧结论（在线、历史与复测对照共用）：每帧按所在区域的检测相机与检查项判独立指标，与区域判定同一口径；
 /// 直线区域的局部跑偏落到偏离均值超限的帧。胶宽不均、整段胶偏只属于区域，不落到帧上。
 /// 不在区域检测相机里、没测成或不在任何区域的帧没有结论。按 (camera, seq) 排序。
@@ -754,7 +811,7 @@ pub fn frame_verdicts<'a>(
     cameras: &[String],
 ) -> Vec<FrameVerdict> {
     let frames = index_metrics(metrics, cameras.len());
-    let mut verdicts: BTreeMap<(usize, u64), Verdict> = BTreeMap::new();
+    let mut verdicts = FrameVerdictIndex::new();
     for region in regions {
         if !region.has_ordered_frame_range() {
             continue;
@@ -777,40 +834,27 @@ pub fn frame_verdicts<'a>(
                 offset_series(scope.covered[0], &scope.checks, region, &measured, cameras)
             {
                 let mean = series.iter().map(|&(_, x)| x).sum::<f64>() / series.len() as f64;
-                for (m, x) in series {
-                    if (x - mean).abs() > check.max_local_dev_mm {
-                        let verdict = verdicts.entry((m.camera, m.seq)).or_insert(Verdict::Ok);
-                        *verdict = (*verdict).max(Finding::LocalDev.verdict());
-                    }
-                }
+                apply_local_offset(&mut verdicts, check, &series, mean);
             }
         }
     }
-    verdicts
-        .into_iter()
-        .map(|((camera, seq), verdict)| FrameVerdict {
-            camera,
-            seq,
-            verdict,
-        })
-        .collect()
+    frame_verdict_results(verdicts)
 }
 
-/// 直线段胶偏（xs 已去掉区域首尾各一帧，非空）：x 均值 − x_ref 判整段偏移，各帧 x 与均值的最大偏差判局部跑偏。
-fn straight_offset(xs: &[f64], x_ref: f64, check: &OffsetCheck) -> (OffsetStat, BTreeSet<Finding>) {
-    let mean = xs.iter().sum::<f64>() / xs.len() as f64;
-    let stat = OffsetStat {
-        mean_shift: mean - x_ref,
-        max_dev: xs.iter().map(|x| (x - mean).abs()).fold(0.0, f64::max),
-    };
-    let mut found = BTreeSet::new();
-    if stat.mean_shift.abs() > check.max_mean_shift_mm {
-        found.insert(Finding::Shift);
+fn apply_local_offset(
+    verdicts: &mut FrameVerdictIndex,
+    check: &OffsetCheck,
+    series: &[(&FrameMetrics, f64)],
+    mean: f64,
+) {
+    for &(frame, x) in series {
+        if (x - mean).abs() > check.max_local_dev_mm {
+            let verdict = verdicts
+                .entry((frame.camera, frame.seq))
+                .or_insert(Verdict::Ok);
+            *verdict = (*verdict).max(Finding::LocalDev.verdict());
+        }
     }
-    if stat.max_dev > check.max_local_dev_mm {
-        found.insert(Finding::LocalDev);
-    }
-    (stat, found)
 }
 
 /// 整件共用的输入。
@@ -913,6 +957,7 @@ fn judge_region(
     region: &Region,
     scope: RegionScope,
     evidence: &mut EvidenceAvailability,
+    mut verdicts: Option<&mut FrameVerdictIndex>,
 ) -> RegionResult {
     let RegionScope {
         covered,
@@ -966,7 +1011,14 @@ fn judge_region(
 
     let mut findings: BTreeSet<Finding> = measured
         .iter()
-        .flat_map(|m| judge_frame(m, &checks))
+        .flat_map(|frame| {
+            let findings = judge_frame(frame, &checks);
+            if let Some(verdicts) = verdicts.as_deref_mut() {
+                let verdict = with_frame_evidence(frame, || findings_verdict(&findings));
+                verdicts.insert((frame.camera, frame.seq), verdict);
+            }
+            findings
+        })
         .collect();
     // 均匀性：只在直线区域判（D-SB-16）
     if straight && checks.width.enabled {
@@ -980,8 +1032,14 @@ fn judge_region(
 
     let (offset, offset_unjudged) = match region.kind {
         RegionKind::Straight { .. } => {
-            let (offset, unjudged, found) =
-                region_offset(covered[0], &checks, region, &measured, part.cameras);
+            let (offset, unjudged, found) = region_offset(
+                covered[0],
+                &checks,
+                region,
+                &measured,
+                part.cameras,
+                verdicts,
+            );
             findings.extend(found);
             (offset, unjudged)
         }
@@ -1007,11 +1065,7 @@ fn judge_region(
         }
     };
 
-    let verdict = findings
-        .iter()
-        .map(|f| f.verdict())
-        .max()
-        .unwrap_or(Verdict::Ok);
+    let verdict = findings_verdict(&findings);
     let reason = findings
         .iter()
         .filter(|f| f.verdict() == verdict && f.warning().is_none())
@@ -1057,6 +1111,7 @@ fn region_offset(
     region: &Region,
     measured: &[&FrameMetrics],
     cameras: &[String],
+    verdicts: Option<&mut FrameVerdictIndex>,
 ) -> (
     Option<OffsetStat>,
     Option<OffsetUnjudged>,
@@ -1065,8 +1120,24 @@ fn region_offset(
     match offset_series(segment, checks, region, measured, cameras) {
         Err(why) => (None, why, BTreeSet::new()),
         Ok((check, x_ref, series)) => {
-            let xs: Vec<f64> = series.iter().map(|&(_, x)| x).collect();
-            let (stat, found) = straight_offset(&xs, x_ref, check);
+            let mean = series.iter().map(|&(_, x)| x).sum::<f64>() / series.len() as f64;
+            let stat = OffsetStat {
+                mean_shift: mean - x_ref,
+                max_dev: series
+                    .iter()
+                    .map(|&(_, x)| (x - mean).abs())
+                    .fold(0.0, f64::max),
+            };
+            let mut found = BTreeSet::new();
+            if stat.mean_shift.abs() > check.max_mean_shift_mm {
+                found.insert(Finding::Shift);
+            }
+            if stat.max_dev > check.max_local_dev_mm {
+                found.insert(Finding::LocalDev);
+                if let Some(verdicts) = verdicts {
+                    apply_local_offset(verdicts, check, &series, mean);
+                }
+            }
             (Some(stat), None, found)
         }
     }
@@ -1619,6 +1690,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn combined_judgement_preserves_local_offset_and_later_region_frame_verdicts() {
+        let cameras = cameras();
+        let mut segments = plan(&[Straight, Corner]);
+        segments[0].checks.offset = Some(OffsetCheck {
+            enabled: true,
+            max_mean_shift_mm: 10.0,
+            max_local_dev_mm: 5.0,
+        });
+        segments[0].offset_ref = Some(OffsetRef {
+            measure: OffsetMeasure::AbsoluteX,
+            camera: cameras[0].clone(),
+            x_ref: Some(0.0),
+            spread: Some(0.0),
+            edge: None,
+        });
+        let regions = [
+            region(RegionKind::Straight { segment: 1 }, 1, 7),
+            region(RegionKind::Corner { segment: 2 }, 4, 8),
+        ];
+        let mut metrics = frames(8);
+        at(&mut metrics, 0, 2).x_mm = Some(10.0);
+        at(&mut metrics, 0, 4).x_mm = Some(10.0);
+        *at(&mut metrics, 1, 4) = FrameMetrics {
+            camera: 1,
+            seq: 4,
+            ..evidence_frame(StationEvidenceState::Unknown, None)
+        };
+        let (judgement, verdicts) = judge_with_output(
+            &segments,
+            Some(8),
+            &regions,
+            FrameGroup::coverage(&groups_of(&metrics)),
+            &metrics,
+            &cameras,
+            &[],
+            PassRules::NONE,
+            true,
+        );
+
+        assert_eq!(judgement, run(&segments, Some(8), &regions, &metrics));
+        assert_eq!(judgement.verdict, Verdict::NgPosition);
+        assert_eq!(judgement.regions[0].verdict, Verdict::NgPosition);
+        assert_eq!(judgement.regions[1].verdict, Verdict::Ok);
+        let offset = judgement.regions[0].offset.as_ref().unwrap();
+        assert_eq!((offset.mean_shift, offset.max_dev), (4.0, 6.0));
+        assert_eq!(
+            verdicts,
+            frame_verdicts(&segments, &regions, &metrics, &cameras)
+        );
+        let verdict_at = |camera, seq| {
+            verdicts
+                .iter()
+                .find(|frame| (frame.camera, frame.seq) == (camera, seq))
+                .unwrap()
+                .verdict
+        };
+        assert_eq!(verdict_at(0, 2), Verdict::NgPosition);
+        assert_eq!(verdict_at(0, 4), Verdict::Ok);
+        assert_eq!(verdict_at(1, 4), Verdict::ErrInspect);
+    }
+
     /// D-SB-41：直线 / 弯道区域只用本段检测相机——没选中的相机这一帧断胶、缺帧都不影响结论与检测不完整；
     /// 过渡区用两侧段检测相机的并集，选中相机的断胶照常判 NG。
     #[test]
@@ -1795,8 +1928,14 @@ mod tests {
                 edge,
             });
             let measured: Vec<&FrameMetrics> = frames.iter().collect();
-            let (stat, unjudged, found) =
-                region_offset(&segment, &segment.checks, &region, &measured, &cameras());
+            let (stat, unjudged, found) = region_offset(
+                &segment,
+                &segment.checks,
+                &region,
+                &measured,
+                &cameras(),
+                None,
+            );
             (
                 stat.map(|s| s.mean_shift),
                 unjudged,
