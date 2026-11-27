@@ -1725,6 +1725,23 @@ impl Store {
         Ok(())
     }
 
+    pub fn latest_history_ids(&self, q: &HistoryQuery, limit: usize) -> Result<Vec<i64>, String> {
+        let conn = open_read_only(&self.path)?;
+        let (filter, mut args) = Self::filter(q, "");
+        args.push(SqlValue::Integer(
+            i64::try_from(limit).map_err(|e| e.to_string())?,
+        ));
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT id FROM parts{filter} ORDER BY ts DESC, id DESC LIMIT ?"
+            ))
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params_from_iter(args.iter()), |row| row.get(0))
+            .map_err(db_err)?;
+        rows.collect::<Result<_, _>>().map_err(db_err)
+    }
+
     /// 同一筛选条件下与 id 相邻的记录：(较早一件, 较晚一件)，按（时间, 编号）排序，与历史列表同序。
     pub fn neighbors(
         &self,

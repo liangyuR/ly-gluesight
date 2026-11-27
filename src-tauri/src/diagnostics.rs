@@ -90,7 +90,7 @@ fn ok_class(verdict: Verdict) -> bool {
     matches!(verdict, Verdict::Ok | Verdict::OkWithExcursion)
 }
 
-/// 选择要附原图的工件：指定记录时只取指定的；否则按模式取异常件或全部，新的在前，不超过上限。
+/// 按时段导出时，输入已按时间和编号倒序，原图按该顺序取异常件或全部。
 pub fn image_parts(
     parts: &[(i64, Verdict)],
     explicit: bool,
@@ -100,11 +100,14 @@ pub fn image_parts(
     if mode == ImageMode::None {
         return Vec::new();
     }
-    let mut chosen: Vec<_> = parts
+    let candidates = parts
         .iter()
         .filter(|(_, v)| explicit || mode == ImageMode::All || !ok_class(*v))
-        .map(|(id, _)| *id)
-        .collect();
+        .map(|(id, _)| *id);
+    if !explicit {
+        return candidates.take(max).collect();
+    }
+    let mut chosen: Vec<_> = candidates.collect();
     chosen.sort_unstable_by(|a, b| b.cmp(a));
     chosen.truncate(max);
     chosen
@@ -244,28 +247,13 @@ fn collect_parts(
         }
         return Ok(parts);
     }
-    let scopes = request
-        .scope
-        .map_or_else(|| vec![HistoryScope::Real], |s| vec![s]);
-    let mut ids = Vec::new();
-    for scope in scopes {
-        let mut query = HistoryQuery {
-            from: Some(request.from),
-            to: Some(request.to.saturating_add(1)),
-            scope,
-            limit: 500,
-            ..HistoryQuery::default()
-        };
-        loop {
-            let page = store.query(&query)?;
-            ids.extend(page.items.iter().map(|p| p.id));
-            if page.items.len() < 500 || ids.len() > MAX_PARTS {
-                break;
-            }
-            query.offset += 500;
-        }
-    }
-    ids.sort_unstable_by(|a, b| b.cmp(a));
+    let query = HistoryQuery {
+        from: Some(request.from),
+        to: request.to.checked_add(1),
+        scope: request.scope.unwrap_or_default(),
+        ..HistoryQuery::default()
+    };
+    let mut ids = store.latest_history_ids(&query, MAX_PARTS + 1)?;
     if ids.len() > MAX_PARTS {
         notes.push(format!(
             "时间段内记录超过 {MAX_PARTS} 件，只打包最新的 {MAX_PARTS} 件"
@@ -511,7 +499,7 @@ fn build<W: std::io::Write>(
     let mut revisions = BTreeSet::new();
     for detail in &parts {
         csv.extend_from_slice(crate::history::csv_row(&detail.summary).as_bytes());
-        details.extend_from_slice(&serde_json::to_vec(detail).map_err(|e| e.to_string())?);
+        serde_json::to_writer(&mut details, detail).map_err(|e| e.to_string())?;
         details.push(b'\n');
         if let Some(revision) = &detail.summary.recipe_revision {
             revisions.insert((detail.summary.project_id.clone(), revision.clone()));
@@ -587,4 +575,22 @@ pub async fn diagnostics_export(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn time_range_images_prefer_recent_abnormal_parts_over_newly_imported_older_parts() {
+        let by_detection_time = [
+            (4, Verdict::OkWithExcursion),
+            (2, Verdict::NgWidth),
+            (8, Verdict::ErrInspect),
+        ];
+        assert_eq!(
+            image_parts(&by_detection_time, false, ImageMode::Abnormal, 1),
+            [2]
+        );
+    }
 }

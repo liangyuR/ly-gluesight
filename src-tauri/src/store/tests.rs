@@ -95,6 +95,40 @@ fn manual_tags_survive_reopen_and_keep_history_filter_counts_neighbors_and_rejud
 }
 
 #[test]
+fn latest_history_ids_keep_the_newest_ties_within_the_time_range() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let insert = |cycle, ts| {
+        store
+            .insert(&PartRecord {
+                ts,
+                ..burst_part(&recipe, cycle, &judgement, &burst)
+            })
+            .unwrap()
+    };
+    let first = insert("newer", 20);
+    let tie = insert("same-time", 20);
+    let older = insert("imported-older", 10);
+    insert("before-range", 9);
+    insert("at-upper-bound", 30);
+    let query = HistoryQuery {
+        from: Some(10),
+        to: Some(30),
+        offset: 4,
+        limit: 1,
+        ..Default::default()
+    };
+    assert_eq!(store.latest_history_ids(&query, 2).unwrap(), [tie, first]);
+    assert_eq!(
+        store.latest_history_ids(&query, 4).unwrap(),
+        [tie, first, older]
+    );
+}
+
+#[test]
 fn history_export_keeps_one_snapshot_while_writer_commits_across_the_old_page_boundary() {
     use std::sync::mpsc::channel;
     use std::thread;
