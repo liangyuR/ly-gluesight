@@ -1,5 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { errorText } from "../../lib/errors";
 import { subscribe } from "../plc";
 import type { CycleSettings, Readiness, Recipe, RecipeDoc, RecipeSummary, Snapshot } from "./types";
 
@@ -115,25 +116,40 @@ export function useRecipes() {
 
 export function useCycle() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const latest = useRef<Snapshot | null>(null);
+  const retry = useRef<(() => void) | null>(null);
+  const retrySnapshot = useCallback(() => retry.current?.(), []);
 
   useEffect(() => {
-    let alive = true, receivedSnapshot = false;
+    let alive = true, receivedSnapshot = false, reading = false;
     const retired = new Set<string>();
     const update = (next: Snapshot) => {
       if (!alive || next.since < (latest.current?.since ?? -Infinity) || (next.part && retired.has(next.part.cycleId))) return;
       const previous = latest.current?.part?.cycleId;
       if (previous && previous !== next.part?.cycleId) retired.add(previous);
       if (retired.size > 128) retired.delete(retired.values().next().value!);
+      if (!latest.current) setSnapshotError(null);
       latest.current = next;
       setSnapshot(next);
     };
+    const read = () => {
+      if (!alive || reading || receivedSnapshot || latest.current) return;
+      reading = true;
+      setSnapshotError(null);
+      void cycleApi.snapshot().then(value => {
+        if (value && !receivedSnapshot) update(value);
+      }).catch(error => {
+        if (alive && !receivedSnapshot) setSnapshotError(errorText(error));
+      }).finally(() => { reading = false; });
+    };
     const off = subscribe<Snapshot>("cycle://snapshot", value => { receivedSnapshot = true; update(value); });
-    void cycleApi.snapshot().then(value => { if (value && !receivedSnapshot) update(value); }).catch(() => {});
-    return () => { alive = false; off(); };
+    retry.current = read;
+    read();
+    return () => { alive = false; retry.current = null; off(); };
   }, []);
 
-  return { snapshot };
+  return { snapshot, snapshotError, retrySnapshot };
 }
 
 /** 开工就绪报告：定时刷新，配方库变化或 refreshKey 变化时立即重查。 */

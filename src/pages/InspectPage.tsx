@@ -31,7 +31,7 @@ const viewOptions = [{ value: "image", label: "原图" }, { value: "part", label
 const noSegments: PathSegment[] = [];
 
 export default function InspectPage() {
-  const { snapshot } = useCycle();
+  const { snapshot, snapshotError, retrySnapshot } = useCycle();
   const recipes = useRecipes();
   const [view, setView] = useState<"image" | "part">("image");
   const [diagnostics, setDiagnostics] = useState<DiagnosticGroup | null>(null);
@@ -136,10 +136,12 @@ export default function InspectPage() {
         </Chip>
       </div></TitlebarContent>
       <TitlebarContent slot="actions"><div className="inspect-title-actions" role="group" aria-label="在线检测操作">
-        <span className={`qs-badge prod-phase${phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
+        <span className={`qs-badge prod-phase${phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{snapshot ? phaseLabels[phase] : snapshotError ? "状态读取失败" : "状态确认中"}</span>
         {snapshot && <MaintenanceToggle maintenance={snapshot.maintenance} compact />}
         <Button size="sm" variant="text" onClick={() => setDiagnostics("readiness")}>诊断</Button>
       </div></TitlebarContent>
+      {snapshotError && <Alert tone="warn" title="在线检测状态读取失败"
+        action={<Button size="sm" onClick={retrySnapshot}>重新读取</Button>}>{snapshotError}</Alert>}
       {!!snapshot?.measurementWorkers.timedOut && <Alert tone="ng">
         测量线程超时未返回：{snapshot.measurementWorkers.timedOut} / {snapshot.measurementWorkers.capacity}，当前可用容量 {snapshot.measurementWorkers.availableCapacity}。
         {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，新到的工件无法检测。"}

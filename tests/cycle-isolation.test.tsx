@@ -22,6 +22,19 @@ beforeEach(() => {
 });
 
 describe("在线周期身份与迟到响应隔离", () => {
+  it.each([false, true])("首次读取失败后重试（期间收到新周期=%s） → 恢复最新状态", async arrives => {
+    const retry = deferred<Snapshot | null>();
+    vi.mocked(cycleApi.snapshot).mockRejectedValueOnce(new Error("状态读失败")).mockReturnValueOnce(retry.promise);
+    const hook = renderHook(useCycle);
+    await waitFor(() => expect(hook.result.current.snapshotError).toBe("状态读失败"));
+
+    act(() => hook.result.current.retrySnapshot());
+    expect(hook.result.current.snapshotError).toBeNull();
+    if (arrives) emit("cycle://snapshot", state("cycle-2", 2));
+    await act(async () => retry.resolve(state()));
+    expect(hook.result.current.snapshot?.part?.cycleId).toBe(arrives ? "cycle-2" : "cycle-1");
+  });
+
   it("同 SN 新周期已经开始 → 迟到的旧周期快照不能覆盖当前件", async () => {
     const hook = renderHook(useCycle);
     await waitFor(() => expect(hook.result.current.snapshot?.part?.cycleId).toBe("cycle-1"));

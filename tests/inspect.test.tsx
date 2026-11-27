@@ -38,7 +38,7 @@ beforeEach(() => {
   state = snapshot(); layout = candidate().layout; values = {};
   recipeList = [burstSummary(recipe()), burstSummary(recipe("B"))];
   report = readiness();
-  vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state }));
+  vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, snapshotError: null, retrySnapshot: vi.fn() }));
   vi.mocked(useLayout).mockImplementation(() => layout);
   vi.mocked(cycleApi.selectRecipe).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.setMaintenance).mockReset().mockResolvedValue(undefined);
@@ -50,6 +50,15 @@ beforeEach(() => {
 });
 const nativeSelect = (name: string, root: Pick<typeof screen, "getByLabelText"> = screen) => root.getByLabelText(name, { selector: "select" });
 const manual = () => nativeSelect("当前检测配方");
+
+it("在线状态首次读取失败 → 在当前页显示错误并提供重新读取", async () => {
+  const retrySnapshot = vi.fn();
+  vi.mocked(useCycle).mockReturnValue({ snapshot: null, snapshotError: "暂时无法读取在线状态", retrySnapshot });
+  render(<MemoryRouter><InspectPage /></MemoryRouter>);
+  expect(screen.getByText("暂时无法读取在线状态")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "重新读取" }));
+  expect(retrySnapshot).toHaveBeenCalledOnce();
+});
 
 it("历史查询期间清除回查位置 → 查询稍后成功也不离开在线页", async () => {
   let showRecord: (id: number) => void = () => {};
