@@ -33,6 +33,35 @@ it.each(["示教", "历史"])("%s的1000帧组 → 跳到末帧并跨窗口键�
   expect(screen.getByLabelText("当前帧")).toHaveTextContent("1:1");
 });
 
+it("帧组序号稀疏且跳过范围重叠 → 只统计实际帧组，按键仍定位原序号", async () => {
+  const groups: FrameGroupView[] = [2, 4, 8, 11, 14, 21].map(seq => ({
+    seq, incomplete: false, cells: [{ status: "measured", verdict: "OK", frameCounter: seq }],
+  }));
+  const region = burstPartDetail().burst!.judgement.regions[0];
+  const regions = [[10, 16], [4, 11], [5, 7]].map(([firstSeq, lastSeq]) => ({
+    ...region, region: { firstSeq, lastSeq, kind: { type: "skipped" as const, segment: 1 } },
+  }));
+  function Browser() {
+    const [selected, setSelected] = useState(2);
+    return <FrameGroupStrip groups={groups} cameras={["CAM-1"]} regions={regions} selected={selected} selectedCamera={0}
+      onSelectCell={setSelected} />;
+  }
+
+  render(<Browser />);
+  expect(screen.getByText("生产跳过 4 帧组 · 不参与判定")).toBeVisible();
+  const strip = within(screen.getByRole("group", { name: "帧组" }));
+  const first = strip.getByRole("button", { name: "帧组 2 · CAM-1 · OK" });
+  const user = userEvent.setup();
+  await user.click(first);
+  await user.keyboard("{ArrowRight}");
+  expect(strip.getByRole("button", { name: "帧组 4 · CAM-1 · 生产跳过", pressed: true })).toHaveFocus();
+  await user.keyboard("{End}");
+  expect(strip.getByRole("button", { name: "帧组 21 · CAM-1 · OK", pressed: true })).toHaveFocus();
+  await user.keyboard("{Home}");
+  expect(first).toHaveFocus();
+  expect(first).toHaveAttribute("aria-pressed", "true");
+});
+
 it("3000条追溯记录分页并切换筛选 → 保留选中帧，恢复筛选后定位该页且每页不超过配置数量", async () => {
   const detail = burstPartDetail(), burst = detail.burst!;
   burst.frames = cameras.flatMap((_, camera) => Array.from({ length: 1000 }, (_, i) => ({ camera, seq: i + 1, status: i === 50 ? "error" as const : "measured" as const, frameCounter: i + 1, triggerCounter: i + 1, region: 0, metrics: frameMetrics(camera, i + 1), rawFile: "frame.pgm" })));

@@ -1,5 +1,6 @@
 import type { FrameCellStatus, FrameGroupView, OffsetUnjudged, PartViewBurst, PathSegment, Region, UncheckedItem, Uninspected } from "../plan/types";
 import type { ResultView, Verdict } from "./types";
+import { firstGroupAtOrAfter } from "./frameGroups";
 
 export type IncompleteFrameStatus = Extract<FrameCellStatus, "missing" | "error" | "unmeasured" | "outOfCorridor">;
 
@@ -57,17 +58,6 @@ function applicableCameras(region: Region, segment: PathSegment | undefined, cam
   }
   if (!segment || segment.skip) return [];
   return cameras.flatMap((name, i) => !segment.cameras.length || segment.cameras.includes(name) ? [i] : []);
-}
-
-// 在线快照按帧号升序生成，正常情况下从 1 连续编号。
-function firstGroupAtOrAfter(groups: readonly FrameGroupView[], seq: number) {
-  let low = 0, high = groups.length;
-  while (low < high) {
-    const mid = low + Math.floor((high - low) / 2);
-    if (groups[mid].seq < seq) low = mid + 1;
-    else high = mid;
-  }
-  return low;
 }
 
 function incompleteGroupEvidence(sequences: readonly number[], groups: readonly FrameGroupView[], relevant: readonly number[], names: readonly string[]) {
