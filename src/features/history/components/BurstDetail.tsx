@@ -138,13 +138,17 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const wanted = search.get("comparison");
   const s = detail.summary;
   const verdict = partVerdict(s);
+  const originalGroups = useMemo(() => historyGroups(burst), [burst]);
+  const [entry] = useState(() => historyReturnContext(search, originalGroups.map(group => group.seq)));
   const [comparison, setComparison] = useState<Comparison | null>(null);
-  const [showOriginal, setShowOriginal] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(entry.original);
+  const [settled, setSettled] = useState(false);
+  const waitingForComparison = !!wanted && !showOriginal && !settled && !comparison;
   const compared = useMemo(() => comparison?.burst ? comparisonBurst(burst, comparison.burst) : null, [burst, comparison]);
   const shown = compared && !showOriginal ? compared : burst, j = shown.judgement;
-  const groups = useMemo(() => historyGroups(shown), [shown]);
+  const groups = useMemo(() => shown === burst ? originalGroups : historyGroups(shown), [shown, burst, originalGroups]);
   const lastSeq = groups.at(-1)?.seq ?? 1;
-  const [selection, setSelection] = useState({ camera: 0, seq: groups[0]?.seq ?? 1 });
+  const [selection, setSelection] = useState({ camera: entry.camera, seq: entry.seq });
   const [station, setStation] = useState<number | null>(null);
   useEffect(() => { setStation(null); }, [selection.camera, selection.seq, comparison?.id, showOriginal]);
   const [saved, setSaved] = useState<ComparisonSummary[]>([]);
@@ -155,7 +159,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const pending = useRef(false), serial = useRef(0), alive = useRef(true);
   const [options, setOptions] = useState<CompareOptions | null>(null);
   // 选来复测的候选：任意本机候选都行（D-SB-58）；null 为记录所属配方的候选
-  const [chosen, setChosen] = useState<string | null>(null);
+  const [chosen, setChosen] = useState(entry.candidate);
   // 可选候选单独留着：换候选时重新查选项，选择框不随之消失
   const [choices, setChoices] = useState<CompareCandidate[]>([]);
   const candidate = options?.candidate ?? null;
@@ -163,13 +167,6 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const current = useRef({ scope, historyId: s.id });
   current.current = { scope, historyId: s.id };
   useEffect(() => { alive.current = true; return () => { alive.current = false; serial.current++; }; }, []);
-  // 换件时回到第一帧组；从分段与示教页返回时地址带着离开时的相机、帧组与显示哪份结果
-  useEffect(() => {
-    const back = historyReturnContext(search, groups.map(g => g.seq));
-    setSelection({ camera: back.camera, seq: back.seq });
-    setComparison(null); setShowOriginal(back.original); setError("");
-    setChosen(back.candidate); setChoices([]);
-  }, [s.id]);
 
   const frames = useMemo(() => new Map(shown.frames.map(frame => [`${frame.camera}:${frame.seq}`, frame])), [shown.frames]);
   const summaryFrame = frames.get(`${selection.camera}:${selection.seq}`) ?? null;
@@ -177,13 +174,13 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const frameKey = `${s.id}:${selection.camera}:${selection.seq}`;
   const [frameDetail, setFrameDetail] = useState<{ key: string; frame: FrameRecord | null; error: string } | null>(null);
   useEffect(() => {
-    if (!originalShown || !summaryFrame?.metrics) return;
+    if (waitingForComparison || !originalShown || !summaryFrame?.metrics) return;
     let live = true;
     void historyApi.frameDetail(s.id, selection.camera, selection.seq)
       .then(value => live && setFrameDetail({ key: frameKey, frame: value.burst?.frames.find(frame => frame.camera === selection.camera && frame.seq === selection.seq) ?? null, error: "" }))
       .catch(error => live && setFrameDetail({ key: frameKey, frame: null, error: errorText(error) }));
     return () => { live = false; };
-  }, [frameKey, originalShown, burst]);
+  }, [frameKey, originalShown, burst, waitingForComparison]);
   const frame = originalShown && frameDetail?.key === frameKey ? frameDetail.frame ?? summaryFrame : summaryFrame;
   const frameLoading = originalShown && !!summaryFrame?.metrics && frameDetail?.key !== frameKey;
   const selectFrame = useCallback((camera: number, seq: number) => setSelection({ camera, seq }), []);
@@ -204,7 +201,6 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   }, []);
 
   // 地址里要的对照读完（或没有、读不到）才算页面成形，从分段与示教页返回时据此恢复滚动位置
-  const [settled, setSettled] = useState(false);
   useEffect(() => {
     let live = true;
     const mine = ++serial.current;
@@ -357,7 +353,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
       {options && !rawReason && options.raw.note && <Text as="p" muted className="compare-note">从原图复测：{options.raw.note}</Text>}
       {editing && ws.error && <Alert tone="warn">{ws.error}</Alert>}
       <OperationStatus operation={operation} label="历史复算" />
-      {loadingComparison && <Text muted role="status">正在读取对照结果…</Text>}
+      {(loadingComparison || waitingForComparison) && <Text muted role="status">正在读取对照结果…</Text>}
       {!!saved.length && <Select label="已保存的对照结果" aria-label="已保存对照结果" disabled={working} value={loadingComparison || comparison?.id || ""} onValueChange={id => void chooseComparison(id)}
         options={[{ value: "", label: "选择记录" }, ...saved.map(c => ({ value: c.id, label: formatTime(c.createdAt) + " · " + comparisonLabel[c.source] + (c.source === "original" ? "" : " · " + c.candidateId + " 修订 " + c.candidateRevision) + " · " + verdictLabel[c.judgement.verdict] }))]} />}
     </Panel>
@@ -384,7 +380,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
           options={shown.cameras.map((name, c) => ({ value: String(c), label: name }))} />
       </>}>
         <FrameGroupStrip groups={groups} cameras={shown.cameras} regions={j.regions} selected={selection.seq} selectedCamera={selection.camera} onSelect={seq => setSelection(prev => ({ ...prev, seq }))} onSelectCell={(seq, camera) => setSelection({ seq, camera })} />
-        <div className="wp-stack">
+        {!waitingForComparison && <div className="wp-stack">
           <div className="hist-frame-tiles" aria-label={`帧组 ${selection.seq} 各相机原图`}>
             {shown.cameras.map((name, c) => <FrameTile key={c} detail={detail} comparison={viewing ? comparison : null} camera={c} recordCamera={shown.recordCameras ? shown.recordCameras[c] : c} cameraName={name} seq={selection.seq}
               frame={c === selection.camera ? frame : frames.get(`${c}:${selection.seq}`) ?? null} selected={c === selection.camera} onSelect={() => setSelection(prev => ({ ...prev, camera: c }))}
@@ -414,7 +410,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
               </Suspense>
             </div>
             : <Text as="p" muted>这一帧没有逐站胶宽数据（未测、缺帧或本段不检测）。</Text>}
-        </div>
+        </div>}
       </Panel>
       <Panel title={viewing ? `${viewing}整件判定` : "原始整件判定"} className="side">
         <p className="reason-box">{displayReason(j.reason)}</p>

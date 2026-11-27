@@ -64,6 +64,29 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.getAllByText(/合成联调 · PC 混胶报警 · 偏黄/).length).toBeGreaterThan(0);
   });
 
+  it("带定位和候选的历史链接 → 首次加载直接读取目标帧组和候选", async () => {
+    const candidate = { id: "B", revision: 4, version: 3, name: "复测候选" };
+    const yes = { available: true, reason: null };
+    vi.mocked(workspaceApi.historyCompareOptions).mockResolvedValue({ candidate, choices: [candidate], original: yes, rules: yes, raw: yes });
+    vi.mocked(workspaceApi.historyFrameView).mockImplementation(async (_, camera, seq) => ({
+      segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5,
+      edges: [[[10, seq + 10], [20, seq + 10]]], partEdges: [], metrics: frameMetrics(camera, seq),
+    }));
+
+    show("/history/1?camera=2&seq=5&candidate=B&view=original");
+
+    expect(await screen.findByLabelText("复测配方", { selector: "select" })).toHaveValue("B");
+    const image = await screen.findByRole("img", { name: "原始 SN SN-101 · CAM-3 · 帧组 5" });
+    const lines = await within(image).findByLabelText("测量横线");
+    expect(lines.querySelector("line")).toHaveAttribute("y1", "15");
+    expect(await screen.findByText(/CAM-3 · 帧组 5 逐站胶宽/)).toBeVisible();
+
+    expect(new Set(vi.mocked(burstImageApi.record).mock.calls.map(([, , seq]) => seq))).toEqual(new Set([5]));
+    expect(new Set(vi.mocked(workspaceApi.historyFrameView).mock.calls.map(([, , seq]) => seq))).toEqual(new Set([5]));
+    expect(new Set(vi.mocked(historyApi.frameDetail).mock.calls.map(([, camera, seq]) => `${camera}:${seq}`))).toEqual(new Set(["2:5"]));
+    expect(new Set(vi.mocked(workspaceApi.historyCompareOptions).mock.calls.map(([, id]) => id))).toEqual(new Set(["B"]));
+  });
+
   it("对照有生产跳过区域 → 帧格、详情和区域显示跳过，切回原始记录恢复真实NG", async () => {
     const burst = detail.burst!;
     burst.frameVerdicts = burst.frameVerdicts.map(v => v.camera === 0 && v.seq === 1 ? { ...v, verdict: "NG_GAP" } : v);
@@ -154,6 +177,8 @@ describe("历史详情（段配方记录）", () => {
     expect(await screen.findByText("候选原图复测整件判定")).toBeVisible();
     expect(screen.getByText("12.00 mm")).toBeVisible();
     await waitFor(() => expect(workspaceApi.recordFrameView).toHaveBeenCalledWith(detail.summary.id, "compare-1", 0, 1, expect.any(AbortSignal)));
+    expect(workspaceApi.historyFrameView).not.toHaveBeenCalled();
+    expect(historyApi.frameDetail).not.toHaveBeenCalled();
     // 只有选中相机的原图能悬停测站；悬停第 2 站的测量线 → 胶宽折线标出第 2 站，原图上这条线加粗
     const hit = await waitFor(() => { const lines = document.querySelectorAll('[data-station="1"]'); expect(lines).toHaveLength(1); return lines[0]; });
     await userEvent.hover(hit);
@@ -211,6 +236,7 @@ describe("历史详情（段配方记录）", () => {
     expect(await screen.findByText(/从原图复测：这些段没有可用走廊，复测时不测/)).toBeVisible();
     expect(within(await screen.findByRole("list", { name: "没测的段" })).getByRole("listitem")).toHaveTextContent("第 2 段相机 CAM-2：尚未示教检测走廊");
     expect(screen.getByRole("button", { name: "从原图复测整件" })).toBeEnabled();
+    expect(await screen.findByText(/CAM-1 · 帧组 1 逐站胶宽/)).toBeVisible();
   });
 
   // 防的回归：原始记录只有选了候选对照才有辅助线，现场多配方并行时看不到；原始记录按记录自己的发布包取叠图
