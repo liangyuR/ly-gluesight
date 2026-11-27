@@ -1314,7 +1314,7 @@ async fn compare_at(
             } else {
                 HistoryCompareInput::StoredMetrics
             };
-            let (detail, original) = store.comparison_input(history_id, input)?;
+            let (mut detail, original) = store.comparison_input(history_id, input)?;
             // 任意候选都能复测任意记录（不看型号、配方编号与所属项目）；按规则重判仍需记录的配方快照
             let original = match original {
                 Some(original) => Some(original),
@@ -1324,7 +1324,7 @@ async fn compare_at(
                 &app,
                 &w,
                 &recipe,
-                &detail,
+                &mut detail,
                 original.as_deref(),
                 raw,
                 operation,

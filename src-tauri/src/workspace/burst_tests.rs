@@ -273,6 +273,76 @@ pub(super) fn stored_record(saved: &[usize]) -> (std::path::PathBuf, crate::stor
     (dir, detail)
 }
 
+#[test]
+fn rules_comparison_uses_frame_identity_and_keeps_unmeasured_tail_and_station_data() {
+    use crate::burst_judge::{MeasurementEvidence, StationEvidence, StationEvidenceState};
+
+    let (dir, mut detail) = stored_record(&[]);
+    let _ = std::fs::remove_dir_all(dir);
+    let recipe = crate::store::burst_fixture::recipe();
+    let burst = detail.burst.as_mut().unwrap();
+    let measured_frame = burst
+        .frames
+        .iter_mut()
+        .find(|frame| (frame.camera, frame.seq) == (1, 2))
+        .unwrap();
+    let saved = Arc::make_mut(measured_frame.metrics.as_mut().unwrap());
+    saved.camera = 2;
+    saved.seq = 9;
+    saved.widths = vec![Some(3.875), Some(4.25)];
+    saved.measurement_evidence = Some(MeasurementEvidence {
+        version: 1,
+        stations: [1.0, 2.0]
+            .into_iter()
+            .map(|x| StationEvidence {
+                state: StationEvidenceState::Exact,
+                position: Some([x, 3.0]),
+                ..Default::default()
+            })
+            .collect(),
+        exact_stations: 2,
+        present_ratio: Some(1.0),
+        ..Default::default()
+    });
+    let expected = FrameMetrics {
+        camera: 1,
+        seq: 2,
+        ..saved.clone()
+    };
+    let tail_states = [
+        FrameState::Missing,
+        FrameState::Unmeasured,
+        FrameState::NotInspected,
+    ];
+    for frame in burst.frames.iter_mut().filter(|frame| frame.seq == 4) {
+        frame.status = tail_states[frame.camera];
+        frame.metrics = None;
+    }
+
+    let (judgement, metrics) =
+        super::burst_history::judge_stored_comparison(&recipe, &recipe.plan_cameras(), burst);
+    assert_eq!(judgement.group_count, 4);
+    assert!(judgement.flags.incomplete);
+    assert_eq!(
+        metrics
+            .iter()
+            .find(|frame| (frame.camera, frame.seq) == (1, 2)),
+        Some(&expected)
+    );
+    assert_eq!(
+        metrics
+            .iter()
+            .filter(|frame| frame.seq == 4)
+            .map(|frame| (frame.camera, frame.state, frame.widths.is_empty()))
+            .collect::<Vec<_>>(),
+        [
+            (0, FrameState::Missing, true),
+            (1, FrameState::Unmeasured, true),
+            (2, FrameState::NotInspected, true)
+        ]
+    );
+}
+
 /// 计划相机按 `cameras` 顺序的候选；样例配方里没有的相机编号照 cam1 的参数新建（记录里也就没有它的原图）。
 fn candidate_with(cameras: &[&str]) -> Workspace {
     let mut w = burst_workspace(&[Straight]);

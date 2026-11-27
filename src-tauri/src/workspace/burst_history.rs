@@ -147,15 +147,15 @@ pub(super) fn judge_frames(
 pub(crate) fn repair_shadow_regions(store: &Store) -> Result<(usize, Vec<String>), String> {
     let (mut repaired, mut skipped) = (0, Vec::new());
     for id in store.shadow_parts_without_regions()? {
-        let (detail, recipe) = match store.comparison_input(id, HistoryCompareInput::StoredMetrics)
-        {
-            Ok(input) => input,
-            Err(error) => {
-                skipped.push(format!("记录 #{id} 读取失败，未补回：{error}"));
-                continue;
-            }
-        };
-        let Some(burst) = detail.burst.as_ref() else {
+        let (mut detail, recipe) =
+            match store.comparison_input(id, HistoryCompareInput::StoredMetrics) {
+                Ok(input) => input,
+                Err(error) => {
+                    skipped.push(format!("记录 #{id} 读取失败，未补回：{error}"));
+                    continue;
+                }
+            };
+        let Some(burst) = detail.burst.as_mut() else {
             continue;
         };
         let s = &detail.summary;
@@ -165,8 +165,8 @@ pub(crate) fn repair_shadow_regions(store: &Store) -> Result<(usize, Vec<String>
         };
         let metrics: Vec<FrameMetrics> = burst
             .frames
-            .iter()
-            .filter_map(|f| f.metrics.as_deref().cloned())
+            .iter_mut()
+            .filter_map(|frame| frame.metrics.take().map(Arc::unwrap_or_clone))
             .collect();
         let judged = judge_frames(
             &recipe.path_segments,
@@ -317,18 +317,43 @@ pub(super) fn remeasure_with_operation(
 }
 
 /// 记录里存的每帧指标；没存指标的帧按帧状态补一条没有测量值的指标。
-fn stored_metrics(frames: &[FrameRecord]) -> Vec<FrameMetrics> {
+fn take_stored_metrics(frames: &mut [FrameRecord]) -> Vec<FrameMetrics> {
     frames
-        .iter()
-        .map(|frame| match frame.metrics.as_deref() {
+        .iter_mut()
+        .map(|frame| match frame.metrics.take() {
             Some(metrics) => FrameMetrics {
                 camera: frame.camera,
                 seq: frame.seq,
-                ..metrics.clone()
+                ..Arc::unwrap_or_clone(metrics)
             },
             None => burst::frame_without_metrics(frame.camera, frame.seq, frame.status, None),
         })
         .collect()
+}
+
+pub(super) fn judge_stored_comparison(
+    recipe: &Recipe,
+    cameras: &[String],
+    burst: &mut PartDetailBurst,
+) -> (BurstJudgement, Vec<FrameMetrics>) {
+    let regions: Vec<Region> = burst
+        .judgement
+        .regions
+        .iter()
+        .map(|result| result.region.clone())
+        .collect();
+    let metrics = take_stored_metrics(&mut burst.frames);
+    let judgement = burst_judge::judge(
+        &recipe.path_segments,
+        recipe.expected_total(),
+        &regions,
+        FrameGroup::coverage(&frame_groups(&metrics, cameras.len())),
+        &metrics,
+        cameras,
+        &burst.judgement.alarms,
+        recipe.pass_rules(&burst.judgement.passes),
+    );
+    (judgement, metrics)
 }
 
 /// 录制原图齐：录制证据完整，且除缺帧外每帧都有原图引用（与前端历史详情 `rawComplete` 同一口径）。
@@ -991,26 +1016,17 @@ pub(super) fn compare(
     app: &AppHandle,
     w: &Workspace,
     recipe: &Recipe,
-    detail: &PartDetail,
+    detail: &mut PartDetail,
     original: Option<&Recipe>,
     raw: bool,
     operation: &crate::operation::Operation,
 ) -> Result<(judge::Judgement, ComparisonBurst), String> {
-    let burst = detail
-        .burst
-        .as_ref()
-        .ok_or("这条历史是旧拍照点记录，不能用段配方候选对照")?;
-    let coverage = if raw {
-        Some(prepare_raw_coverage(detail, burst, recipe, w)?)
-    } else {
-        if let Some(reason) = rules_blocker(burst, original, recipe) {
-            return Err(reason);
-        }
-        None
-    };
+    let legacy = "这条历史是旧拍照点记录，不能用段配方候选对照";
     let cameras = recipe.plan_cameras();
     let mut unmeasured = Vec::new();
-    let (judgement, metrics) = if let Some(coverage) = coverage {
+    let (judgement, metrics) = if raw {
+        let burst = detail.burst.as_ref().ok_or(legacy)?;
+        let coverage = prepare_raw_coverage(detail, burst, recipe, w)?;
         let (measurer, skipped) = CandidateMeasurer::from_coverage(app, w, recipe, coverage)?;
         unmeasured = skipped;
         let (map, frames) = candidate_inputs(recipe, burst);
@@ -1088,25 +1104,12 @@ pub(super) fn compare(
         );
         (judgement, metrics)
     } else {
+        let burst = detail.burst.as_mut().ok_or(legacy)?;
+        if let Some(reason) = rules_blocker(burst, original, recipe) {
+            return Err(reason);
+        }
         operation.stage("summarizing")?;
-        let regions: Vec<Region> = burst
-            .judgement
-            .regions
-            .iter()
-            .map(|r| r.region.clone())
-            .collect();
-        let metrics = stored_metrics(&burst.frames);
-        let judgement = burst_judge::judge(
-            &recipe.path_segments,
-            recipe.expected_total(),
-            &regions,
-            FrameGroup::coverage(&frame_groups(&metrics, cameras.len())),
-            &metrics,
-            &cameras,
-            &burst.judgement.alarms,
-            recipe.pass_rules(&burst.judgement.passes),
-        );
-        (judgement, metrics)
+        judge_stored_comparison(recipe, &cameras, burst)
     };
     // 叠图按这些尺寸重建测量图；还没示教帧的相机没有走廊，尺寸用不到
     let sizes = super::burst::taught_sizes(w);
