@@ -61,12 +61,7 @@ interface Props {
 export default function HistoryPicker({ recipeId, title, help, disabled, confirmLabel, nameOf, onConfirm, onError }: Props) {
   const recipes = useRecipes();
   const projects = useProjectDirectory();
-  const [page, setPage] = useState<HistoryCandidatePage | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState("");
   const [reload, setReload] = useState(0);
-  const [picked, setPicked] = useState<number | null>(null);
-  const [previewId, setPreviewId] = useState<number | null>(null);
   const [working, setWorking] = useState(false);
   const [range, setRange] = useState("all");
   const [project, setProject] = useState("");
@@ -76,49 +71,58 @@ export default function HistoryPicker({ recipeId, title, help, disabled, confirm
   const [offset, setOffset] = useState(0);
   const currentId = projects.current?.id ?? null;
   const projectFilter = project === CURRENT_PROJECT ? currentId : project || null;
-  const query = useMemo<HistoryCandidateQuery>(() => ({
+  const filters = useMemo<HistoryCandidateQuery>(() => ({
     project: projectFilter,
     recipeId: recipe || null,
     sn,
     from: rangeStart(ranges.find(r => r.value === range)!.days),
     verdicts: verdictGroups.filter(g => groups.includes(g.key)).flatMap(g => g.verdicts),
-    offset,
     limit: PAGE,
-  }), [projectFilter, recipe, sn, range, groups, offset]);
+  }), [projectFilter, recipe, sn, range, groups]);
   // 选“当前项目”但当前项目还没读到时不查，免得把全部项目的记录当成当前项目的
   const blocked = project === CURRENT_PROJECT && !currentId;
+  const request = useMemo(() => blocked ? null : { recipeId, filters, offset, reload }, [blocked, recipeId, filters, offset, reload]);
+  const [response, setResponse] = useState<{ request: NonNullable<typeof request>; page: HistoryCandidatePage | null; error?: string } | null>(null);
+  type Choice = { request: typeof request; id: number };
+  const [picked, setPicked] = useState<Choice | null>(null);
+  const [selection, setSelection] = useState<Choice | null>(null);
   useEffect(() => {
-    if (blocked) return;
+    if (!request) return;
     let alive = true;
-    setLoadError("");
-    setLoading(true);
-    workspaceApi.historyCandidates(recipeId, query)
-      .then(r => { if (alive) setPage(r); })
-      .catch(e => { if (alive) { setPage({ total: 0, items: [] }); setLoadError(errorText(e)); } })
-      .finally(() => { if (alive) setLoading(false); });
+    workspaceApi.historyCandidates(request.recipeId, { ...request.filters, offset: request.offset })
+      .then(page => { if (alive) setResponse({ request, page }); })
+      .catch(e => { if (alive) setResponse({ request, page: null, error: errorText(e) }); });
     return () => { alive = false; };
-  }, [recipeId, query, blocked, reload]);
-  useEffect(() => { setPicked(null); setPreviewId(null); }, [recipeId]);
-  // 换筛选或翻页后所选的件可能不在列表里：清掉选择，确认只能提交看得见的件
-  useEffect(() => { setPicked(null); }, [query]);
-  const rows = page?.items ?? null;
+  }, [request]);
+  const current = response?.request === request ? response : null;
+  const page = current?.page;
+  const rows = page?.items ?? [];
+  const loading = request != null && !current;
+  const loadError = blocked ? projects.error : current?.error;
+  const pagingTotal = request && response?.request.recipeId === recipeId && response.request.filters === filters
+    ? response.page?.total ?? 0 : 0;
+  const pickedId = picked?.request === request ? picked.id : null;
+  const previewId = selection?.request === request ? selection.id : null;
+  const selected = rows.find(r => r.recordId === pickedId && !blockers(r).length);
+  const canConfirm = !disabled && !working && selected != null;
   const filter = (apply: () => void) => { apply(); setOffset(0); };
   const hasFilters = range !== "all" || !!project || !!recipe || !!sn || groups.length > 0;
   const reset = () => filter(() => { setRange("all"); setProject(""); setRecipe(""); setSn(""); setGroups([]); });
-  const usable = rows?.filter(r => !blockers(r).length).length ?? 0;
+  const usable = rows.filter(r => !blockers(r).length).length;
+  const showPreview = (id: number) => setSelection({ request, id });
   const pick = (id: number, on: boolean) => {
-    setPicked(on ? id : null);
-    if (on) setPreviewId(id);
+    setPicked(on ? { request, id } : null);
+    if (on) showPreview(id);
   };
   const confirm = async () => {
-    if (picked == null || working) return;
+    if (!canConfirm) return;
     setWorking(true);
     try {
-      if (await onConfirm(picked)) { setPicked(null); setReload(n => n + 1); }
+      if (await onConfirm(selected.recordId)) { setPicked(null); setReload(n => n + 1); }
     } catch (e) { onError(errorText(e)); } finally { setWorking(false); }
   };
   const columns: TableColumn<HistoryCandidate>[] = [
-    { key: "use", header: "选用", render: r => <span title={blockers(r).join("；") || undefined} onFocus={() => setPreviewId(r.recordId)}><Checkbox label={<span className="qs-sr-only">{"选用 SN " + r.sn}</span>} checked={r.recordId === picked} disabled={disabled || working || blockers(r).length > 0} onCheckedChange={on => pick(r.recordId, on)}/></span> },
+    { key: "use", header: "选用", render: r => <span title={blockers(r).join("；") || undefined} onFocus={() => showPreview(r.recordId)}><Checkbox label={<span className="qs-sr-only">{"选用 SN " + r.sn}</span>} checked={r.recordId === pickedId} disabled={disabled || working || blockers(r).length > 0} onCheckedChange={on => pick(r.recordId, on)}/></span> },
     { key: "time", header: "时间", render: r => pieceTime(r.ts) },
     { key: "sn", header: "SN", render: r => <span className="mono">{r.sn}</span> },
     { key: "mode", header: "模式", render: r => <>{modeLabels[r.mode]}{r.fixture != null && <> <Badge tone="neutral">手动配置</Badge></>}</> },
@@ -129,9 +133,15 @@ export default function HistoryPicker({ recipeId, title, help, disabled, confirm
     { key: "timing", header: "时长 / 实测帧率（设定）", render: timing },
     { key: "complete", header: "原图", render: r => <Badge tone={r.complete ? "ok" : "warn"}>{r.complete ? "完整" : "不完整"}</Badge> },
     { key: "reason", header: "不可用原因", render: r => <>{blockers(r).length ? blockers(r).join("；") : <span className="muted">可选用</span>}{r.warnings.map(w => <span key={w}> <Badge tone="warn">{w}</Badge></span>)}</> },
-    { key: "preview", header: "原图预览", render: r => <Button size="sm" variant="text" aria-label={"预览 SN " + r.sn} aria-pressed={previewId === r.recordId} disabled={!r.groupCount} onClick={() => setPreviewId(r.recordId)}>看图</Button> },
+    { key: "preview", header: "原图预览", render: r => <Button size="sm" variant="text" aria-label={"预览 SN " + r.sn} aria-pressed={previewId === r.recordId} disabled={!r.groupCount} onClick={() => showPreview(r.recordId)}>看图</Button> },
   ];
-  const preview = rows?.find(r => r.recordId === previewId) ?? null;
+  const preview = rows.find(r => r.recordId === previewId);
+  const emptyText = blocked
+    ? (projects.loading ? "正在读取当前项目…" : "当前项目不可用，请选择其他项目范围。")
+    : loading ? "正在读取历史件…"
+    : loadError ? "历史件列表未加载。"
+    : hasFilters ? "没有符合筛选条件的录制件，试试放宽筛选。"
+    : "本机还没有录制件。开启维护模式跟着生产采图后，可在这里选用。";
   return <Panel title={title} titleHelp={help} actions={page && <Badge tone={usable ? "ok" : "warn"}>{`本页可选用 ${usable} / ${page.items.length} 件，共 ${page.total} 件`}</Badge>}>
     <div className="wp-picker-filters" role="group" aria-label="筛选历史件">
       <SegmentedControl label="记录日期" options={ranges.map(({ value, label }) => ({ value, label }))} value={range} onValueChange={value => filter(() => setRange(value))} />
@@ -153,15 +163,15 @@ export default function HistoryPicker({ recipeId, title, help, disabled, confirm
       </div>
       {hasFilters && <Button variant="text" size="sm" onClick={reset}>重置筛选</Button>}
     </div>
-    {loadError && <Notice title="读取历史件失败" tone="warn">{loadError}</Notice>}
-    <div className="wp-picker-table">
-      <Table caption="历史件" columns={columns} rows={rows ?? []} rowKey={r => String(r.recordId)}
+    {loadError && <Notice title={blocked ? "读取当前项目失败" : "读取历史件失败"} tone="warn">{loadError}</Notice>}
+    <div className="wp-picker-table" aria-busy={loading || (blocked && projects.loading)}>
+      <Table caption="历史件" columns={columns} rows={rows} rowKey={r => String(r.recordId)}
         getRowProps={r => r.recordId === previewId ? { tone: "info" } : undefined}
-        emptyState={<p className="muted center">{!rows || loading ? "正在读取历史件…" : hasFilters ? "没有符合筛选条件的录制件，试试放宽筛选。" : "本机还没有录制件。开启维护模式跟着生产采图后，可在这里选用。"}</p>}/>
+        emptyState={<p className="muted center">{emptyText}</p>}/>
     </div>
-    {page && page.total > PAGE && <Pagination total={page.total} page={offset / PAGE + 1} pageSize={PAGE} pageSizeOptions={[PAGE]} disabled={loading}
+    {pagingTotal > PAGE && <Pagination total={pagingTotal} page={offset / PAGE + 1} pageSize={PAGE} pageSizeOptions={[PAGE]} disabled={loading}
       onPageChange={next => setOffset((next - 1) * PAGE)} />}
-    <div className="wp-actions"><Button variant="filled" disabled={disabled || working || picked == null} onClick={() => void confirm()}>{confirmLabel}</Button></div>
+    <div className="wp-actions"><Button variant="filled" disabled={!canConfirm} onClick={() => void confirm()}>{confirmLabel}</Button></div>
     <aside className="wp-picker-preview" aria-label="历史件原图预览">
       {preview
         ? <FrameBrowser key={preview.recordId} source={String(preview.recordId)} label={`SN ${preview.sn}`} groupCount={preview.groupCount}

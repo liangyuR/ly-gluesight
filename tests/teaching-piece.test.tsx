@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -6,8 +6,8 @@ import TeachingPiecePage from "../src/features/workspace/TeachingPiecePage";
 import { workspaceApi } from "../src/features/workspace/api";
 import { burstImageApi } from "../src/features/workspace/burstImages";
 import { useWorkspace } from "../src/features/workspace/context";
-import type { HistoryCandidate, WorkspaceView } from "../src/features/workspace/types";
-import { burstRecipe, burstWorkspaceView, workspaceState } from "./fixtures";
+import type { HistoryCandidate, HistoryCandidatePage, WorkspaceView } from "../src/features/workspace/types";
+import { burstRecipe, burstWorkspaceView, deferred, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { historyCandidates: vi.fn(), setTeachingPiece: vi.fn(), captureFrameImage: vi.fn() } }));
 vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { record: vi.fn() } }));
@@ -89,12 +89,25 @@ it("默认不限项目与配方；按配方、SN、判定筛选的条件传给�
   }));
 });
 
-// 防的回归：勾选一件后换筛选或翻页，那件已不在列表里，“设为示教件”仍提交它
-it("勾选后换筛选，选择清空，不能提交已不在列表里的件", async () => {
+it("更换筛选等待新页 → 只能预览和提交新页的记录", async () => {
+  const nextPage = deferred<HistoryCandidatePage>();
+  vi.mocked(workspaceApi.historyCandidates).mockImplementation(async (_, query) => query.sn
+    ? nextPage.promise : { total: 1, items: [row(7, "SN-7")] });
   show();
   const user = userEvent.setup();
   await user.click(await screen.findByRole("checkbox", { name: "选用 SN SN-7" }));
   expect(screen.getByRole("button", { name: "设为示教件" })).toBeEnabled();
   await user.type(screen.getByRole("textbox", { name: "历史件 SN" }), "Z");
+  const oldChoice = screen.queryByRole("checkbox", { name: "选用 SN SN-7" });
+  if (oldChoice) await user.click(oldChoice);
   expect(screen.getByRole("button", { name: "设为示教件" })).toBeDisabled();
+  const preview = within(screen.getByRole("complementary", { name: "历史件原图预览" }));
+  expect(preview.queryByRole("button", { name: "帧组 2 · CAM-1" })).toBeNull();
+
+  await act(async () => nextPage.resolve({ total: 1, items: [row(8, "Z-SN-8")] }));
+  await user.click(await screen.findByRole("checkbox", { name: "选用 SN Z-SN-8" }));
+  expect(burstImageApi.record).toHaveBeenLastCalledWith(8, 0, 1, expect.any(AbortSignal));
+  await user.click(screen.getByRole("button", { name: "设为示教件" }));
+  await user.click(screen.getByRole("button", { name: "清空并设为示教件" }));
+  expect(workspaceApi.setTeachingPiece).toHaveBeenCalledExactlyOnceWith("A", 3, 8);
 });
