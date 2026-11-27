@@ -3,6 +3,7 @@ import { Alert, Button, Checkbox, EmptyState, Select, StatusBadge, Table, type T
 import { Panel } from "../../workspace/components";
 import type { FrameRecord, FrameState, PartDetailBurst } from "../../plan/types";
 import { expectedText, productionSkippedRegion, regionKindLabel } from "../../plan/vis";
+import { verdictLabel, verdictTone } from "../meta";
 import type { PartDetail } from "../types";
 import "../../cycle/components/burst.css";
 import MixSummary from "../../plan/MixSummary";
@@ -13,9 +14,12 @@ const recordingLabel = { pending: "正在落盘", off: "录制关闭", notRetain
 
 const frameStateText: Record<FrameState, string> = { measured: "已测", missing: "缺帧", error: "测量失败", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测" };
 const mm = (v: number | null | undefined) => v == null ? "—" : v.toFixed(2);
+const frameKey = ({ camera, seq }: Pick<FrameRecord, "camera" | "seq">) => `${camera}:${seq}`;
 
-/** 一帧没出完整结果：缺帧、测量失败、未测、走出走廊（都只算检测不完整，不影响 OK/NG）；本段不由这台相机检测的帧按设计不测，不算异常。 */
-export const frameAbnormal = (frame: FrameRecord) => (frame.status !== "measured" && frame.status !== "notInspected") || !!measurementIssue(frame.metrics?.measurementEvidence) || !!frame.metrics?.mixEvidence?.directions.length || !!frame.metrics?.mixEvidence?.incomplete;
+function hasFrameIssue({ status, metrics }: FrameRecord) {
+  return (status !== "measured" && status !== "notInspected") || !!measurementIssue(metrics?.measurementEvidence)
+    || !!metrics?.mixEvidence?.directions.length || !!metrics?.mixEvidence?.incomplete;
+}
 
 /**
  * 逐帧追溯：每台相机每个帧组一行（缺帧也有），写帧号、触发计数、所在区域、状态、胶宽与胶中心、原图。
@@ -40,8 +44,16 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect 
   const [onlyAbnormal, setOnlyAbnormal] = useState(false);
   const [camera, setCamera] = useState("all");
   const [page, setPage] = useState(0), [pageSize, setPageSize] = useState(50);
-  const rows = useMemo(() => burst.frames.filter(frame => (!onlyAbnormal || frameAbnormal(frame)) && (camera === "all" || frame.camera === Number(camera))), [burst.frames, onlyAbnormal, camera]);
-  const abnormal = useMemo(() => burst.frames.filter(frameAbnormal).length, [burst.frames]);
+  const verdicts = useMemo(() => new Map(burst.frameVerdicts.map(frame => [frameKey(frame), frame.verdict])), [burst.frameVerdicts]);
+  const verdictFor = useCallback((frame: FrameRecord) => frame.status === "measured" ? verdicts.get(frameKey(frame)) : undefined, [verdicts]);
+  const abnormalFrames = useMemo(() => burst.frames.filter(frame => {
+    const verdict = verdictFor(frame);
+    return (verdict !== undefined && verdict !== "OK") || hasFrameIssue(frame);
+  }), [burst.frames, verdictFor]);
+  const rows = useMemo(() => {
+    const frames = onlyAbnormal ? abnormalFrames : burst.frames;
+    return camera === "all" ? frames : frames.filter(frame => frame.camera === Number(camera));
+  }, [abnormalFrames, burst.frames, onlyAbnormal, camera]);
   const pages = Math.max(1, Math.ceil(rows.length / pageSize));
   const shownPage = Math.min(page, pages - 1);
   useEffect(() => {
@@ -57,14 +69,20 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect 
     },
     { key: "counter", header: "帧号 / 触发计数", render: frame => `${frame.frameCounter ?? "—"} / ${frame.triggerCounter ?? "—"}` },
     { key: "region", header: "区域", render: frame => frame.region != null && burst.judgement.regions[frame.region] ? regionKindLabel(burst.judgement.regions[frame.region].region.kind) : "—" },
-    { key: "status", header: "状态", render: frame => <>
-      {productionSkippedRegion(burst.judgement.regions, frame.seq)
-        ? <><StatusBadge tone="neutral">生产跳过</StatusBadge><div className="muted">仅供诊断：{frameStateText[frame.status]}</div></>
-        : <StatusBadge tone={frame.status === "measured" ? "ok" : frame.status === "error" ? "fault" : frame.status === "notInspected" ? "neutral" : "warn"}>{frameStateText[frame.status]}</StatusBadge>}
-      {frame.metrics?.error && <div>{frame.metrics.error}</div>}
-      {frame.metrics?.mixEvidence && <MixSummary evidence={frame.metrics.mixEvidence} diagnostic={!!productionSkippedRegion(burst.judgement.regions, frame.seq)}/>}
-      {frame.metrics?.measurementEvidence && <div><MeasurementEvidenceSummary evidence={frame.metrics.measurementEvidence} /></div>}
-    </> },
+    { key: "status", header: "状态 / 单帧结论", render: frame => {
+      const skipped = !!productionSkippedRegion(burst.judgement.regions, frame.seq);
+      const verdict = verdictFor(frame);
+      const stateTone = frame.status === "error" ? "fault" : frame.status === "measured" || frame.status === "notInspected" ? "neutral" : "warn";
+      return <>
+        {skipped
+          ? <><StatusBadge tone="neutral">生产跳过</StatusBadge><div className="muted">仅供诊断：{frameStateText[frame.status]}</div></>
+          : verdict ? <StatusBadge tone={verdictTone(verdict)}>{verdictLabel[verdict]}</StatusBadge>
+            : <StatusBadge tone={stateTone}>{frame.status === "measured" ? "已测 · 未判定" : frameStateText[frame.status]}</StatusBadge>}
+        {frame.metrics?.error && <div>{frame.metrics.error}</div>}
+        {frame.metrics?.mixEvidence && <MixSummary evidence={frame.metrics.mixEvidence} diagnostic={skipped}/>}
+        {frame.metrics?.measurementEvidence && <div><MeasurementEvidenceSummary evidence={frame.metrics.measurementEvidence} /></div>}
+      </>;
+    } },
     { key: "width", header: "胶宽 min / max / mean", render: frame => frame.metrics && frame.status === "measured" ? `${mm(frame.metrics.widthMin)} / ${mm(frame.metrics.widthMax)} / ${mm(frame.metrics.widthMean)}` : "—" },
     { key: "x", header: "胶中心 x（mm）", align: "right", render: frame => frame.status === "measured" ? mm(frame.metrics?.xMm) : "—" },
     {
@@ -88,7 +106,7 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect 
     {!!recording.errors.length && <Alert tone="warn">{recording.errors.join("；")}</Alert>}
     <div className="burst-trace-tools">
       <Select aria-label="相机筛选" value={camera} onValueChange={setCamera} options={[{ value: "all", label: "全部相机" }, ...burst.cameras.map((name, c) => ({ value: String(c), label: name }))]} />
-      <Checkbox label={`只看异常帧（${abnormal}）`} checked={onlyAbnormal} onCheckedChange={setOnlyAbnormal} />
+      <Checkbox label={`只看异常帧（${abnormalFrames.length}）`} checked={onlyAbnormal} onCheckedChange={setOnlyAbnormal} />
       <span className="muted">{rows.length} / {burst.frames.length} 帧</span>
       <Select aria-label="每页帧数" value={String(pageSize)} onValueChange={value => setPageSize(Number(value))} options={[{ value: "50", label: "50 帧 / 页" }, { value: "100", label: "100 帧 / 页" }]} />
       <Button size="sm" disabled={shownPage === 0} onClick={() => setPage(shownPage - 1)}>上一页帧记录</Button>
@@ -99,7 +117,7 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect 
       caption="逐帧追溯"
       rows={rows.slice(shownPage * pageSize, (shownPage + 1) * pageSize)}
       columns={columns}
-      rowKey={frame => `${frame.camera}:${frame.seq}`}
+      rowKey={frameKey}
       emptyState={<EmptyState title={onlyAbnormal ? "没有异常帧" : "本件没有帧记录"} />}
     />
   </Panel>;

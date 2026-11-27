@@ -57,3 +57,48 @@ it("3000条追溯记录分页并切换筛选 → 保留选中帧，恢复筛选�
   expect(table.getAllByRole("row")).toHaveLength(101);
   expect(table.getByRole("button", { name: "追溯 CAM-1 帧组 51" })).toHaveAttribute("aria-pressed", "true");
 });
+
+it("追溯只看异常帧 → 逐帧结论和诊断均可找到，同相机同帧组只计一次", async () => {
+  const detail = burstPartDetail(), burst = detail.burst!;
+  const region = burst.judgement.regions[0];
+  burst.judgement.regions = [
+    { ...region, region: { ...region.region, lastSeq: 5 }, verdict: "NG_WIDTH" },
+    { ...region, region: { firstSeq: 6, lastSeq: 7, kind: { type: "skipped", segment: 1 } }, frameCount: 0, incompleteGroups: [] },
+  ];
+  burst.frames = burst.frames.filter(frame => (frame.camera === 0 && frame.seq <= 7) ||
+    (frame.camera === 1 && (frame.seq === 1 || frame.seq === 5))).map(frame => {
+    if (frame.seq === 4 || frame.seq === 7) return { ...frame, region: frame.seq === 7 ? 1 : 0, metrics: frameMetrics(frame.camera, frame.seq, {
+      measurementEvidence: { version: 1, stations: [], exactStations: 2, clippedStations: 1, unknownStations: 0, absentStations: 0, presentRatio: 1 },
+      mixEvidence: { modelId: null, mmPerPx: null, incomplete: false, reason: null, directions: ["yellow"], shiftRuns: [], observation: null },
+    }) };
+    return frame.seq === 6 ? { ...frame, region: 1 } : frame;
+  });
+  burst.frameVerdicts = [
+    { camera: 0, seq: 1, verdict: "NG_WIDTH" },
+    { camera: 0, seq: 2, verdict: "OK_WITH_EXCURSION" },
+    { camera: 0, seq: 3, verdict: "ERR_INSPECT" },
+    { camera: 0, seq: 4, verdict: "OK" },
+    { camera: 1, seq: 1, verdict: "OK" },
+  ];
+
+  render(<BurstPartTrace detail={detail} burst={burst} selected={null} onSelect={() => {}} />);
+  const table = within(screen.getByRole("table", { name: "逐帧追溯" }));
+  const row = (name: string) => table.getByRole("button", { name: `追溯 ${name}` }).closest("tr");
+  expect(row("CAM-1 帧组 6")).toHaveTextContent("生产跳过");
+  const filter = screen.getByRole("checkbox", { name: /只看异常帧/ });
+  await userEvent.click(filter);
+
+  expect(filter).toHaveAccessibleName("只看异常帧（6）");
+  expect(table.getAllByRole("row")).toHaveLength(7);
+  expect(row("CAM-1 帧组 1")).toHaveTextContent("NG · 胶宽超差");
+  expect(row("CAM-1 帧组 2")).toHaveTextContent("OK · 局部超差");
+  expect(row("CAM-1 帧组 3")).toHaveTextContent("ERR · 未测成");
+  expect(row("CAM-1 帧组 4")).toHaveTextContent("超出测量范围 1 站");
+  expect(row("CAM-1 帧组 4")).toHaveTextContent("PC 混胶报警 · 偏黄");
+  expect(row("CAM-2 帧组 5")).toHaveTextContent("缺帧");
+  expect(row("CAM-1 帧组 7")).toHaveTextContent("生产跳过");
+  expect(row("CAM-1 帧组 7")).toHaveTextContent("诊断超限 · 偏黄");
+  expect(table.queryByRole("button", { name: "追溯 CAM-2 帧组 1" })).not.toBeInTheDocument();
+  expect(table.queryByRole("button", { name: "追溯 CAM-1 帧组 5" })).not.toBeInTheDocument();
+  expect(table.queryByRole("button", { name: "追溯 CAM-1 帧组 6" })).not.toBeInTheDocument();
+});
