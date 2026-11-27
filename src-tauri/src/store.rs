@@ -381,7 +381,7 @@ pub struct StoredMeasurement {
     pub recipe_id: Option<String>,
     pub recipe_revision: Option<String>,
     pub verdict: Verdict,
-    /// 段配方记录当时的区域判定（区域、丢帧告警）；没有帧记录的为 None。逐帧指标按需用 `Store::burst_frames` 读
+    /// 段配方记录当时的区域判定（区域、丢帧告警）；没有帧记录的为 None。逐帧指标按需用 `RejudgeReader::burst_frames` 读
     pub burst: Option<BurstJudgement>,
 }
 
@@ -393,6 +393,10 @@ pub struct Store {
     backup_path: Option<PathBuf>,
     /// 当前项目：新记录归它，统计与候选实例按它
     project: String,
+}
+
+pub(crate) struct RejudgeReader {
+    conn: Connection,
 }
 
 struct CheckedRecipeSnapshot {
@@ -2148,22 +2152,10 @@ impl Store {
         }
     }
 
-    /// 段配方记录的逐帧记录，按 (camera, seq) 排序；旧记录为空。
-    pub fn burst_frames(&self, id: i64) -> Result<Vec<FrameRecord>, String> {
-        let rows = frame_rows_raw(&self.conn.lock().unwrap(), id, None)?;
-        let metrics_bytes: usize = rows
-            .iter()
-            .filter_map(|(_, text)| text.as_ref())
-            .map(String::len)
-            .sum();
-        if rows.len() > 1
-            && metrics_bytes >= 1024 * 1024
-            && std::thread::available_parallelism().is_ok_and(|threads| threads.get() >= 8)
-        {
-            decode_frame_rows_parallel(rows)
-        } else {
-            decode_frame_rows(rows)
-        }
+    pub(crate) fn rejudge_reader(&self) -> Result<RejudgeReader, String> {
+        Ok(RejudgeReader {
+            conn: open_read_only(&self.path)?,
+        })
     }
 
     /// 区域判定为空、但有测过的帧的维护试判件：回写码 0 与区域判定不同，落库时退回了没有区域的摘要。
@@ -2232,7 +2224,15 @@ impl Store {
         ids: &[i64],
         limit: usize,
     ) -> Result<Vec<StoredMeasurement>, String> {
-        let conn = self.conn.lock().unwrap();
+        Self::read_measurements(&self.conn.lock().unwrap(), q, ids, limit)
+    }
+
+    fn read_measurements(
+        conn: &Connection,
+        q: &HistoryQuery,
+        ids: &[i64],
+        limit: usize,
+    ) -> Result<Vec<StoredMeasurement>, String> {
         let (filter, args) = if ids.is_empty() {
             Self::filter(q, "p.")
         } else {
@@ -2570,6 +2570,46 @@ impl Store {
             })
             .map_err(db_err)?;
         rows.collect::<Result<_, _>>().map_err(db_err)
+    }
+}
+
+impl RejudgeReader {
+    pub(crate) fn measurements(
+        &self,
+        q: &HistoryQuery,
+        ids: &[i64],
+        limit: usize,
+    ) -> Result<Vec<StoredMeasurement>, String> {
+        Store::read_measurements(&self.conn, q, ids, limit)
+    }
+
+    pub(crate) fn recipe_snapshot(
+        &self,
+        project: &str,
+        revision_id: &str,
+    ) -> Result<Option<Recipe>, String> {
+        snapshot_raw(&self.conn, project, revision_id)?
+            .as_ref()
+            .map(|snapshot| decode_snapshot(snapshot, revision_id))
+            .transpose()
+    }
+
+    /// 段配方记录的逐帧记录，按 (camera, seq) 排序；旧记录为空。
+    pub(crate) fn burst_frames(&self, id: i64) -> Result<Vec<FrameRecord>, String> {
+        let rows = frame_rows_raw(&self.conn, id, None)?;
+        let metrics_bytes: usize = rows
+            .iter()
+            .filter_map(|(_, text)| text.as_ref())
+            .map(String::len)
+            .sum();
+        if rows.len() > 1
+            && metrics_bytes >= 1024 * 1024
+            && std::thread::available_parallelism().is_ok_and(|threads| threads.get() >= 8)
+        {
+            decode_frame_rows_parallel(rows)
+        } else {
+            decode_frame_rows(rows)
+        }
     }
 }
 

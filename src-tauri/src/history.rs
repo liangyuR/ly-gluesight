@@ -288,18 +288,19 @@ pub async fn history_rejudge(
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
         let cycle = app.state::<CycleHost>();
-        let rows = store.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
+        let reader = store.rejudge_reader()?;
+        let rows = reader.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
         rejudge_rows(
             rows,
             &request,
             store.project(),
             |project, revision_id| {
-                store
+                reader
                     .recipe_snapshot(project, revision_id)
                     .map(|r| r.map(Arc::new))
             },
             |id| cycle.recipe(id),
-            |id| store.burst_frames(id),
+            |id| reader.burst_frames(id),
         )
     })
     .await

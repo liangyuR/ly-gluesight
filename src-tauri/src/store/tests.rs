@@ -748,7 +748,12 @@ fn manually_deleted_history_stays_absent_and_explicit_reimport_uses_a_fresh_nonr
     store.delete_history(&[id]).unwrap();
     assert!(store.detail(id).is_err());
     assert_eq!(store.query(&tagged).unwrap().total, 0);
-    assert!(store.burst_frames(id).unwrap().is_empty());
+    assert!(store
+        .rejudge_reader()
+        .unwrap()
+        .burst_frames(id)
+        .unwrap()
+        .is_empty());
     assert!(store.insert(&record).is_err());
     assert!(store.history_cycle_deleted("delete-restore").unwrap());
     let merged = store.import_parts(&package, "default", |_| Ok(())).unwrap();
@@ -953,6 +958,78 @@ fn burst_part<'a>(
 }
 
 #[test]
+fn rejudge_reader_reads_during_uncommitted_write_and_refreshes_after_commit() {
+    use std::sync::mpsc::channel;
+    use std::thread;
+
+    const WAIT: Duration = Duration::from_secs(5);
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[(2, 4)]), None, Some(0));
+    let record = burst_part(&recipe, "rejudge-live-writer", &judgement, &burst);
+    let id = store.insert(&record).unwrap();
+
+    let (initial_read, wait_for_read) = channel();
+    let (write_finished, wait_for_write) = channel();
+    let (initial, refreshed) = thread::scope(|threads| {
+        let mut writer = store.conn.lock().unwrap();
+        let write = writer
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        write
+            .execute("UPDATE parts SET sn = 'SN-COMMITTED' WHERE id = ?1", [id])
+            .unwrap();
+        let store = &store;
+        let revision = recipe.revision_id.as_str();
+        let read = threads.spawn(move || -> Result<_, String> {
+            let reader = store.rejudge_reader()?;
+            let query = HistoryQuery::default();
+            let rows = reader.measurements(&query, &[id], 1)?;
+            let snapshot = reader.recipe_snapshot(store.project(), revision)?;
+            let frames = reader.burst_frames(id)?;
+            initial_read
+                .send((rows, snapshot, frames))
+                .map_err(|error| error.to_string())?;
+            wait_for_write
+                .recv_timeout(WAIT)
+                .map_err(|error| error.to_string())?;
+            reader.measurements(&query, &[id], 1)
+        });
+        let initial = wait_for_read.recv_timeout(WAIT);
+        let finished = if initial.is_ok() {
+            write.commit()
+        } else {
+            write.rollback()
+        };
+        drop(writer);
+        let _ = write_finished.send(());
+        let refreshed = read.join().unwrap();
+        finished.unwrap();
+        (initial, refreshed)
+    });
+
+    let (rows, snapshot, frames) = initial.expect("重判读取不能等主连接释放写锁");
+    assert_eq!(rows.len(), 1);
+    assert_eq!((rows[0].id, rows[0].sn.as_str()), (id, record.sn));
+    assert_eq!(snapshot.unwrap().revision_id, recipe.revision_id);
+    let mut expected_frames = burst.frames.clone();
+    expected_frames.sort_by_key(|frame| (frame.camera, frame.seq));
+    assert_eq!(
+        serde_json::to_value(frames).unwrap(),
+        serde_json::to_value(expected_frames).unwrap()
+    );
+
+    let refreshed = refreshed.unwrap();
+    assert_eq!(refreshed.len(), 1);
+    assert_eq!(
+        (refreshed[0].id, refreshed[0].sn.as_str()),
+        (id, "SN-COMMITTED")
+    );
+}
+
+#[test]
 fn large_history_frame_table_rejects_malformed_metrics_in_the_last_frame() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
@@ -980,7 +1057,7 @@ fn large_history_frame_table_rejects_malformed_metrics_in_the_last_frame() {
         )
         .unwrap();
 
-    assert!(store.burst_frames(id).is_err());
+    assert!(store.rejudge_reader().unwrap().burst_frames(id).is_err());
 }
 
 #[test]
@@ -1000,8 +1077,9 @@ fn registering_raw_files_keeps_the_batch_atomic_and_allows_the_same_path_on_retr
     let original = BTreeMap::from([(saved, "cam1/2.pgm".to_owned())]);
     assert!(store.update_frame_raw_files(cycle, &original).unwrap());
 
+    let reader = store.rejudge_reader().unwrap();
     let linked = || {
-        store
+        reader
             .burst_frames(id)
             .unwrap()
             .into_iter()
