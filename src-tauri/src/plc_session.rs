@@ -45,6 +45,8 @@ struct Pending {
     recipe_id: Option<String>,
     #[serde(default)]
     started_at: i64,
+    #[serde(skip)]
+    ended_at: Option<i64>,
     #[serde(default)]
     site: Option<PartSite>,
     /// 接件时锁存的 pcMode（0 正常，1 维护）：回写结果按它，换模式从下一件生效
@@ -185,6 +187,14 @@ pub struct SessionView {
     pub message: Option<String>,
     /// 会话已核对的 PLC 连接（连接时间戳）
     pub connection: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartTiming {
+    part_seq: u32,
+    received_at: Option<i64>,
+    ended_at: Option<i64>,
 }
 
 /// 空闲提示的前缀：不是故障，现状恢复后自动消失。
@@ -335,6 +345,15 @@ impl PlcSession {
             .as_ref()
             .map(|pending| pending.started_at)
             .filter(|ts| *ts > 0)
+    }
+
+    pub fn part_timing(&self) -> Option<PartTiming> {
+        let pending = self.pending.as_ref()?;
+        Some(PartTiming {
+            part_seq: pending.request.request_seq,
+            received_at: self.started_at(),
+            ended_at: pending.ended_at,
+        })
     }
 
     pub fn phase(&self) -> SessionPhase {
@@ -512,7 +531,7 @@ impl PlcSession {
         match self.phase {
             SessionPhase::Idle => self.idle(engine, &snapshot, inspecting, seq).await,
             SessionPhase::Validating | SessionPhase::Acquiring => {
-                let pending = self.pending.as_ref().ok_or("在途件丢失")?;
+                let pending = self.pending.as_mut().ok_or("在途件丢失")?;
                 let current = pending.request.request_seq;
                 if seq != current {
                     return Ok(SessionEvent::Lost(format!(
@@ -521,6 +540,7 @@ impl PlcSession {
                 }
                 if !inspecting && self.phase == SessionPhase::Acquiring {
                     self.phase = SessionPhase::Draining;
+                    pending.ended_at = Some(now_ms());
                     PartEvent::Ended.record(engine, pending);
                     return Ok(SessionEvent::End(Instant::now()));
                 }
@@ -577,6 +597,7 @@ impl PlcSession {
                     cycle_id: None,
                     recipe_id: None,
                     started_at: now_ms(),
+                    ended_at: None,
                     site: None,
                     mode: self.mode,
                 };

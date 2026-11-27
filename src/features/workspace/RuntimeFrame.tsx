@@ -67,7 +67,7 @@ function useLiveView(part:PartView,camera:number,seq:number,cell:FrameGroupView[
 }
 
 /** 一台相机在选中帧组里的那一帧：到达（含测量中、出错）才读图，缺帧的相机不读图，只写明本组按其余相机判。 */
-function BurstCameraFrame({part,camera,name,seq,group,regions}:{part:PartView;camera:number;name:string;seq:number;group:FrameGroupView|null;regions?:RegionResult[]}) {
+function BurstCameraFrame({part,camera,name,seq,group,regions,focused}:{part:PartView;camera:number;name:string;seq:number;group:FrameGroupView|null;regions?:RegionResult[];focused:boolean}) {
   const cell=group?.cells[camera];
   const arrived=!!cell&&cell.status!=="waiting"&&cell.status!=="missing";
   const partScope=JSON.stringify([part.cycleId,part.bundleId,part.recipeRevision]);
@@ -82,7 +82,7 @@ function BurstCameraFrame({part,camera,name,seq,group,regions}:{part:PartView;ca
   // 新帧组的图还没到、显示的是上一张时不叠这一帧的线
   const edges=(view?.edges??[]).flatMap(edge=>edge?[{from:edge[0],to:edge[1],color:"var(--ov-line)"}]:[]);
   const overlay=view&&view.corridor.length>=2&&shownSeq===seq?{path:view.corridor,searchHalfPx:view.searchHalfPx??undefined,segments:edges,mixEvidence:view?.metrics?.mixEvidence,clipped:evidenceOverlay(view?.metrics),partEdges:view.partEdges}:undefined;
-  return <section className="wp-burst-cam" aria-label={`${name} 帧组 ${seq}`}>
+  return <section className="wp-burst-cam" aria-label={`${name} 帧组 ${seq}`} data-evidence-focus={focused || undefined}>
     <FrameViewer image={arrived?image?.image??null:null} loading={arrived&&live.loading} error={live.current?.error??""} label={`${name} · 帧组 ${shownSeq}`} overlay={overlay}
       emptyTitle={missing?"缺帧":"等待本帧组图像"} emptyHint={missing?(skipped?"原图缺失；本帧组生产跳过，不参与判定。":"这台相机没有出本帧组的图，本组按其余相机判（检测不完整，不影响 OK/NG）。"):""}/>
     <div className="wp-runtime-strip">
@@ -90,6 +90,7 @@ function BurstCameraFrame({part,camera,name,seq,group,regions}:{part:PartView;ca
       <KV label="单帧结论">{skipped?"不参与判定":cell?.verdict?verdictLabel[cell.verdict]:"—"}</KV>
       {skipped&&<KV label="诊断状态">{group?groupCellText[groupCellState(group,camera)]:"—"} · 仅供诊断</KV>}
       <KV label="设备帧计数">{cell?.frameCounter??"—"}</KV>
+      {focused && state === "ng" && cell?.verdict === "NG_GAP" && view?.metrics && <KV label="最长断胶">{view.metrics.gapMaxMm.toFixed(2)} mm</KV>}
       {view?.metrics?.mixEvidence && <MixSummary evidence={view.metrics.mixEvidence} diagnostic={skipped}/>}
       {view?.metrics?.measurementEvidence && <KV label="完整测站胶宽 min / max / mean">{[view.metrics.widthMin,view.metrics.widthMax,view.metrics.widthMean].map(v=>v==null?"—":v.toFixed(2)).join(" / ")} mm</KV>}
       {view?.metrics?.measurementEvidence && <KV label={skipped?"诊断量测证据":"量测证据"}><MeasurementEvidenceSummary evidence={view.metrics.measurementEvidence}/></KV>}
@@ -98,11 +99,11 @@ function BurstCameraFrame({part,camera,name,seq,group,regions}:{part:PartView;ca
 }
 
 /** 在线检测的原图区（段配方）：选中帧组 seq 的三台计划相机各一幅，每幅附该帧的状态、单帧结论与设备帧计数。 */
-export function BurstRuntimeFrame({part,seq,regions}:{part:PartView|null;seq:number|null;regions?:RegionResult[]}) {
+export function BurstRuntimeFrame({part,seq,regions,focusedCamera}:{part:PartView|null;seq:number|null;regions?:RegionResult[];focusedCamera?:number}) {
   if(!part||seq==null)return <div className="wp-runtime-frame compact"><div className="wp-image-empty"><strong>等待本件图像</strong><span>帧组到达后显示三台相机的原图；可在下方帧组条切换。</span></div></div>;
   const burst=part.burst;
   const group=burst.groups.find(g=>g.seq===seq)??null;
   return <div className="wp-runtime-frame compact burst">
-    <div className="wp-burst-cams" style={{gridTemplateColumns:`repeat(${Math.max(1,burst.cameras.length)}, minmax(0, 1fr))`}}>{burst.cameras.map((name,camera)=><BurstCameraFrame key={name} part={part} camera={camera} name={name} seq={seq} group={group} regions={regions}/>)}</div>
+    <div className="wp-burst-cams" style={{gridTemplateColumns:`repeat(${Math.max(1,burst.cameras.length)}, minmax(0, 1fr))`}}>{burst.cameras.map((name,camera)=><BurstCameraFrame key={name} part={part} camera={camera} name={name} seq={seq} group={group} regions={regions} focused={camera === focusedCamera}/>)}</div>
   </div>;
 }

@@ -192,6 +192,15 @@ export interface Judgement {
   gaps: GapRun[];
 }
 
+export interface PlcWriteTrace {
+  partSeq: number;
+  receivedAt: number | null;
+  endedAt: number | null;
+  updatedAt: number;
+  state: "written" | "failed" | "notWritten";
+  message: string | null;
+}
+
 export interface ResultView extends Judgement {
   /** 段配方的判定；没有配方时为 null。有值时 verdict / plcCode / faultCode / reason 与它相同 */
   burst: BurstJudgement | null;
@@ -200,6 +209,7 @@ export interface ResultView extends Judgement {
   recipeId: string | null;
   ts: number;
   drainMs: number | null;
+  plcWrite?: PlcWriteTrace | null;
   mode?: PartMode;
 }
 

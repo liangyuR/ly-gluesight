@@ -8,7 +8,7 @@ import InspectPage from "../src/pages/InspectPage";
 import { cycleApi, recipeApi, useCycle, useLayout } from "../src/features/cycle/api";
 import { burstImageApi } from "../src/features/workspace/burstImages";
 import { plcApi } from "../src/features/plc/api";
-import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, readiness, snapshot } from "./fixtures";
+import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, frameMetrics, readiness, snapshot } from "./fixtures";
 import { burstPartView, burstResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
 import type { Readiness, Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
@@ -173,6 +173,59 @@ describe("在线检测段配方", () => {
     await waitFor(() => expect(burstImageApi.live).toHaveBeenCalledTimes(3));
     expect(live()).toEqual([[0, 12], [1, 12], [2, 12]]);
     expect(screen.queryByRole("button", { name: "返回当前帧组" })).not.toBeInTheDocument();
+  });
+
+  it("OK 工件缺帧 → 从完整性明细定位对应帧组，下一件收起上一件证据", async () => {
+    const user = userEvent.setup();
+    const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const verdict = within(screen.getByRole("region", { name: "整件判定" }));
+    expect(verdict.getByText("OK")).toBeVisible();
+    await user.click(verdict.getByRole("button", { name: /检测完整性.*检测不完整/ }));
+    const details = within(screen.getByRole("region", { name: "检测覆盖明细" }));
+    expect(details.getByText(/CAM-2 · 缺帧 · 帧组 5/)).toBeVisible();
+    await user.click(details.getByRole("button", { name: "定位到帧组 5" }));
+    const camera = within(screen.getByRole("region", { name: "CAM-2 帧组 5" }));
+    expect(camera.getByText("缺帧", { selector: ".wp-image-empty strong" })).toBeVisible();
+
+    state = { ...state, phase: "ACQUIRE", part: burstPartView("next") };
+    page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(screen.queryByRole("region", { name: "检测覆盖明细" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "CAM-2 帧组 5" })).not.toBeInTheDocument();
+  });
+
+  it("断胶判定有单帧证据 → 从结果定位异常原图并显示对应的实测断胶长度", async () => {
+    const burst = burstJudgement();
+    burst.regions[0] = { ...burst.regions[0], verdict: "NG_GAP", reason: "断胶" };
+    state = burstState({ ...burst, verdict: "NG_GAP", plcCode: 13 });
+    state.part!.burst.groups[3].cells[1].verdict = "NG_GAP";
+    vi.mocked(burstImageApi.liveView).mockImplementation(async (_cycle, _revision, camera, seq) => camera === 1 && seq === 4 ? {
+      segment: 1, corridor: [], searchHalfPx: null, edges: [], partEdges: [], metrics: frameMetrics(camera, seq, { gapMaxMm: 8.4 }),
+    } : null);
+    const user = userEvent.setup();
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    await user.click(screen.getByRole("button", { name: /判定证据.*断胶/ }));
+    const details = within(screen.getByRole("region", { name: "判定证据" }));
+    expect(details.getByText("CAM-2 · 帧组 4")).toBeVisible();
+    await user.click(details.getByRole("button", { name: "定位到异常帧" }));
+    const frame = within(screen.getByRole("region", { name: "CAM-2 帧组 4" }));
+    expect(await frame.findByText("8.40 mm")).toBeVisible();
+  });
+
+  it("PLC 写入未确认 → 保留产品 OK 并按本件展开真实写入里程碑", async () => {
+    state.result!.plcWrite = { partSeq: 1844, receivedAt: 10, endedAt: 20, updatedAt: 30, state: "failed", message: "回写 PLC 失败：读回超时" };
+    const user = userEvent.setup();
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const verdict = within(screen.getByRole("region", { name: "整件判定" }));
+    expect(verdict.getByText("OK")).toBeVisible();
+    expect(verdict.getByText("件序号 #1844")).toBeVisible();
+    await user.click(verdict.getByRole("button", { name: /PC → PLC.*写入未确认/ }));
+    const details = within(screen.getByRole("region", { name: "本件 PLC 通讯" }));
+    expect(details.getByText(/读回超时/)).toBeVisible();
+    await user.click(details.getByRole("button", { name: "查看写入记录" }));
+    const timeline = within(details.getByRole("list"));
+    expect(timeline.getAllByRole("listitem").map(item => item.textContent)).toEqual([
+      expect.stringContaining("PC 接到工件"), expect.stringContaining("PC 读到工件结束"), expect.stringContaining("写入未确认"),
+    ]);
   });
 
 });

@@ -1,15 +1,15 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Chip, Dialog, EmptyState, Progress as ProgressBar, SegmentedControl, Select } from "qing-steel";
 import "./inspect.css";
 import { BurstRuntimeFrame } from "../features/workspace/RuntimeFrame";
 import { CameraSegmentOverview } from "../features/plan/CameraSegmentOverview";
-import { expectedText, flagBadges } from "../features/plan/vis";
-import type { PartViewBurst } from "../features/plan/types";
-import { displayReason, verdictLabel, verdictTone } from "../features/history";
+import { expectedText } from "../features/plan/vis";
+import type { PartViewBurst, PathSegment } from "../features/plan/types";
 import InspectionReadiness from "../features/cycle/components/InspectionReadiness";
 import InspectionDiagnostics, { type DiagnosticGroup } from "../features/cycle/components/InspectionDiagnostics";
 import ContextHelp from "../features/cycle/components/ContextHelp";
 import { MaintenanceToggle } from "../features/cycle/components/MaintenanceMode";
+import PartResult from "../features/cycle/components/PartResult";
 import { errorText } from "../lib/errors";
 import {
   cycleApi,
@@ -20,28 +20,22 @@ import {
   useLayout,
   useReadiness,
   useRecipes,
-  type PartView,
   type ResultView,
   type Snapshot,
-  type Verdict,
 } from "../features/cycle";
 import { TitlebarContent } from "../layout/TitlebarContent";
-
-function verdictParts(v: Verdict) {
-  const [code, detail] = verdictLabel[v].split(" · ");
-  return { code, detail: detail ?? "整件合格" };
-}
 
 const phaseLabels: Record<string, string> = { IDLE: "空闲", VALIDATE: "接件", ACQUIRE: "采集", DRAIN: "收尾", JUDGE: "判定", FAULT: "故障" };
 
 const viewOptions = [{ value: "image", label: "原图" }, { value: "part", label: "整件布置" }];
+const noSegments: readonly PathSegment[] = [];
 
 export default function InspectPage() {
   const { snapshot } = useCycle();
   const recipes = useRecipes();
   const [view, setView] = useState<"image" | "part">("image");
   const [diagnostics, setDiagnostics] = useState<DiagnosticGroup | null>(null);
-  const [seqSelection, setSeqSelection] = useState<{ scope: string; seq: number } | null>(null);
+  const [seqSelection, setSeqSelection] = useState<{ scope: string; seq: number; camera?: number } | null>(null);
   const [pendingRecipe, setPendingRecipe] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState("");
   const [action, setAction] = useState<"switch" | null>(null);
@@ -73,9 +67,9 @@ export default function InspectPage() {
   }, []);
 
   const resumeFollowing = () => setSeqSelection(null);
-  const selectGroup = (seq: number) => {
+  const selectGroup = (seq: number, camera?: number) => {
     if (!burst?.groups.some(group => group.seq === seq)) return;
-    setSeqSelection({ scope: burstScope, seq });
+    setSeqSelection({ scope: burstScope, seq, camera });
     setView("image");
   };
   const canSwitch = (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
@@ -159,7 +153,7 @@ export default function InspectPage() {
             </div>
             {view === "part"
               ? <CameraSegmentOverview cameras={burst?.cameras ?? summary?.cameras ?? []} segments={burstSegments} regions={burstJudgement?.regions} />
-              : <BurstRuntimeFrame part={part} seq={burstSeq} regions={partResult?.burst?.regions} />}
+              : <BurstRuntimeFrame part={part} seq={burstSeq} regions={partResult?.burst?.regions} focusedCamera={burstManual ? seqSelection?.camera : undefined} />}
           </Card>
 
           <Card className="prod-shots">
@@ -175,7 +169,8 @@ export default function InspectPage() {
         </div>
 
         <aside className="prod-side" aria-label="整件结果">
-          <VerdictCard phase={phase} result={result} part={part} />
+          <PartResult key={result ? `${result.cycleId}:${result.ts}` : "current"} phase={phase} result={result} part={part}
+            segments={layout && layout.revisionId === part?.recipeRevision ? layout.pathSegments : noSegments} onLocate={selectGroup} />
           <Stats snapshot={snapshot} />
           <Progress snapshot={snapshot} result={partResult} onDiagnostics={() => setDiagnostics("capture")} />
           <Card className="prod-segments" role="region" aria-label="检测区域结果">
@@ -210,55 +205,6 @@ export default function InspectPage() {
         </Dialog>
       )}
     </div>
-  );
-}
-
-function VerdictCard({ phase, result, part }: { phase: string; result: ResultView | null; part: PartView | null }) {
-  const card = useRef<HTMLElement>(null);
-  const running = !result && phase !== "IDLE" && phase !== "FAULT";
-  const stateKey = result ? `${result.cycleId}:${result.ts}` : running ? `run:${part?.cycleId ?? ""}` : "idle";
-  const tone = result ? (result.mode === "maintenanceCollect" ? "idle" : verdictTone(result.verdict)) : running ? "run" : "idle";
-  const initial = useRef(stateKey);
-  const animate = useRef(false);
-  if (initial.current !== stateKey) animate.current = true;
-  const [emphasis, setEmphasis] = useState(false);
-  useEffect(() => {
-    if (animate.current && tone === "ng") setEmphasis(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stateKey]);
-  const parts = result ? (result.mode === "maintenanceCollect" ? { code: "未判定", detail: "维护采集，只录图" }
-    : { ...verdictParts(result.verdict), ...(result.mode === "maintenanceShadow" ? { detail: `试判 · ${verdictParts(result.verdict).detail}` } : {}) }) : null;
-  const reason = result ? displayReason(result.reason) : "";
-  // 整件标记：检测不完整、胶偏未判、含未分段、笔数异常等。只告警，不改上面的结论
-  const flags = flagBadges(result?.burst?.flags);
-  const progress = part ? burstProgressText(part.burst) : "—";
-  return (
-    <section ref={card} aria-label="整件判定" aria-live="polite"
-      className={`fly-verdict qs-verdict xl ${tone}${animate.current ? " in" : ""}${emphasis ? " emph" : ""}`}
-      onAnimationEnd={event => { if (event.target === card.current) setEmphasis(false); }}>
-      <div className="vh">
-        <span title={result ? `SN ${result.sn}` : undefined}>{result ? <>判定结果 · SN <span className="sn">{result.sn}</span></> : "判定结果"}</span>
-        <span className="mono">PLC {result ? `${result.plcCode}${result.faultCode && (result.mode ?? "production") === "production" ? ` / ${result.faultCode}` : ""}` : "—"}</span>
-      </div>
-      <Fragment key={stateKey}>
-        {result && parts ? <>
-          <div className="big">{parts.code}</div>
-          <div className="t">{parts.detail}</div>
-          <div className="d" title={reason}>{reason}</div>
-          {flags.length > 0 && <div className="foot">
-            {flags.map(flag => <span key={flag.key} data-flag={flag.key}>{flag.label}</span>)}
-          </div>}
-        </> : running ? <>
-          <div className="big"><span className="pulse" /></div>
-          <div className="t">检测中…</div>
-          <div className="d">SN <span className="sn">{part?.sn || "—"}</span> · 帧组 {progress}</div>
-        </> : <>
-          <div className="big">—</div>
-          <div className="t">暂无检测结果</div>
-          {phase !== "FAULT" && <div className="d">等待工件</div>}
-        </>}
-      </Fragment>
-    </section>
   );
 }
 
