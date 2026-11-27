@@ -97,7 +97,7 @@ function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, 
 }) {
   const s = detail.summary;
   const image = useFrameImage(s.id, recordCamera ?? -1, seq, !!frame?.rawFile && recordCamera != null);
-  const traced = useFrameOverlay(s.id, comparison, camera, seq, !!frame?.rawFile && frame.status !== "notInspected" && frame.status !== "missing");
+  const traced = useFrameOverlay(s.id, comparison, camera, seq, !!image.image && frame !== null && frame.status !== "notInspected" && frame.status !== "missing");
   const lit = selected ? station : null;
   // 联动的测站画在最后、加粗换色，免得被相邻测站盖住
   const lines = (traced.view?.edges ?? []).flatMap((edge, i) => edge ? [{ from: edge[0], to: edge[1], station: i,

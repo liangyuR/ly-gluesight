@@ -323,4 +323,40 @@ describe("历史详情（段配方记录）", () => {
     expect(vi.mocked(burstImageApi.record).mock.calls.some(([id, camera, seq]) => id === detail.summary.id && camera === 1 && seq === 5)).toBe(false);
     expect(workspaceApi.recordFrameView).not.toHaveBeenCalled();
   });
+
+  it("各相机原图就绪后才读取叠图 → 慢图和失败图不请求，旧图迟到不复算", async () => {
+    const image = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
+    let finishOld!: (value: typeof image) => void;
+    const oldImage = new Promise<typeof image>(resolve => { finishOld = resolve; });
+    vi.mocked(burstImageApi.record).mockImplementation(async (_, camera, seq) => {
+      if (seq === 1 && camera === 0) return oldImage;
+      if (seq === 1 && camera === 1) throw new Error("模拟录制原图读取失败");
+      return image;
+    });
+    vi.mocked(workspaceApi.historyFrameView).mockImplementation(async (_, camera, seq) => ({
+      segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5,
+      edges: [[[10, seq + 10], [20, seq + 10]]], partEdges: [], metrics: frameMetrics(camera, seq),
+    }));
+    const firstGroupOverlays = () => new Set(vi.mocked(workspaceApi.historyFrameView).mock.calls
+      .filter(([, , seq]) => seq === 1).map(([, camera]) => camera));
+
+    show();
+    const ready = await screen.findByRole("img", { name: "原始 SN SN-101 · CAM-3 · 帧组 1" });
+    expect(await within(ready).findByLabelText("测量横线")).toBeVisible();
+    expect(within(screen.getByRole("group", { name: "CAM-1 · 帧组 1 原图" })).getByText("正在读取原图…")).toBeVisible();
+    const failed = within(screen.getByRole("group", { name: "CAM-2 · 帧组 1 原图" }));
+    expect(await failed.findByText("原图不可用")).toBeVisible();
+    expect(failed.getByText("模拟录制原图读取失败")).toBeVisible();
+    expect(firstGroupOverlays()).toEqual(new Set([2]));
+
+    await userEvent.click(screen.getByRole("button", { name: "帧组 6 · CAM-1 · OK" }));
+    const current = await screen.findByRole("img", { name: "原始 SN SN-101 · CAM-1 · 帧组 6" });
+    const lines = await within(current).findByLabelText("测量横线");
+    expect(lines.querySelector("line")).toHaveAttribute("y1", "16");
+
+    await act(async () => { finishOld(image); });
+    expect(firstGroupOverlays()).toEqual(new Set([2]));
+    expect(current).toBeVisible();
+    expect(lines.querySelector("line")).toHaveAttribute("y1", "16");
+  });
 });

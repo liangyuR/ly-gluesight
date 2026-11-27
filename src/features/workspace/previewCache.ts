@@ -45,7 +45,10 @@ export function scheduleFrameRead<T>(read: () => Promise<T>, signal?: AbortSigna
     const start = () => {
       if (signal?.aborted) { cancel(); return; }
       active++;
-      void Promise.resolve().then(read).then(value => { if (!signal?.aborted) resolve(value); }, reject).finally(() => {
+      void Promise.resolve().then(() => {
+        if (signal?.aborted) throw aborted();
+        return read();
+      }).then(value => { if (!signal?.aborted) resolve(value); }, reject).finally(() => {
         signal?.removeEventListener("abort", cancel);
         active--;
         while (active < 2 && queue.length) queue.shift()!();
