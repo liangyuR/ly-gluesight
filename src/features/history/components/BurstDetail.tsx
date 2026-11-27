@@ -4,6 +4,7 @@ import { ArrowLeft, ChevronLeft, ChevronRight, Scale, ScanEye, SplitSquareHorizo
 import { Alert, Button, Card, Chip, IconButton, Select, Stack, StatusBadge, Text } from "qing-steel";
 import FrameGroupStrip from "../../cycle/components/FrameGroupStrip";
 import RegionResultPanel from "../../cycle/components/RegionResultPanel";
+import { firstGroupAtOrAfter } from "../../cycle/frameGroups";
 // 图表库按需加载：只有打开带逐站数据的历史详情时才进来
 const WidthProfile = lazy(() => import("../../plan/WidthProfile").then(m => ({ default: m.WidthProfile })));
 import type { CalibrationFrameView, FrameGroupView, FrameRecord, PartDetailBurst } from "../../plan/types";
@@ -152,7 +153,6 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const compared = useMemo(() => comparison?.burst ? comparisonBurst(burst, comparison.burst) : null, [burst, comparison]);
   const shown = compared && !showOriginal ? compared : burst, j = shown.judgement;
   const groups = useMemo(() => shown === burst ? originalGroups : historyGroups(shown), [shown, burst, originalGroups]);
-  const lastSeq = groups.at(-1)?.seq ?? 1;
   const [selection, setSelection] = useState({ camera: entry.camera, seq: entry.seq });
   const shownCamera = useRef<string | undefined>(undefined);
   shownCamera.current = shown.cameras[selection.camera];
@@ -215,7 +215,13 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const returnToTrace = () => setTraceJump(jump => jump && { ...jump, target: "trace" });
   const traceCamera = originalShown ? selection.camera : shown.recordCameras?.[selection.camera];
   const traceSelection = traceCamera == null ? null : { camera: traceCamera, seq: selection.seq };
-  const step = (delta: number) => setSelection(prev => ({ ...prev, seq: Math.min(lastSeq, Math.max(groups[0]?.seq ?? 1, prev.seq + delta)) }));
+  const step = (direction: -1 | 1) => setSelection(prev => {
+    let index = firstGroupAtOrAfter(groups, prev.seq);
+    if (direction === -1) index--;
+    else if (groups[index]?.seq === prev.seq) index++;
+    const next = groups[Math.min(groups.length - 1, Math.max(0, index))];
+    return next && next.seq !== prev.seq ? { ...prev, seq: next.seq } : prev;
+  });
   const stepRef = useRef(step);
   stepRef.current = step;
   const neighborRef = useRef({ neighbors, onOpen });

@@ -272,6 +272,26 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.getByRole("group", { name: "CAM-1 · 帧组 51 原图" })).toBeVisible();
   });
 
+  it("在稀疏帧组的原图上按左右键 → 跳过空洞并在首尾停住", async () => {
+    const burst = detail.burst!;
+    const sequences = new Set([2, 5, 11]);
+    burst.frames = burst.frames.filter(frame => sequences.has(frame.seq));
+    burst.frameVerdicts = burst.frameVerdicts.filter(frame => sequences.has(frame.seq));
+
+    show();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "查看 CAM-3 帧组 2 原图" }));
+    expect(screen.getByRole("group", { name: "CAM-3 · 帧组 2 原图" })).toHaveFocus();
+
+    const steps = [["ArrowLeft", 2], ["ArrowRight", 5], ["ArrowRight", 11], ["ArrowRight", 11],
+      ["ArrowLeft", 5], ["ArrowLeft", 2], ["ArrowLeft", 2]] as const;
+    for (const [key, seq] of steps) {
+      await user.keyboard(`{${key}}`);
+      expect(document.activeElement).toHaveAccessibleName(`CAM-3 · 帧组 ${seq} 原图`);
+    }
+    expect(await screen.findByRole("img", { name: "原始 SN SN-101 · CAM-3 · 帧组 2" })).toBeVisible();
+  });
+
   it("加载旧对照期间重新复算 → 迟到的旧对照不能覆盖新结果", async () => {
     const old = { ...comparison(), judgement: { ...comparison().judgement, reason: "旧对照结果" } };
     vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([old]);
