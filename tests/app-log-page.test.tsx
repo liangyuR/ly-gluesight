@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { expect, it, vi } from "vitest";
 import type { OperationProgress } from "../src/features/workspace/operation";
 import AppLogPage from "../src/pages/AppLogPage";
+import { deferred } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
@@ -30,6 +31,35 @@ it("直接导出失败后重试 → 显示文件路径与未能打包的资料",
   expect(await screen.findByText("exports/diagnostics.zip")).toBeVisible();
   expect(screen.getByText("本件原图已清理")).toBeVisible();
   expect(screen.queryByText("导出目录不可写")).not.toBeInTheDocument();
+});
+
+it("打开诊断包所在文件夹失败 → 保留导出结果并可重试", async () => {
+  const path = "exports/reveal.zip";
+  const firstReveal = deferred<void>();
+  let reveals = 0;
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "app_log_tail") return { cursor: 0, lines: [], skipped: false };
+    if (command === "operation_status") return null;
+    if (command === "diagnostics_export") return { path, notes: [] };
+    if (command === "reveal_path") return ++reveals === 1 ? firstReveal.promise : undefined;
+    throw new Error("意外调用 " + command);
+  });
+  const revealed = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "reveal_path");
+  const user = userEvent.setup();
+  render(<AppLogPage />);
+
+  await user.click(screen.getByRole("button", { name: "导出诊断包" }));
+  const reveal = await screen.findByRole("button", { name: "打开所在文件夹" });
+  await user.click(reveal);
+  expect(revealed()).toEqual([["reveal_path", { path }]]);
+  expect(reveal).toBeDisabled();
+
+  await act(async () => { firstReveal.reject(new Error("无法打开导出目录")); });
+  expect(await screen.findByText(/无法打开导出目录/)).toBeVisible();
+  expect(screen.getByText(path)).toBeVisible();
+  await user.click(await screen.findByRole("button", { name: "打开所在文件夹" }));
+  expect(revealed()).toEqual([["reveal_path", { path }], ["reveal_path", { path }]]);
+  expect(screen.queryByText(/无法打开导出目录/)).not.toBeInTheDocument();
 });
 
 it("取消正在打包的诊断导出 → 向当前任务发取消请求并可重试", async () => {

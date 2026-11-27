@@ -103,6 +103,39 @@ function RuntimeLogStream() {
   </section>;
 }
 
+function DiagnosticsExportResult({ result }: { result: DiagnosticsResult }) {
+  const pending = useRef(false);
+  const [opening, setOpening] = useState(false);
+  const [error, setError] = useState("");
+
+  async function openFolder() {
+    if (pending.current) return;
+    pending.current = true;
+    setOpening(true);
+    setError("");
+    try {
+      await desktopCall("reveal_path", { path: result.path });
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      pending.current = false;
+      setOpening(false);
+    }
+  }
+
+  return <>
+    <Alert tone={result.notes.length ? "warn" : "ok"} title="诊断包已导出" action={
+      <Button variant="text" size="sm" disabled={opening} onClick={openFolder}>
+        {opening ? "正在打开…" : "打开所在文件夹"}
+      </Button>
+    }>
+      <div className="mono diagnostics-export-path">{result.path}</div>
+      {result.notes.length > 0 && <ul>{result.notes.map((note, index) => <li key={index}>{note}</li>)}</ul>}
+    </Alert>
+    {error && <Alert tone="warn">打开所在文件夹失败：{error}</Alert>}
+  </>;
+}
+
 export default function AppLogPage() {
   const operation = useOperation();
   const exportPending = useRef(false);
@@ -144,10 +177,7 @@ export default function AppLogPage() {
         </Stack>
         <Text muted>诊断包包含最近 24 小时的运行日志、PLC 通讯日志和检测记录，最多附带 20 件异常工件的原图。</Text>
         {!result && <OperationStatus operation={operation} label="导出诊断包" labels={diagnosticsLabels} />}
-        {result && <Alert tone={result.notes.length ? "warn" : "ok"} title="诊断包已导出">
-          <div className="mono">{result.path}</div>
-          {result.notes.length > 0 && <ul>{result.notes.map((note, index) => <li key={index}>{note}</li>)}</ul>}
-        </Alert>}
+        {result && <DiagnosticsExportResult key={result.path} result={result} />}
         {directoryError && <Alert tone="ng">{directoryError}</Alert>}
       </Stack>
     </Card>
