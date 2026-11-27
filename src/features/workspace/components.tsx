@@ -1,5 +1,5 @@
 import type { BrushGuide, ImagePoint } from "./teachingPath";
-import { cloneElement, createContext, useContext, useEffect, useId, useRef, useState, type PointerEvent, type ReactElement, type ReactNode } from "react";
+import { cloneElement, createContext, memo, useContext, useEffect, useId, useMemo, useRef, useState, type PointerEvent, type ReactElement, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Camera, Minus, Plus, RotateCcw } from "lucide-react";
 import { Alert, Button, Card, Chip, EmptyState, IconButton, NumberField as SteelNumberField, StatusBadge, Tooltip } from "qing-steel";
@@ -102,6 +102,44 @@ export interface ImageOverlay {
   selected?: number | null;
   /** 逐帧定向叠加（走廊示教页，开启定向的段） */
   heading?: HeadingGuide | null;
+}
+
+const EMPTY_PATH: ImagePoint[] = [];
+const HANDLE_BLOCK_SIZE = 128;
+
+function pathHandle([x, y]: ImagePoint, index: number, radius: number, selected: number | null | undefined) {
+  return <circle key={"v" + index} data-vertex={index} aria-label={"中线点 " + (index + 1)} cx={x} cy={y} r={radius}
+    fill={selected === index ? "var(--ov-line)" : "var(--ov-halo)"} fillOpacity={.85}
+    stroke={index === 0 ? "var(--ov-ok)" : "var(--ov-line)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />;
+}
+
+const PathHandleBlock = memo(function PathHandleBlock({ path, start, end, radius, selected }: {
+  path: ImagePoint[]; start: number; end: number; radius: number; selected: number | null;
+}) {
+  return path.slice(start, end).map((point, index) => pathHandle(point, start + index, radius, selected));
+}, (previous, next) => {
+  if (previous.start !== next.start || previous.end !== next.end
+    || previous.radius !== next.radius || previous.selected !== next.selected) return false;
+  for (let index = next.start; index < next.end; index++) {
+    const a = previous.path[index], b = next.path[index];
+    if (a !== b && (a[0] !== b[0] || a[1] !== b[1])) return false;
+  }
+  return true;
+});
+
+function pathHandles(path: ImagePoint[], radius: number, selected: number | null | undefined, all: boolean) {
+  if (path.length <= 24) return path.map((point, index) => pathHandle(point, index, radius, selected));
+  if (!all) {
+    const last = path.length - 1;
+    const indices = selected != null && Number.isInteger(selected) && selected > 0 && selected < last ? [0, selected, last] : [0, last];
+    return indices.map(index => pathHandle(path[index], index, radius, selected));
+  }
+  return Array.from({ length: Math.ceil(path.length / HANDLE_BLOCK_SIZE) }, (_, block) => {
+    const start = block * HANDLE_BLOCK_SIZE;
+    const end = Math.min(path.length, start + HANDLE_BLOCK_SIZE);
+    const active = selected != null && selected >= start && selected < end ? selected : null;
+    return <PathHandleBlock key={start} path={path} start={start} end={end} radius={radius} selected={active} />;
+  });
 }
 
 /** 定向叠加；`turnable` 时扇区中线上是可拖动的把手（没拖过时脉冲提示，拖动中显示方向角度）。 */
@@ -278,8 +316,10 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
   const handle = screenPx(7);
   const editing = !!onEdit && shown && !editDisabled;
   const turnable = !!onSectorTurn && !editDisabled && headingShown && !!overlay?.heading?.sector;
-  const path = overlay?.path ?? [];
-  const band = searchBand(path, overlay?.searchHalfPx);
+  const path = overlay?.path ?? EMPTY_PATH;
+  const searchHalf = overlay?.searchHalfPx;
+  const band = useMemo(() => searchBand(path, searchHalf), [path, searchHalf]);
+  const pathPoints = useMemo(() => shown && path.length >= 2 ? path.map(point => point.join(",")).join(" ") : "", [path, shown]);
   const hint = error || emptyHint;
   const footer = controlsAt === "footer";
   const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{!!marks?.length && <Chip selected={marksShown} onClick={() => setMarksShown(v => !v)}>角点</Chip>}{band && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{overlay?.heading && <Chip selected={headingShown} onClick={() => setHeadingShown(v => !v)}>定向</Chip>}{!!overlay?.partEdges?.length && <Chip selected={partEdgesShown} onClick={() => setPartEdgesShown(v => !v)}>胶边距</Chip>}{overlay?.mixEvidence?.observation && <Chip selected={mixShown} onClick={() => setMixShown(v => !v)}>混胶色差</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
@@ -388,8 +428,8 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
             </g>)}
           </g>}
           {overlay && shown && <g aria-label="中线叠加">
-            {path.length >= 2 && ([["var(--ov-halo)", 4], ["var(--ov-line)", 2]] as const).map(([stroke, width]) => <polyline key={stroke} points={path.map(p => p.join(",")).join(" ")} fill="none" stroke={stroke} strokeWidth={width} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
-            {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--ov-line)" : "var(--ov-halo)"} fillOpacity={.85} stroke={i === 0 ? "var(--ov-ok)" : "var(--ov-line)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
+            {path.length >= 2 && ([["var(--ov-halo)", 4], ["var(--ov-line)", 2]] as const).map(([stroke, width]) => <polyline key={stroke} points={pathPoints} fill="none" stroke={stroke} strokeWidth={width} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
+            {onEdit && pathHandles(path, handle, overlay.selected, allHandles)}
             {overlay.segments && <g aria-label="测量横线" pointerEvents="none">
               {overlay.segments.map((segment, i) => <line key={i} x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={segment.width ?? 2} vectorEffect="non-scaling-stroke" />)}
             </g>}

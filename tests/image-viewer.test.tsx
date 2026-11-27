@@ -1,5 +1,5 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
-
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FrameViewer, useFrameImage } from "../src/features/workspace/components";
 import { workspaceApi } from "../src/features/workspace/api";
@@ -54,4 +54,47 @@ describe("图像查看与加载", () => {
     });
   });
 
+  it("长走廊切换全部点柄 → 已选的中间点仍可按按下时的坐标拖动", () => {
+    const count = 160;
+    function Editor() {
+      const [path, setPath] = useState<[number, number][]>(() => Array.from({ length: count }, (_, i) => [5 + i % 30 * 3, 5 + Math.floor(i / 30) * 8]));
+      const [selected, select] = useState<number | null>(null);
+      return <FrameViewer image={image} label="长走廊" controlsAt="footer" overlay={{ path, selected }} onEdit={{
+        add: point => setPath(previous => [...previous, point]),
+        move: (index, point) => setPath(previous => previous.map((value, i) => i === index ? point : value)),
+        select,
+      }} />;
+    }
+    let offset = 20;
+    const selectedLabel = "中线点 129";
+    withDOMPoint<{ offset: number }>((x, y, matrix) => [x, y - matrix.offset], () => {
+      render(<Editor />);
+      const svg = screen.getByRole("img", { name: "长走廊" });
+      stubScreenCTM(svg.querySelector("g")!, () => ({ offset }));
+      const handles = screen.getByRole("button", { name: "点柄" });
+      expect(screen.queryByLabelText(selectedLabel)).not.toBeInTheDocument();
+      fireEvent.click(handles);
+      fireEvent.pointerDown(screen.getByLabelText("中线点 2"), { clientX: 8, clientY: 25 });
+      fireEvent.pointerUp(svg);
+      expect(screen.getByLabelText("中线点 2")).toHaveAttribute("fill", "var(--ov-line)");
+      fireEvent.pointerDown(screen.getByLabelText(selectedLabel), { clientX: 29, clientY: 57 });
+      expect(screen.getByLabelText(selectedLabel)).toHaveAttribute("fill", "var(--ov-line)");
+      expect(screen.getByLabelText("中线点 2")).toHaveAttribute("fill", "var(--ov-halo)");
+      offset = 50;
+      fireEvent.pointerMove(svg, { clientX: 61, clientY: 64 });
+      expect(screen.getByLabelText(selectedLabel)).toHaveAttribute("cy", "44");
+      fireEvent.pointerUp(svg);
+
+      fireEvent.click(handles);
+      expect(screen.queryByLabelText("中线点 2")).not.toBeInTheDocument();
+      fireEvent.pointerDown(screen.getByLabelText(selectedLabel), { clientX: 61, clientY: 94 });
+      fireEvent.pointerMove(svg, { clientX: 66, clientY: 94 });
+      fireEvent.pointerUp(svg);
+      fireEvent.pointerMove(svg, { clientX: 70, clientY: 94 });
+      const polyline = svg.querySelector('[aria-label="中线叠加"] polyline');
+      const points = polyline?.getAttribute("points")?.split(" ");
+      expect(points).toHaveLength(count);
+      expect(points?.[128]).toBe("66,44");
+    });
+  });
 });
