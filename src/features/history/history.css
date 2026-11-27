@@ -18,6 +18,20 @@
 .hist-selection-bar[data-active] { border-style:solid; border-color:color-mix(in srgb, var(--primary) 55%, transparent); background:color-mix(in srgb, var(--primary) 14%, transparent); }
 .hist-selection-bar[data-active] > :first-child { color:var(--primary); font-weight:600; }
 .hist-tags, .hist-tag-options { display:flex; flex-wrap:wrap; gap:6px; }
+.hist-table .hist-tags { inline-size: 8rem; contain: inline-size; }
+.hist-table .hist-tags > .qs-chip-wrap { min-inline-size: 0; max-inline-size: 100%; }
+.hist-table .hist-tags .qs-chip {
+  display: block;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  min-block-size: 32px;
+  block-size: auto;
+  padding-block: 6px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  text-align: left;
+}
 .hist-record-actions { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
 .hist-record-actions > .qs-stack { flex-wrap:wrap; }
 .detail-head .hist-record-actions { margin-top:10px; padding-top:10px; border-top:1px solid var(--outline-variant); }
