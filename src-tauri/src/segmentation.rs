@@ -151,12 +151,24 @@ pub enum UnsegReason {
 
 /// 区域类型。JSON 里用 `type` 区分，避免与 `Region.kind` 嵌套同名。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum RegionKind {
-    Straight { segment: u32 },
-    Corner { segment: u32 },
+    Straight {
+        segment: u32,
+    },
+    Corner {
+        segment: u32,
+    },
     /// 覆盖 first_segment..=last_segment；只跑每帧独立检测，允差取覆盖各段中较宽一档，不判胶偏
-    Unsegmented { first_segment: u32, last_segment: u32, reason: UnsegReason },
+    Unsegmented {
+        first_segment: u32,
+        last_segment: u32,
+        reason: UnsegReason,
+    },
     /// 段首尾跳过的帧（`skip_head` / `skip_tail`）或每笔首尾跳过的帧（D-SB-62，`pass` 为第几笔，从 1 起；`short`：
     /// 整笔太短全部跳过）：不判定，结果里列为未检区域
     Skipped {
@@ -872,11 +884,19 @@ mod tests {
 
     fn plan(kinds: &[SegmentKind]) -> Vec<PathSegment> {
         let defaults = KindDefaults::default();
-        kinds.iter().enumerate().map(|(i, &kind)| new_segment(i as u32 + 1, kind, &defaults)).collect()
+        kinds
+            .iter()
+            .enumerate()
+            .map(|(i, &kind)| new_segment(i as u32 + 1, kind, &defaults))
+            .collect()
     }
 
     fn region(kind: RegionKind, first_seq: u64, last_seq: u64) -> Region {
-        Region { kind, first_seq, last_seq }
+        Region {
+            kind,
+            first_seq,
+            last_seq,
+        }
     }
 
     fn calibrated(kinds: &[SegmentKind], n_exp: &[u32]) -> Vec<PathSegment> {
@@ -982,14 +1002,8 @@ mod tests {
             edge: None,
         });
         let clear = proportional_coverage(&segments, &cameras, 12, 1, &[], PassRules::NONE);
-        let masked = proportional_coverage(
-            &segments,
-            &cameras,
-            12,
-            1,
-            &[3, 4, 5, 6],
-            PassRules::NONE,
-        );
+        let masked =
+            proportional_coverage(&segments, &cameras, 12, 1, &[3, 4, 5, 6], PassRules::NONE);
         assert_eq!(masked.expected_camera_frames, clear.expected_camera_frames);
         assert_eq!(
             masked.available_camera_frames,

@@ -46,7 +46,10 @@ pub fn recipe_list(cycle: State<'_, CycleHost>) -> RecipeListing {
 
 #[tauri::command]
 pub fn recipe_doc(cycle: State<'_, CycleHost>, id: String) -> Result<RecipeDoc, String> {
-    cycle.recipes.doc(&id).ok_or_else(|| format!("配方不存在：{id}"))
+    cycle
+        .recipes
+        .doc(&id)
+        .ok_or_else(|| format!("配方不存在：{id}"))
 }
 
 #[tauri::command]
@@ -85,14 +88,26 @@ pub fn recipe_preview(doc: RecipeDoc) -> Result<Recipe, String> {
 /// 新建配方的起点：段配方（D-SB-24），相机取相机组前三台，一个待标定的直线段。
 #[tauri::command]
 pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
-    let used: Vec<u16> = cycle.recipes.list().iter().map(|r| r.product_code).collect();
-    let cameras: Vec<String> = cycle.camera.configs().iter().map(|c| c.id.clone()).collect();
+    let used: Vec<u16> = cycle
+        .recipes
+        .list()
+        .iter()
+        .map(|r| r.product_code)
+        .collect();
+    let cameras: Vec<String> = cycle
+        .camera
+        .configs()
+        .iter()
+        .map(|c| c.id.clone())
+        .collect();
     template(&used, &cameras)
 }
 
 /// 产品代码取第一个没被占用的；相机按相机组顺序取前三台（不足 3 台照样建，但过不了段配方校验）。
 fn template(used_codes: &[u16], rig_cameras: &[String]) -> RecipeDoc {
-    let product_code = (1..=i16::MAX as u16).find(|c| !used_codes.contains(c)).unwrap_or(0);
+    let product_code = (1..=i16::MAX as u16)
+        .find(|c| !used_codes.contains(c))
+        .unwrap_or(0);
     let cameras = &rig_cameras[..rig_cameras.len().min(plan::PLAN_CAMERAS)];
     let mut doc = recipe::burst_template(
         format!("NEW-{product_code}"),
@@ -108,7 +123,10 @@ fn template(used_codes: &[u16], rig_cameras: &[String]) -> RecipeDoc {
 /// PLC 的 shotCount 与 deviceShots 都填 expectedTotal。未标定时 expectedTotal 为 null。
 #[tauri::command]
 pub fn recipe_plan_export(cycle: State<'_, CycleHost>, id: String) -> Result<String, String> {
-    let recipe = cycle.recipes.get(&id).ok_or_else(|| format!("配方不存在：{id}"))?;
+    let recipe = cycle
+        .recipes
+        .get(&id)
+        .ok_or_else(|| format!("配方不存在：{id}"))?;
     let export = PlanExport::from_recipe(&recipe)?;
     serde_json::to_string_pretty(&export).map_err(|e| e.to_string())
 }
@@ -152,7 +170,13 @@ fn recipe_delete_inner(
     cycle.recipes.delete(&id)?;
     // 删掉的正是人工选中的配方：清掉选择，下一件报"未选择配方"而不是拿着一个不存在的编号
     if settings.manual_recipe_id.as_deref() == Some(id.as_str()) {
-        cycle.save_settings_locked(CycleSettings { manual_recipe_id: None, ..settings }, &gate)?;
+        cycle.save_settings_locked(
+            CycleSettings {
+                manual_recipe_id: None,
+                ..settings
+            },
+            &gate,
+        )?;
     }
     let _ = cycle.tx.send(Input::Refresh);
     Ok(())

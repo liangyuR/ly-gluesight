@@ -42,10 +42,15 @@ pub enum PointState {
     Pending,
     /// 有胶。d：胶条中线相对位置基准的横向偏移，None 为有胶、无位置基准（ST_NO_REF，如定位失败）；
     /// w：胶宽（没测时为 NaN）
-    Measured { d: Option<f32>, w: f32 },
+    Measured {
+        d: Option<f32>,
+        w: f32,
+    },
     /// 超出检测范围：位姿把示教胶路沿切向搬动后，这一站落在搬过去的胶路两端之外，几何上本来就测不了。
     /// 不判胶偏、不判断胶、不计入有胶比例，也不计入测不了、无基准的连续长度；测到了胶宽（w 为 Some）时照常判胶宽。
-    OutOfRange { w: Option<f32> },
+    OutOfRange {
+        w: Option<f32>,
+    },
     /// 沿示教中线找了、没有胶
     Gap,
     /// 该点测不了（被遮挡、出了图像、胶边被截断）

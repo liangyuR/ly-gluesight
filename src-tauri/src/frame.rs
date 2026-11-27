@@ -219,9 +219,16 @@ impl PoolInner {
             self.in_flight.fetch_add(need, Ordering::SeqCst);
             return Ok(());
         };
-        self.in_flight.try_update(Ordering::SeqCst, Ordering::SeqCst, |used| used.checked_add(need).filter(|&n| n <= max))
+        self.in_flight
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                used.checked_add(need).filter(|&n| n <= max)
+            })
             .map(|_| ())
-            .map_err(|in_flight| BudgetExceeded { in_flight, need, max })
+            .map_err(|in_flight| BudgetExceeded {
+                in_flight,
+                need,
+                max,
+            })
     }
 }
 
@@ -236,7 +243,13 @@ pub struct BudgetExceeded {
 impl std::fmt::Display for BudgetExceeded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mib = |n: usize| n as f64 / (1024.0 * 1024.0);
-        write!(f, "图像内存预算已满：在途 {:.1} MiB + 本帧 {:.1} MiB 超过上限 {:.0} MiB", mib(self.in_flight), mib(self.need), mib(self.max))
+        write!(
+            f,
+            "图像内存预算已满：在途 {:.1} MiB + 本帧 {:.1} MiB 超过上限 {:.0} MiB",
+            mib(self.in_flight),
+            mib(self.need),
+            mib(self.max)
+        )
     }
 }
 
@@ -251,7 +264,6 @@ pub enum GrayError {
 pub struct FramePool(Arc<PoolInner>);
 
 impl FramePool {
-
     /// 在途图像最多 `max_bytes` 字节（每台相机一个池，见 camera::IMAGE_BUDGET_PER_CAMERA）；
     /// 超出时 [`copy`](Self::copy) / [`bayer8_to_gray`](Self::bayer8_to_gray) 返回 BudgetExceeded，
     /// 直到前面的图像释放（最后一个 Arc 放掉）。空闲缓冲（最多 `keep` 块）不计入。
@@ -320,12 +332,18 @@ impl FramePool {
     }
 
     /// 8 位 Bayer 转成灰度写进池里的缓冲（见 [`bayer8_gray_into`]）。
-    pub fn bayer8_to_gray(&self, width: u32, height: u32, src: &[u8]) -> Result<FrameImage, GrayError> {
+    pub fn bayer8_to_gray(
+        &self,
+        width: u32,
+        height: u32,
+        src: &[u8],
+    ) -> Result<FrameImage, GrayError> {
         let bytes = (width as usize).saturating_mul(height as usize);
         let mut image = self
             .take(width, height, bytes, 0)
             .map_err(GrayError::BudgetExceeded)?;
-        bayer8_gray_into(width as usize, height as usize, src, &mut image.pixels).map_err(GrayError::Invalid)?;
+        bayer8_gray_into(width as usize, height as usize, src, &mut image.pixels)
+            .map_err(GrayError::Invalid)?;
         Ok(image)
     }
 
@@ -445,16 +463,19 @@ pub fn bayer8_gray_into(w: usize, h: usize, src: &[u8], out: &mut Vec<u8>) -> Re
     }
     let n = w * h;
     if src.len() < n {
-        return Err(format!("Bayer 像素数据不足：{w}×{h} 需要 {n} 字节，实际 {}", src.len()));
+        return Err(format!(
+            "Bayer 像素数据不足：{w}×{h} 需要 {n} 字节，实际 {}",
+            src.len()
+        ));
     }
     out.clear();
     out.reserve(n);
     for by in 0..h - 1 {
         let r0 = &src[by * w..(by + 1) * w];
         let r1 = &src[(by + 1) * w..(by + 2) * w];
-        out.extend(r0.iter().zip(&r0[1..]).zip(r1.iter().zip(&r1[1..])).map(|((&a, &b), (&c, &d))| {
-            ((a as u16 + b as u16 + c as u16 + d as u16 + 2) >> 2) as u8
-        }));
+        out.extend(r0.iter().zip(&r0[1..]).zip(r1.iter().zip(&r1[1..])).map(
+            |((&a, &b), (&c, &d))| ((a as u16 + b as u16 + c as u16 + d as u16 + 2) >> 2) as u8,
+        ));
         // 末列与倒数第二列同块
         out.push(out[out.len() - 1]);
     }
@@ -686,10 +707,12 @@ mod tests {
         type Alloc = fn(&FramePool) -> Result<FrameImage, BudgetExceeded>;
         let cases: [(&str, Alloc); 2] = [
             ("拷贝", |pool| pool.copy(4, 4, &[7; 16])),
-            ("Bayer 转灰度", |pool| pool.bayer8_to_gray(4, 4, &[7; 16]).map_err(|e| match e {
-                GrayError::BudgetExceeded(full) => full,
-                GrayError::Invalid(e) => panic!("{e}"),
-            })),
+            ("Bayer 转灰度", |pool| {
+                pool.bayer8_to_gray(4, 4, &[7; 16]).map_err(|e| match e {
+                    GrayError::BudgetExceeded(full) => full,
+                    GrayError::Invalid(e) => panic!("{e}"),
+                })
+            }),
         ];
         for (name, alloc) in cases {
             // 预算正好两幅 4×4
@@ -697,9 +720,20 @@ mod tests {
             let first = Arc::new(alloc(&pool).unwrap());
             let held_elsewhere = first.clone();
             let _second = alloc(&pool).unwrap();
-            assert_eq!(alloc(&pool).err(), Some(BudgetExceeded { in_flight: 32, need: 16, max: 32 }), "{name}");
+            assert_eq!(
+                alloc(&pool).err(),
+                Some(BudgetExceeded {
+                    in_flight: 32,
+                    need: 16,
+                    max: 32
+                }),
+                "{name}"
+            );
             drop(first);
-            assert!(alloc(&pool).is_err(), "{name}：别处还持有这幅图，预算不能归还");
+            assert!(
+                alloc(&pool).is_err(),
+                "{name}：别处还持有这幅图，预算不能归还"
+            );
             drop(held_elsewhere);
             assert!(alloc(&pool).is_ok(), "{name}：最后一个引用释放后预算归还");
         }

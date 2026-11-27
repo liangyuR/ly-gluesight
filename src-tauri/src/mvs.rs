@@ -231,14 +231,31 @@ pub struct Api {
 }
 
 #[cfg(any(windows, test))]
-fn windows_candidates(executable: &std::path::Path, development: bool, common_files: Option<PathBuf>) -> Result<Vec<PathBuf>, String> {
-    let directory = executable.parent().filter(|p| p.is_absolute()).ok_or("无法确定 MVS 随包运行库目录")?;
-    let mut out = vec![directory.join("runtime").join("mvs").join("MvCameraControl.dll")];
+fn windows_candidates(
+    executable: &std::path::Path,
+    development: bool,
+    common_files: Option<PathBuf>,
+) -> Result<Vec<PathBuf>, String> {
+    let directory = executable
+        .parent()
+        .filter(|p| p.is_absolute())
+        .ok_or("无法确定 MVS 随包运行库目录")?;
+    let mut out = vec![directory
+        .join("runtime")
+        .join("mvs")
+        .join("MvCameraControl.dll")];
     if development {
         if let Some(dir) = common_files.filter(|p| p.is_absolute()) {
-            out.push(dir.join("MVS").join("Runtime").join("Win64_x64").join("MvCameraControl.dll"));
+            out.push(
+                dir.join("MVS")
+                    .join("Runtime")
+                    .join("Win64_x64")
+                    .join("MvCameraControl.dll"),
+            );
         }
-        out.push(PathBuf::from(r"C:\Program Files (x86)\Common Files\MVS\Runtime\Win64_x64\MvCameraControl.dll"));
+        out.push(PathBuf::from(
+            r"C:\Program Files (x86)\Common Files\MVS\Runtime\Win64_x64\MvCameraControl.dll",
+        ));
     }
     out.dedup();
     Ok(out)
@@ -247,8 +264,13 @@ fn windows_candidates(executable: &std::path::Path, development: bool, common_fi
 fn candidates() -> Result<Vec<PathBuf>, String> {
     #[cfg(windows)]
     {
-        let executable = std::env::current_exe().map_err(|e| format!("读取应用程序路径失败: {e}"))?;
-        windows_candidates(&executable, cfg!(debug_assertions), std::env::var_os("CommonProgramFiles(x86)").map(PathBuf::from))
+        let executable =
+            std::env::current_exe().map_err(|e| format!("读取应用程序路径失败: {e}"))?;
+        windows_candidates(
+            &executable,
+            cfg!(debug_assertions),
+            std::env::var_os("CommonProgramFiles(x86)").map(PathBuf::from),
+        )
     }
     #[cfg(not(windows))]
     {
@@ -265,9 +287,13 @@ impl Api {
         let mut last = String::from("未找到 MvCameraControl");
         for path in paths {
             #[cfg(windows)]
-            let result = windows::load(&path).and_then(|(lib, directories, loaded_path)| unsafe { Self::bind(lib, loaded_path, directories) });
+            let result = windows::load(&path).and_then(|(lib, directories, loaded_path)| unsafe {
+                Self::bind(lib, loaded_path, directories)
+            });
             #[cfg(not(windows))]
-            let result = unsafe { Library::new(&path) }.map_err(|e| e.to_string()).and_then(|lib| unsafe { Self::bind(lib, path.clone()) });
+            let result = unsafe { Library::new(&path) }
+                .map_err(|e| e.to_string())
+                .and_then(|lib| unsafe { Self::bind(lib, path.clone()) });
             match result {
                 Ok(api) => return Ok(api),
                 Err(e) => last = format!("{}: {e}", path.display()),
@@ -276,10 +302,15 @@ impl Api {
         Err(format!("海康 MVS 运行库加载失败（{last}）"))
     }
 
-    unsafe fn bind(lib: Library, library_path: PathBuf, #[cfg(windows)] directories: windows::DllDirectories) -> Result<Self, String> {
+    unsafe fn bind(
+        lib: Library,
+        library_path: PathBuf,
+        #[cfg(windows)] directories: windows::DllDirectories,
+    ) -> Result<Self, String> {
         macro_rules! sym {
             ($name:literal) => {
-                *lib.get(concat!($name, "\0").as_bytes()).map_err(|e| format!("MVS 缺少接口 {}: {e}", $name))?
+                *lib.get(concat!($name, "\0").as_bytes())
+                    .map_err(|e| format!("MVS 缺少接口 {}: {e}", $name))?
             };
         }
         let initialize: FnInit = sym!("MV_CC_Initialize");
@@ -326,7 +357,13 @@ impl Api {
         check(initialize(), "初始化 MVS SDK")?;
         api.initialized = true;
         let v = version();
-        api.version = format!("{}.{}.{}.{}", v >> 24, (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
+        api.version = format!(
+            "{}.{}.{}.{}",
+            v >> 24,
+            (v >> 16) & 0xff,
+            (v >> 8) & 0xff,
+            v & 0xff
+        );
         tracing::info!(version = %api.version, path = %api.library_path.display(), "已加载 MVS SDK");
         Ok(api)
     }
@@ -335,7 +372,9 @@ impl Api {
 impl Drop for Api {
     fn drop(&mut self) {
         if self.initialized {
-            unsafe { (self.finalize)(); }
+            unsafe {
+                (self.finalize)();
+            }
         }
     }
 }
@@ -348,7 +387,8 @@ pub fn api() -> Result<Arc<Api>, String> {
 pub(crate) fn load_bundled_api() -> Result<Arc<Api>, String> {
     #[cfg(windows)]
     {
-        let executable = std::env::current_exe().map_err(|e| format!("读取应用程序路径失败: {e}"))?;
+        let executable =
+            std::env::current_exe().map_err(|e| format!("读取应用程序路径失败: {e}"))?;
         Api::load_candidates(windows_candidates(&executable, false, None)?).map(Arc::new)
     }
     #[cfg(not(windows))]
@@ -390,7 +430,13 @@ fn summarize(info: &DeviceInfoHead) -> DeviceSummary {
             model: text(&g.model),
             user_name: text(&g.user_name),
             transport: "GigE",
-            ip: Some(format!("{}.{}.{}.{}", ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff)),
+            ip: Some(format!(
+                "{}.{}.{}.{}",
+                ip >> 24,
+                (ip >> 16) & 0xff,
+                (ip >> 8) & 0xff,
+                ip & 0xff
+            )),
         }
     } else {
         let u = unsafe { &*(special as *const Usb3Info) };
@@ -405,10 +451,20 @@ fn summarize(info: &DeviceInfoHead) -> DeviceSummary {
 }
 
 fn enumerate_raw(api: &Api) -> Result<(Box<DeviceInfoList>, Vec<DeviceSummary>), String> {
-    let mut list = Box::new(DeviceInfoList { count: 0, devices: [std::ptr::null(); 256] });
-    check(unsafe { (api.enum_devices)(MV_GIGE_DEVICE | MV_USB_DEVICE, &mut *list) }, "枚举相机")?;
+    let mut list = Box::new(DeviceInfoList {
+        count: 0,
+        devices: [std::ptr::null(); 256],
+    });
+    check(
+        unsafe { (api.enum_devices)(MV_GIGE_DEVICE | MV_USB_DEVICE, &mut *list) },
+        "枚举相机",
+    )?;
     let n = (list.count as usize).min(256);
-    let summaries = list.devices[..n].iter().filter(|p| !p.is_null()).map(|&p| summarize(unsafe { &*p })).collect();
+    let summaries = list.devices[..n]
+        .iter()
+        .filter(|p| !p.is_null())
+        .map(|&p| summarize(unsafe { &*p }))
+        .collect();
     Ok((list, summaries))
 }
 
@@ -443,9 +499,19 @@ impl Device {
             return Err(format!("未找到序列号为 {serial} 的相机"));
         };
         let mut handle: Handle = std::ptr::null_mut();
-        check(unsafe { (api.create_handle)(&mut handle, list.devices[index]) }, "创建相机句柄")?;
-        let device = Self { api, handle, summary: summaries[index].clone() };
-        check(unsafe { (device.api.open_device)(handle, MV_ACCESS_EXCLUSIVE, 0) }, "打开相机（可能已被 MVS 客户端占用）")?;
+        check(
+            unsafe { (api.create_handle)(&mut handle, list.devices[index]) },
+            "创建相机句柄",
+        )?;
+        let device = Self {
+            api,
+            handle,
+            summary: summaries[index].clone(),
+        };
+        check(
+            unsafe { (device.api.open_device)(handle, MV_ACCESS_EXCLUSIVE, 0) },
+            "打开相机（可能已被 MVS 客户端占用）",
+        )?;
         Ok(device)
     }
 
@@ -455,21 +521,38 @@ impl Device {
 
     pub fn set_enum(&self, key: &str, value: &str) -> Result<(), String> {
         let v = Self::key(value);
-        check(unsafe { (self.api.set_enum_str)(self.handle, Self::key(key).as_ptr(), v.as_ptr()) }, &format!("{key} = {value}"))
+        check(
+            unsafe { (self.api.set_enum_str)(self.handle, Self::key(key).as_ptr(), v.as_ptr()) },
+            &format!("{key} = {value}"),
+        )
     }
 
     pub fn set_float(&self, key: &str, value: f32) -> Result<(), String> {
-        check(unsafe { (self.api.set_float)(self.handle, Self::key(key).as_ptr(), value) }, &format!("{key} = {value}"))
+        check(
+            unsafe { (self.api.set_float)(self.handle, Self::key(key).as_ptr(), value) },
+            &format!("{key} = {value}"),
+        )
     }
 
     pub fn get_float(&self, key: &str) -> Result<f32, String> {
-        let mut v = FloatValue { cur: 0.0, max: 0.0, min: 0.0, reserved: [0; 4] };
-        check(unsafe { (self.api.get_float)(self.handle, Self::key(key).as_ptr(), &mut v) }, &format!("读取 {key}"))?;
+        let mut v = FloatValue {
+            cur: 0.0,
+            max: 0.0,
+            min: 0.0,
+            reserved: [0; 4],
+        };
+        check(
+            unsafe { (self.api.get_float)(self.handle, Self::key(key).as_ptr(), &mut v) },
+            &format!("读取 {key}"),
+        )?;
         Ok(v.cur)
     }
 
     pub fn set_int(&self, key: &str, value: i64) -> Result<(), String> {
-        check(unsafe { (self.api.set_int)(self.handle, Self::key(key).as_ptr(), value) }, &format!("{key} = {value}"))
+        check(
+            unsafe { (self.api.set_int)(self.handle, Self::key(key).as_ptr(), value) },
+            &format!("{key} = {value}"),
+        )
     }
 
     pub fn get_int(&self, key: &str) -> Result<i64, String> {
@@ -540,38 +623,80 @@ impl Device {
     }
 
     pub fn set_bool(&self, key: &str, value: bool) -> Result<(), String> {
-        check(unsafe { (self.api.set_bool)(self.handle, Self::key(key).as_ptr(), value) }, &format!("{key} = {value}"))
+        check(
+            unsafe { (self.api.set_bool)(self.handle, Self::key(key).as_ptr(), value) },
+            &format!("{key} = {value}"),
+        )
     }
 
     pub fn get_bool(&self, key: &str) -> Result<bool, String> {
         let mut value = false;
-        check(unsafe { (self.api.get_bool)(self.handle, Self::key(key).as_ptr(), &mut value) }, &format!("读取 {key}"))?;
+        check(
+            unsafe { (self.api.get_bool)(self.handle, Self::key(key).as_ptr(), &mut value) },
+            &format!("读取 {key}"),
+        )?;
         Ok(value)
     }
 
     pub fn get_enum(&self, key: &str) -> Result<String, String> {
         let k = Self::key(key);
-        let mut v = EnumValue { cur: 0, supported_num: 0, supported: [0; 64], reserved: [0; 4] };
-        check(unsafe { (self.api.get_enum)(self.handle, k.as_ptr(), &mut v) }, &format!("读取 {key}"))?;
-        let mut entry = EnumEntry { value: v.cur, symbolic: [0; 64], reserved: [0; 4] };
-        check(unsafe { (self.api.get_enum_entry)(self.handle, k.as_ptr(), &mut entry) }, &format!("读取 {key} 当前枚举"))?;
-        Ok(unsafe { CStr::from_ptr(entry.symbolic.as_ptr()) }.to_string_lossy().into_owned())
+        let mut v = EnumValue {
+            cur: 0,
+            supported_num: 0,
+            supported: [0; 64],
+            reserved: [0; 4],
+        };
+        check(
+            unsafe { (self.api.get_enum)(self.handle, k.as_ptr(), &mut v) },
+            &format!("读取 {key}"),
+        )?;
+        let mut entry = EnumEntry {
+            value: v.cur,
+            symbolic: [0; 64],
+            reserved: [0; 4],
+        };
+        check(
+            unsafe { (self.api.get_enum_entry)(self.handle, k.as_ptr(), &mut entry) },
+            &format!("读取 {key} 当前枚举"),
+        )?;
+        Ok(unsafe { CStr::from_ptr(entry.symbolic.as_ptr()) }
+            .to_string_lossy()
+            .into_owned())
     }
 
     pub fn command(&self, key: &str) -> Result<(), String> {
-        check(unsafe { (self.api.command)(self.handle, Self::key(key).as_ptr()) }, key)
+        check(
+            unsafe { (self.api.command)(self.handle, Self::key(key).as_ptr()) },
+            key,
+        )
     }
 
     /// 枚举节点当前支持的全部取值名称。
     pub fn enum_entries(&self, key: &str) -> Result<Vec<String>, String> {
         let k = Self::key(key);
-        let mut v = EnumValue { cur: 0, supported_num: 0, supported: [0; 64], reserved: [0; 4] };
-        check(unsafe { (self.api.get_enum)(self.handle, k.as_ptr(), &mut v) }, &format!("读取 {key}"))?;
+        let mut v = EnumValue {
+            cur: 0,
+            supported_num: 0,
+            supported: [0; 64],
+            reserved: [0; 4],
+        };
+        check(
+            unsafe { (self.api.get_enum)(self.handle, k.as_ptr(), &mut v) },
+            &format!("读取 {key}"),
+        )?;
         let mut out = Vec::new();
         for &value in &v.supported[..(v.supported_num as usize).min(64)] {
-            let mut e = EnumEntry { value, symbolic: [0; 64], reserved: [0; 4] };
+            let mut e = EnumEntry {
+                value,
+                symbolic: [0; 64],
+                reserved: [0; 4],
+            };
             if unsafe { (self.api.get_enum_entry)(self.handle, k.as_ptr(), &mut e) } == 0 {
-                out.push(unsafe { CStr::from_ptr(e.symbolic.as_ptr()) }.to_string_lossy().into_owned());
+                out.push(
+                    unsafe { CStr::from_ptr(e.symbolic.as_ptr()) }
+                        .to_string_lossy()
+                        .into_owned(),
+                );
             }
         }
         Ok(out)
@@ -604,10 +729,24 @@ impl Device {
     }
 
     /// `user` 必须在相机关闭前保持有效。
-    pub fn start(&self, on_image: ImageCallback, on_exception: ExceptionCallback, user: *mut c_void) -> Result<(), String> {
-        check(unsafe { (self.api.register_exception)(self.handle, on_exception, user) }, "注册异常回调")?;
-        check(unsafe { (self.api.register_image)(self.handle, on_image, user) }, "注册取图回调")?;
-        check(unsafe { (self.api.start_grabbing)(self.handle) }, "开始取流")
+    pub fn start(
+        &self,
+        on_image: ImageCallback,
+        on_exception: ExceptionCallback,
+        user: *mut c_void,
+    ) -> Result<(), String> {
+        check(
+            unsafe { (self.api.register_exception)(self.handle, on_exception, user) },
+            "注册异常回调",
+        )?;
+        check(
+            unsafe { (self.api.register_image)(self.handle, on_image, user) },
+            "注册取图回调",
+        )?;
+        check(
+            unsafe { (self.api.start_grabbing)(self.handle) },
+            "开始取流",
+        )
     }
 }
 

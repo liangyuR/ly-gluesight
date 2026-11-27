@@ -11,8 +11,12 @@ use crate::frame::BayerPattern;
 use crate::vision::FrameImage;
 
 pub(crate) fn checked_source_path(path: &Path) -> Result<(), String> {
-    let absolute = if path.is_absolute() { path.to_path_buf() } else {
-        std::env::current_dir().map_err(|e| e.to_string())?.join(path)
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| e.to_string())?
+            .join(path)
     };
     for component in absolute.ancestors() {
         let metadata = std::fs::symlink_metadata(component)
@@ -21,11 +25,17 @@ pub(crate) fn checked_source_path(path: &Path) -> Result<(), String> {
         {
             use std::os::windows::fs::MetadataExt;
             if metadata.file_attributes() & 0x400 != 0 {
-                return Err(format!("原图路径 {} 包含 reparse point，拒绝读取", component.display()));
+                return Err(format!(
+                    "原图路径 {} 包含 reparse point，拒绝读取",
+                    component.display()
+                ));
             }
         }
         if metadata.file_type().is_symlink() {
-            return Err(format!("原图路径 {} 包含符号链接，拒绝读取", component.display()));
+            return Err(format!(
+                "原图路径 {} 包含符号链接，拒绝读取",
+                component.display()
+            ));
         }
     }
     Ok(())
@@ -283,7 +293,9 @@ pub fn decode(bytes: &[u8]) -> Result<FrameImage, String> {
     if let Some(info) = pnm_info(bytes) {
         return decode_pnm(bytes, info);
     }
-    let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?.into_luma8();
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| e.to_string())?
+        .into_luma8();
     let (width, height) = img.dimensions();
     Ok(FrameImage::new(width, height, img.into_raw()))
 }
@@ -321,7 +333,11 @@ pub fn save_pgm_new(path: &Path, img: &FrameImage) -> Result<(), String> {
 /// 按 [`save_pgm_new`] 的规则冻结一份已编码的原图字节（彩色录制原图原样复制）。
 pub fn save_bytes_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
-    match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
         Ok(mut file) => {
             if let Err(e) = file.write_all(bytes).and_then(|_| file.sync_all()) {
                 drop(file);
@@ -355,8 +371,14 @@ mod tests {
     fn frozen_image_id_rewritten_with_different_pixels_is_rejected_and_same_pixels_pass() {
         // 防的回归：冻结图按编号覆盖写（同一圈重复采用、编号碰撞）后，示教图编号没变、像素却变了，
         // 按编号引用示教帧的走廊示教与发布包就不再能证明用的是同一帧
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let root = std::env::temp_dir().join(format!("gluesight-frozen-once-{}-{nanos}", std::process::id()));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gluesight-frozen-once-{}-{nanos}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("capture-1-0-v1.pgm");
         save_pgm_new(&path, &FrameImage::new(2, 1, vec![10, 20])).unwrap();

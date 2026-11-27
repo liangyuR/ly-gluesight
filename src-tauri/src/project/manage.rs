@@ -374,8 +374,8 @@ pub async fn project_usage(app: AppHandle, id: String) -> Result<ProjectUsage, S
             .unwrap_or_default();
         usage(&data, &id, records)
     })
-        .await
-        .map_err(|e| e.to_string())?
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

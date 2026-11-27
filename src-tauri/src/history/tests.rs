@@ -8,8 +8,19 @@ use crate::store::burst_fixture;
 fn burst_doc() -> RecipeDoc {
     let mut doc = crate::recipe::samples_burst();
     let defaults = doc.segment_defaults.clone();
-    doc.segments = vec![crate::plan::new_segment(1, SegmentKind::Straight, &defaults), crate::plan::new_segment(2, SegmentKind::Corner, &defaults)];
-    doc.part_calib = Some(crate::plan::PartCalib { expected_total: 6, calib: crate::plan::SegmentCalib { rounds: 10, min: 5, max: 7, mean: 6.0 } });
+    doc.segments = vec![
+        crate::plan::new_segment(1, SegmentKind::Straight, &defaults),
+        crate::plan::new_segment(2, SegmentKind::Corner, &defaults),
+    ];
+    doc.part_calib = Some(crate::plan::PartCalib {
+        expected_total: 6,
+        calib: crate::plan::SegmentCalib {
+            rounds: 10,
+            min: 5,
+            max: 7,
+            mean: 6.0,
+        },
+    });
     doc
 }
 
@@ -23,8 +34,16 @@ fn burst_row(recipe: &Recipe) -> (StoredMeasurement, Vec<FrameRecord>) {
         .unwrap()
         .metrics = Some(burst_fixture::measured(0, 5, 2.0));
     let regions = vec![
-        Region { kind: RegionKind::Straight { segment: 1 }, first_seq: 1, last_seq: 3 },
-        Region { kind: RegionKind::Corner { segment: 2 }, first_seq: 4, last_seq: 6 },
+        Region {
+            kind: RegionKind::Straight { segment: 1 },
+            first_seq: 1,
+            last_seq: 3,
+        },
+        Region {
+            kind: RegionKind::Corner { segment: 2 },
+            first_seq: 4,
+            last_seq: 6,
+        },
     ];
     let (_, burst) = burst_fixture::record(recipe, frames, Some(regions), Some(6));
     let row = StoredMeasurement {
@@ -46,7 +65,17 @@ fn burst_row(recipe: &Recipe) -> (StoredMeasurement, Vec<FrameRecord>) {
 fn rejudge_skips_when_plan_identity_changed_but_allows_limit_only_change() {
     type Edit = fn(&mut RecipeDoc);
     let cases: [(&str, Edit, Option<Verdict>); 5] = [
-        ("弯道段改为直线段", |doc| doc.segments[1] = crate::plan::new_segment(2, SegmentKind::Straight, &doc.segment_defaults.clone()), None),
+        (
+            "弯道段改为直线段",
+            |doc| {
+                doc.segments[1] = crate::plan::new_segment(
+                    2,
+                    SegmentKind::Straight,
+                    &doc.segment_defaults.clone(),
+                )
+            },
+            None,
+        ),
         ("相机顺序", |doc| doc.inspect.swap(0, 1), None),
         (
             "整件重新标定为 7 个帧组",
@@ -65,7 +94,10 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_limit_only_change() {
         ),
     ];
     let original = Arc::new(burst_doc().build().unwrap());
-    let request = RejudgeRequest { use_current_recipe: true, ..Default::default() };
+    let request = RejudgeRequest {
+        use_current_recipe: true,
+        ..Default::default()
+    };
     for (case, edit, rejudged) in cases {
         let mut doc = burst_doc();
         edit(&mut doc);
@@ -81,8 +113,24 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_limit_only_change() {
         )
         .unwrap();
         match rejudged {
-            None => assert_eq!(result.skip_reasons.iter().map(|skip| skip.kind).collect::<Vec<_>>(), [SkipKind::LayoutChanged], "{case}"),
-            Some(verdict) => assert_eq!(result.matrix.iter().map(|cell| (cell.from, cell.to)).collect::<Vec<_>>(), [(Verdict::NgWidth, verdict)], "{case}"),
+            None => assert_eq!(
+                result
+                    .skip_reasons
+                    .iter()
+                    .map(|skip| skip.kind)
+                    .collect::<Vec<_>>(),
+                [SkipKind::LayoutChanged],
+                "{case}"
+            ),
+            Some(verdict) => assert_eq!(
+                result
+                    .matrix
+                    .iter()
+                    .map(|cell| (cell.from, cell.to))
+                    .collect::<Vec<_>>(),
+                [(Verdict::NgWidth, verdict)],
+                "{case}"
+            ),
         }
     }
 }

@@ -11,7 +11,8 @@ pub fn check_packaged_runtime(report_path: &Path) -> Result<(), String> {
         Err(error) => json!({"status": "failed", "error": error}),
     };
     let bytes = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
-    std::fs::write(report_path, bytes).map_err(|error| format!("写入运行库验证报告失败：{error}"))?;
+    std::fs::write(report_path, bytes)
+        .map_err(|error| format!("写入运行库验证报告失败：{error}"))?;
     result.map(|_| ())
 }
 

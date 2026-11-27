@@ -173,11 +173,28 @@ fn free_bytes(path: &Path) -> std::io::Result<u64> {
     use std::os::windows::ffi::OsStrExt;
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn GetDiskFreeSpaceExW(directory: *const u16, available: *mut u64, total: *mut u64, free: *mut u64) -> i32;
+        fn GetDiskFreeSpaceExW(
+            directory: *const u16,
+            available: *mut u64,
+            total: *mut u64,
+            free: *mut u64,
+        ) -> i32;
     }
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
     let mut available = 0u64;
-    if unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut()) } == 0 {
+    if unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
         return Err(std::io::Error::last_os_error());
     }
     Ok(available)

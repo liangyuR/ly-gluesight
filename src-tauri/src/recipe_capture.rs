@@ -40,36 +40,66 @@ impl CompositeLayout {
             return Err("拼接原图的尺寸或像素长度无效".into());
         }
         let rects = match self {
-            Self::Horizontal if w % 3 == 0 => std::array::from_fn(|i| ViewRect { x: i as u32 * (w / 3), y: 0, width: w / 3, height: h }),
-            Self::Vertical if h % 3 == 0 => std::array::from_fn(|i| ViewRect { x: 0, y: i as u32 * (h / 3), width: w, height: h / 3 }),
+            Self::Horizontal if w % 3 == 0 => std::array::from_fn(|i| ViewRect {
+                x: i as u32 * (w / 3),
+                y: 0,
+                width: w / 3,
+                height: h,
+            }),
+            Self::Vertical if h % 3 == 0 => std::array::from_fn(|i| ViewRect {
+                x: 0,
+                y: i as u32 * (h / 3),
+                width: w,
+                height: h / 3,
+            }),
             Self::Rects { rects } => rects.clone(),
             _ => return Err("拼接图尺寸不能按已配置方向三等分，请核对 SDK 交付布局".into()),
         };
         for (i, r) in rects.iter().enumerate() {
-            if r.width == 0 || r.height == 0 || r.x.checked_add(r.width).is_none_or(|v| v > w) || r.y.checked_add(r.height).is_none_or(|v| v > h) {
+            if r.width == 0
+                || r.height == 0
+                || r.x.checked_add(r.width).is_none_or(|v| v > w)
+                || r.y.checked_add(r.height).is_none_or(|v| v > h)
+            {
                 return Err(format!("图 {} 的裁切区域越界或为空", i + 1));
             }
-            if rects[..i].iter().any(|other| r.x < other.x + other.width && other.x < r.x + r.width && r.y < other.y + other.height && other.y < r.y + r.height) {
+            if rects[..i].iter().any(|other| {
+                r.x < other.x + other.width
+                    && other.x < r.x + r.width
+                    && r.y < other.y + other.height
+                    && other.y < r.y + r.height
+            }) {
                 return Err("三幅图的裁切区域不能重叠".into());
             }
         }
-        Ok(rects.iter().map(|r| {
-            let mut pixels = Vec::with_capacity(r.width as usize * r.height as usize);
-            for y in r.y..r.y + r.height {
-                let start = y as usize * w as usize + r.x as usize;
-                pixels.extend_from_slice(&image.pixels[start..start + r.width as usize]);
-            }
-            Arc::new(FrameImage::new(r.width, r.height, pixels))
-        }).collect())
+        Ok(rects
+            .iter()
+            .map(|r| {
+                let mut pixels = Vec::with_capacity(r.width as usize * r.height as usize);
+                for y in r.y..r.y + r.height {
+                    let start = y as usize * w as usize + r.x as usize;
+                    pixels.extend_from_slice(&image.pixels[start..start + r.width as usize]);
+                }
+                Arc::new(FrameImage::new(r.width, r.height, pixels))
+            })
+            .collect())
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum CaptureState { WaitingStart, Receiving, Draining, Complete, Failed }
+pub enum CaptureState {
+    WaitingStart,
+    Receiving,
+    Draining,
+    Complete,
+    Failed,
+}
 
 impl CaptureState {
-    fn active(&self) -> bool { matches!(self, Self::WaitingStart | Self::Receiving | Self::Draining) }
+    fn active(&self) -> bool {
+        matches!(self, Self::WaitingStart | Self::Receiving | Self::Draining)
+    }
 }
 
 /// 一轮采集最多使用的相机数。
@@ -133,12 +163,18 @@ pub struct CaptureSummary {
 
 impl RecipeCaptureHost {
     fn safe_round_path(&self, round_id: &str) -> Result<PathBuf, String> {
-        if !round_id.starts_with("capture-") || !round_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        if !round_id.starts_with("capture-")
+            || !round_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
             return Err("无效的采集轮次 ID".into());
         }
         let root = std::fs::canonicalize(&self.root).map_err(|e| e.to_string())?;
         let path = std::fs::canonicalize(self.root.join(round_id)).map_err(|e| e.to_string())?;
-        if !path.starts_with(&root) || path == root { return Err("采集目录不在允许的保存位置".into()); }
+        if !path.starts_with(&root) || path == root {
+            return Err("采集目录不在允许的保存位置".into());
+        }
         Ok(path)
     }
 
@@ -147,13 +183,23 @@ impl RecipeCaptureHost {
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let canonical_root = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
         let backup_broken = |path: &Path| -> Result<(), String> {
-            let backup = path.with_file_name(format!("round.broken-{}.json", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+            let backup = path.with_file_name(format!(
+                "round.broken-{}.json",
+                chrono::Local::now().format("%Y%m%d-%H%M%S")
+            ));
             std::fs::rename(path, &backup).map_err(|e| format!("采集记录无法读取且备份失败：{e}"))
         };
         for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())? {
             let path = entry.map_err(|e| e.to_string())?.path().join("round.json");
-            if !path.is_file() { continue; }
-            if !std::fs::canonicalize(&path).map_err(|e| e.to_string())?.starts_with(&canonical_root) { return Err("采集记录路径越出保存目录".into()); }
+            if !path.is_file() {
+                continue;
+            }
+            if !std::fs::canonicalize(&path)
+                .map_err(|e| e.to_string())?
+                .starts_with(&canonical_root)
+            {
+                return Err("采集记录路径越出保存目录".into());
+            }
             let text = crate::fsio::read_text(&path).map_err(|e| e.to_string())?;
             if !burst::is_v2(&text) {
                 continue;
@@ -225,7 +271,11 @@ impl RecipeCaptureHost {
                 });
             }
         }
-        rounds.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.round_id.cmp(&a.round_id)));
+        rounds.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.round_id.cmp(&a.round_id))
+        });
         Ok(rounds)
     }
 
@@ -294,7 +344,10 @@ pub fn history_cycles(root: &Path) -> Result<std::collections::BTreeSet<String>,
 }
 
 #[tauri::command]
-pub fn recipe_capture_get(app: AppHandle, round_id: Option<String>) -> Result<Option<AnyRound>, String> {
+pub fn recipe_capture_get(
+    app: AppHandle,
+    round_id: Option<String>,
+) -> Result<Option<AnyRound>, String> {
     let cycle = app.state::<CycleHost>();
     let capture = cycle.camera.recipe_capture();
     match round_id {
@@ -304,8 +357,14 @@ pub fn recipe_capture_get(app: AppHandle, round_id: Option<String>) -> Result<Op
 }
 
 #[tauri::command]
-pub fn recipe_capture_list(app: AppHandle, recipe_id: String) -> Result<Vec<CaptureSummary>, String> {
-    app.state::<CycleHost>().camera.recipe_capture().list(&recipe_id)
+pub fn recipe_capture_list(
+    app: AppHandle,
+    recipe_id: String,
+) -> Result<Vec<CaptureSummary>, String> {
+    app.state::<CycleHost>()
+        .camera
+        .recipe_capture()
+        .list(&recipe_id)
 }
 
 /// 某台相机第 seq 帧（帧组序号，从 1 起）的原图，格式见 `frame::preview_bytes`；这台相机缺这一帧时报错。

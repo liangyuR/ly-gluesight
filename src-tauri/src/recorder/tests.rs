@@ -9,8 +9,12 @@ struct TestDir(PathBuf);
 
 impl TestDir {
     fn new() -> Self {
-        let dir =
-            std::env::temp_dir().join(format!("gluesight-recorder-{}-{}-{}", std::process::id(), ly_plc::now_ms(), NEXT_DIR.fetch_add(1, Ordering::Relaxed)));
+        let dir = std::env::temp_dir().join(format!(
+            "gluesight-recorder-{}-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
     }
@@ -51,18 +55,26 @@ fn callback() -> (RecordingCallback, Receiver<RecordingOutcome>) {
 }
 
 fn wait(outcomes: &Receiver<RecordingOutcome>) -> RecordingOutcome {
-    outcomes.recv_timeout(WRITER_HANG).expect("录制收尾必须产生结果")
+    outcomes
+        .recv_timeout(WRITER_HANG)
+        .expect("录制收尾必须产生结果")
 }
 
 fn metadata(outcome: &RecordingOutcome) -> serde_json::Value {
-    serde_json::from_slice(&std::fs::read(outcome.directory.as_ref().unwrap().join("part.json")).unwrap()).unwrap()
+    serde_json::from_slice(
+        &std::fs::read(outcome.directory.as_ref().unwrap().join("part.json")).unwrap(),
+    )
+    .unwrap()
 }
 
 /// 按名字排在今天之前的一件旧录制（滚动清理按目录名的时间戳排新旧），内含一个 `bytes` 字节的文件。
 fn old_recording(root: &Path, i: u32, bytes: u64) -> PathBuf {
     let path = root.join(format!("20000101/20000101_00000{i}_000_OK_cycle_old-{i}"));
     std::fs::create_dir_all(&path).unwrap();
-    std::fs::File::create(path.join("image.pgm")).unwrap().set_len(bytes).unwrap();
+    std::fs::File::create(path.join("image.pgm"))
+        .unwrap()
+        .set_len(bytes)
+        .unwrap();
     path
 }
 

@@ -30,8 +30,15 @@ impl<W: Write> ZipWriter<W> {
     pub fn new(out: W) -> Self {
         let now = Local::now();
         let time = ((now.hour() << 11) | (now.minute() << 5) | (now.second() / 2)) as u16;
-        let date = ((((now.year() - 1980).max(0) as u32) << 9) | (now.month() << 5) | now.day()) as u16;
-        Self { out, written: 0, entries: Vec::new(), time, date }
+        let date =
+            ((((now.year() - 1980).max(0) as u32) << 9) | (now.month() << 5) | now.day()) as u16;
+        Self {
+            out,
+            written: 0,
+            entries: Vec::new(),
+            time,
+            date,
+        }
     }
 
     fn put(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -41,16 +48,25 @@ impl<W: Write> ZipWriter<W> {
     }
 
     pub fn add(&mut self, name: &str, data: &[u8], compress: bool) -> io::Result<()> {
-        if self.entries.len() >= u16::MAX as usize - 1 { return Err(too_large()); }
+        if self.entries.len() >= u16::MAX as usize - 1 {
+            return Err(too_large());
+        }
         let name = name.replace('\\', "/").into_bytes();
         let crc = crc32fast::hash(data);
         let deflated;
         let (method, body): (u16, &[u8]) = if compress {
-            let mut encoder = DeflateEncoder::new(Vec::with_capacity(data.len() / 2), Compression::default());
+            let mut encoder =
+                DeflateEncoder::new(Vec::with_capacity(data.len() / 2), Compression::default());
             encoder.write_all(data)?;
             deflated = encoder.finish()?;
-            if deflated.len() < data.len() { (8, &deflated) } else { (0, data) }
-        } else { (0, data) };
+            if deflated.len() < data.len() {
+                (8, &deflated)
+            } else {
+                (0, data)
+            }
+        } else {
+            (0, data)
+        };
         let size = u32::try_from(data.len()).map_err(|_| too_large())?;
         let compressed = u32::try_from(body.len()).map_err(|_| too_large())?;
         let offset = u32::try_from(self.written).map_err(|_| too_large())?;
@@ -69,8 +85,17 @@ impl<W: Write> ZipWriter<W> {
         header.extend_from_slice(&name);
         self.put(&header)?;
         self.put(body)?;
-        if self.written > u32::MAX as u64 { return Err(too_large()); }
-        self.entries.push(Central { name, method, crc, compressed, size, offset });
+        if self.written > u32::MAX as u64 {
+            return Err(too_large());
+        }
+        self.entries.push(Central {
+            name,
+            method,
+            crc,
+            compressed,
+            size,
+            offset,
+        });
         Ok(())
     }
 

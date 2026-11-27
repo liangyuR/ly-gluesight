@@ -153,7 +153,14 @@ fn deliver(part: &mut Part, cam: u8, counter: u64) -> burst::Arrival {
 
 /// partEnd：PLC 报 device_triggers；expired 为真时收尾截止已过。
 fn end(part: &mut Part, device_triggers: Option<u16>, expired: bool) {
-    part.end_at = Some(Instant::now() - if expired { part.drain_timeout } else { Duration::ZERO });
+    part.end_at = Some(
+        Instant::now()
+            - if expired {
+                part.drain_timeout
+            } else {
+                Duration::ZERO
+            },
+    );
     part.device_triggers = device_triggers;
 }
 
@@ -171,7 +178,9 @@ fn judge_burst(part: &mut Part) -> BurstJudgement {
 /// 三台相机按帧计数 1..=groups 依次到齐，每帧都测完（帧计数基线为 0）。
 fn deliver_groups(part: &mut Part, groups: u64) {
     for counter in 1..=groups {
-        for cam in 0..3u8 { deliver(part, cam, counter); }
+        for cam in 0..3u8 {
+            deliver(part, cam, counter);
+        }
     }
 }
 
@@ -447,7 +456,10 @@ fn no_frame_from_any_camera_is_err_91() {
     end(&mut p, Some(4), true);
     assert!(p.complete());
     let judgement = judge_burst(&mut p);
-    assert_eq!((judgement.verdict, judgement.plc_code, judgement.fault_code), (Verdict::ErrInspect, 90, fault::MISSING_FRAME));
+    assert_eq!(
+        (judgement.verdict, judgement.plc_code, judgement.fault_code),
+        (Verdict::ErrInspect, 90, fault::MISSING_FRAME)
+    );
 }
 
 #[test]
@@ -455,7 +467,10 @@ fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result(
     let mut p = burst_part("tail-measurement", &Ledgers::default());
     deliver_groups(&mut p, 4);
     end(&mut p, Some(0), false);
-    assert_eq!(p.receive_burst(&burst_frame(0, 5)), Some(burst::Arrival::Accepted { camera: 0, seq: 5 }));
+    assert_eq!(
+        p.receive_burst(&burst_frame(0, 5)),
+        Some(burst::Arrival::Accepted { camera: 0, seq: 5 })
+    );
     end(&mut p, Some(0), true);
     assert!(p.expire_burst(Instant::now(), p.proc_timeout).is_empty());
     assert!(!p.complete());
@@ -476,7 +491,15 @@ fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result(
     assert!(p.complete());
     let judgement = judge_burst(&mut p);
     let record = p.burst_record(&burst::summary(&judgement));
-    assert_eq!(record.frames.iter().find(|frame| frame.camera == 0 && frame.seq == 5).unwrap().status, FrameState::Measured);
+    assert_eq!(
+        record
+            .frames
+            .iter()
+            .find(|frame| frame.camera == 0 && frame.seq == 5)
+            .unwrap()
+            .status,
+        FrameState::Measured
+    );
 }
 
 /// 防的回归（D-SB-54）：PLC 报结束后不管门控已关闭都固定等满收尾窗口；或门控还开着（还有帧要来）就提前收尾、丢掉后面的帧。

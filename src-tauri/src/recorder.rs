@@ -305,7 +305,8 @@ impl Recorders {
 
     pub fn finish(&self, rec: Recording, verdict: Verdict, reason: &str, settings: &CycleSettings) {
         let (keep, max_bytes) = retention(rec.scope, settings);
-        self.get(rec.scope).finish(rec, verdict, reason, keep, max_bytes, Vec::new())
+        self.get(rec.scope)
+            .finish(rec, verdict, reason, keep, max_bytes, Vec::new())
     }
 
     /// 按当前保留上限立即滚动清理各录制盘，不等下一件收尾（资料盘不足暂停接件时没有下一件）。
@@ -504,17 +505,26 @@ impl Recorder {
     /// 录制队满（BURST_QUEUE 帧）或写入线程停止时该帧原图不录，记进 rawDropped，不影响检测结论。
     pub fn burst_frame(&self, rec: &mut Recording, frame: &Frame, camera: usize, seq: u64) {
         let burst = &mut rec.burst;
-        let Some(camera_id) = burst.cameras.get(camera).filter(|id| valid_camera_id(id)).cloned() else {
-            rec.errors.push(format!("录制相机下标 {camera} 不在原配方的计划相机中"));
+        let Some(camera_id) = burst
+            .cameras
+            .get(camera)
+            .filter(|id| valid_camera_id(id))
+            .cloned()
+        else {
+            rec.errors
+                .push(format!("录制相机下标 {camera} 不在原配方的计划相机中"));
             return;
         };
         let key = FrameKey { camera, seq };
         if seq == 0 {
-            rec.errors.push(format!("相机 {camera_id} 的帧组序号为 0，不录制"));
+            rec.errors
+                .push(format!("相机 {camera_id} 的帧组序号为 0，不录制"));
             return;
         }
         if !burst.seen.insert(key) {
-            rec.errors.push(format!("相机 {camera_id} 第 {seq} 帧重复录制，拒绝覆盖原图"));
+            rec.errors.push(format!(
+                "相机 {camera_id} 第 {seq} 帧重复录制，拒绝覆盖原图"
+            ));
             return;
         }
         // 彩色帧的主文件写原始马赛克，灰度帧写灰度；每帧只写这一份
@@ -554,7 +564,13 @@ impl Recorder {
             error: None,
             image_mode: color.then_some("color"),
         };
-        let queue_error = if self.queued.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < BURST_QUEUE).then_some(n + 1)).is_err() {
+        let queue_error = if self
+            .queued
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < BURST_QUEUE).then_some(n + 1)
+            })
+            .is_err()
+        {
             Some(format!("录制队列已满（{BURST_QUEUE} 帧）"))
         } else {
             let written = Arc::new(OnceLock::new());
@@ -665,17 +681,35 @@ pub fn is_write_error(error: &str) -> bool {
 }
 
 fn safe_cycle_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
 fn notify(callback: &Option<RecordingCallback>, outcome: RecordingOutcome) {
-    let fields = crate::applog::Fields { cycle_id: Some(outcome.cycle_id.clone()), stage: Some("recording".into()), ..Default::default() };
+    let fields = crate::applog::Fields {
+        cycle_id: Some(outcome.cycle_id.clone()),
+        stage: Some("recording".into()),
+        ..Default::default()
+    };
     if let Some(callback) = callback {
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(outcome))).is_err() {
-            crate::applog::emit(crate::applog::Level::Error, "录制", "录制结果回调发生异常", fields);
+            crate::applog::emit(
+                crate::applog::Level::Error,
+                "录制",
+                "录制结果回调发生异常",
+                fields,
+            );
         }
     } else if !outcome.errors.is_empty() {
-        crate::applog::emit(crate::applog::Level::Error, "录制", &format!("{} 失败：{}", outcome.cycle_id, outcome.errors.join("；")), fields);
+        crate::applog::emit(
+            crate::applog::Level::Error,
+            "录制",
+            &format!("{} 失败：{}", outcome.cycle_id, outcome.errors.join("；")),
+            fields,
+        );
     }
 }
 
@@ -688,13 +722,19 @@ struct WriteState {
     retention_blocked: bool,
 }
 
-fn protect_retention(job: &mut FinishJob, state: &mut WriteState, protection: Option<&PendingProtection>) {
+fn protect_retention(
+    job: &mut FinishJob,
+    state: &mut WriteState,
+    protection: Option<&PendingProtection>,
+) {
     if let Some(protection) = protection {
         match protection() {
             Ok(paths) => job.in_use.extend(paths),
             Err(error) => {
                 state.retention_blocked = true;
-                state.retention_errors.push(format!("无法确认待入库原图保护，跳过滚动清理：{error}"));
+                state
+                    .retention_errors
+                    .push(format!("无法确认待入库原图保护，跳过滚动清理：{error}"));
             }
         }
     }
@@ -764,7 +804,9 @@ fn writer(
                     );
                     finish_recording(&current(), job, state, cleanup.as_ref().map(|c| &c.release))
                 };
-                if !pending.exists() { active.lock().unwrap().remove(&pending); }
+                if !pending.exists() {
+                    active.lock().unwrap().remove(&pending);
+                }
                 notify(&callback, outcome);
             }
             Msg::Prune { keep, max_bytes } => {
@@ -799,17 +841,30 @@ fn save_raw(path: &Path, image: &FrameImage, pattern: Option<BayerPattern>) -> R
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("创建录制目录失败：{e}"))?;
     }
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| format!("创建原图失败：{e}"))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("创建原图失败：{e}"))?;
     let header = crate::image_file::pnm_header(image.width, image.height, image.channels, pattern);
-    file.write_all(header.as_bytes()).and_then(|_| file.write_all(&image.pixels)).and_then(|_| file.sync_all()).map_err(|e| format!("写入原图失败：{e}"))?;
+    file.write_all(header.as_bytes())
+        .and_then(|_| file.write_all(&image.pixels))
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("写入原图失败：{e}"))?;
     Ok(())
 }
 
 fn write_metadata(path: &Path, meta: &serde_json::Value) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(meta).map_err(|e| e.to_string())?;
     let temp = path.with_extension("json.tmp");
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|e| format!("创建 part.json 失败：{e}"))?;
-    file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|e| format!("写入 part.json 失败：{e}"))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|e| format!("创建 part.json 失败：{e}"))?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("写入 part.json 失败：{e}"))?;
     drop(file);
     std::fs::rename(temp, path).map_err(|e| format!("提交 part.json 失败：{e}"))
 }
@@ -817,11 +872,16 @@ fn write_metadata(path: &Path, meta: &serde_json::Value) -> Result<(), String> {
 /// 写盘后核对一张原图：是普通文件（不是 reparse point）、PNM 头（可含注释）的尺寸与录制尺寸相符、文件长度等于头 + 像素、
 /// 能解码且解码尺寸一致。
 fn verify_raw(path: &Path, width: u32, height: u32) -> Result<(), String> {
-    std::fs::symlink_metadata(path).map_err(|e| format!("已写入原图不可用：{e}"))
+    std::fs::symlink_metadata(path)
+        .map_err(|e| format!("已写入原图不可用：{e}"))
         .and_then(|meta| {
             #[cfg(windows)]
-            { use std::os::windows::fs::MetadataExt;
-              if meta.file_attributes() & 0x400 != 0 { return Err("原图路径不能是 reparse point".into()); } }
+            {
+                use std::os::windows::fs::MetadataExt;
+                if meta.file_attributes() & 0x400 != 0 {
+                    return Err("原图路径不能是 reparse point".into());
+                }
+            }
             let info = if meta.is_file() && !meta.file_type().is_symlink() {
                 crate::image_file::read_pnm_info(path)
                     .map_err(|e| format!("已写入原图不可用：{e}"))?
@@ -844,14 +904,22 @@ fn verify_raw(path: &Path, width: u32, height: u32) -> Result<(), String> {
 
 /// 段配方的 part.json：缺帧（1..=最大 seq 内某台相机没到的帧，即相机没出图）列进 missingFrames，只供追溯、不算录制错误；
 /// 录制队满没录的帧列进 rawDropped，记一条录制错误（证据 Incomplete，不影响检测结论）。
-fn burst_metadata(rec: &mut Recording, burst: &BurstFrames, verdict: Verdict, reason: &str) -> serde_json::Value {
+fn burst_metadata(
+    rec: &mut Recording,
+    burst: &BurstFrames,
+    verdict: Verdict,
+    reason: &str,
+) -> serde_json::Value {
     let groups = burst.seen.iter().map(|key| key.seq).max().unwrap_or(0);
     let missing: Vec<FrameKey> = (1..=groups)
         .flat_map(|seq| (0..burst.cameras.len()).map(move |camera| FrameKey { camera, seq }))
         .filter(|key| !burst.seen.contains(key))
         .collect();
     if let Some(drop_reason) = &burst.drop_reason {
-        rec.errors.push(format!("{drop_reason}：{} 帧原图未录，见 part.json 的 rawDropped", burst.dropped.len()));
+        rec.errors.push(format!(
+            "{drop_reason}：{} 帧原图未录，见 part.json 的 rawDropped",
+            burst.dropped.len()
+        ));
     }
     json!({
         "cycleId": rec.cycle_id, "bundleId": rec.bundle_id, "recipeRevision": rec.recipe.revision_id,
@@ -864,15 +932,26 @@ fn burst_metadata(rec: &mut Recording, burst: &BurstFrames, verdict: Verdict, re
 
 /// 段配方逐帧核对写盘结果，写成的帧按 (camera, seq) 列进录制结果。没入队的帧已在 rawDropped 里汇总；
 /// 写盘失败的帧只把前 BURST_FRAME_ERRORS 条写进录制错误，其余汇总成一条，逐帧原因留在 part.json 的 frames。
-fn burst_files(root: &Path, actual_dir: &Path, burst: &mut BurstFrames, results: &mut HashMap<FrameKey, Result<(), String>>,
-    files: &mut Vec<RecordedRawFile>, errors: &mut Vec<String>) {
+fn burst_files(
+    root: &Path,
+    actual_dir: &Path,
+    burst: &mut BurstFrames,
+    results: &mut HashMap<FrameKey, Result<(), String>>,
+    files: &mut Vec<RecordedRawFile>,
+    errors: &mut Vec<String>,
+) {
     let mut failures = 0usize;
     for frame in burst.frames.iter_mut().filter(|frame| frame.queued) {
-        let key = FrameKey { camera: frame.camera, seq: frame.seq };
+        let key = FrameKey {
+            camera: frame.camera,
+            seq: frame.seq,
+        };
         let path = actual_dir.join(&frame.file);
         let result = match results.remove(&key) {
             Some(Ok(())) => verify_raw(&path, frame.width, frame.height).and_then(|()| {
-                path.strip_prefix(root).map(|p| p.to_string_lossy().replace('\\', "/")).map_err(|error| format!("原图路径不在录制根目录：{error}"))
+                path.strip_prefix(root)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .map_err(|error| format!("原图路径不在录制根目录：{error}"))
             }),
             Some(Err(error)) => Err(error),
             None => Err("原图未取得写入成功确认".into()),
@@ -979,10 +1058,17 @@ fn finish_recording(
     }
     let target = target.unwrap();
     let promoted = if target.exists() {
-        rec.errors.push(format!("录制目标目录已存在，拒绝覆盖：{}", target.display()));
+        rec.errors.push(format!(
+            "录制目标目录已存在，拒绝覆盖：{}",
+            target.display()
+        ));
         false
     } else {
-        let result = target.parent().map(std::fs::create_dir_all).transpose().and_then(|_| std::fs::rename(&rec.dir, &target));
+        let result = target
+            .parent()
+            .map(std::fs::create_dir_all)
+            .transpose()
+            .and_then(|_| std::fs::rename(&rec.dir, &target));
         match result {
             Ok(()) => true,
             Err(error) => {
@@ -1030,7 +1116,15 @@ fn finish_recording(
     } else {
         RecordingState::Incomplete
     };
-    RecordingOutcome { cycle_id: rec.cycle_id, directory, files, errors: rec.errors, retention_errors, available, state: outcome_state }
+    RecordingOutcome {
+        cycle_id: rec.cycle_id,
+        directory,
+        files,
+        errors: rec.errors,
+        retention_errors,
+        available,
+        state: outcome_state,
+    }
 }
 
 struct PendingClaim<'a> {
@@ -1040,12 +1134,21 @@ struct PendingClaim<'a> {
 
 impl<'a> PendingClaim<'a> {
     fn acquire(active: &'a Mutex<HashSet<PathBuf>>, path: &Path) -> Option<Self> {
-        active.lock().unwrap().insert(path.to_path_buf()).then(|| Self { active, path: path.to_path_buf() })
+        active
+            .lock()
+            .unwrap()
+            .insert(path.to_path_buf())
+            .then(|| Self {
+                active,
+                path: path.to_path_buf(),
+            })
     }
 }
 
 impl Drop for PendingClaim<'_> {
-    fn drop(&mut self) { self.active.lock().unwrap().remove(&self.path); }
+    fn drop(&mut self) {
+        self.active.lock().unwrap().remove(&self.path);
+    }
 }
 
 #[derive(Default)]
@@ -1054,31 +1157,56 @@ struct PendingCleaner {
 }
 
 fn pending_name(name: &str) -> bool {
-    let Some((stamp, cycle)) = name.split_once("_cycle_") else { return false };
-    stamp.len() == 19 && stamp.bytes().enumerate().all(|(i, b)| if i == 8 || i == 15 { b == b'_' } else { b.is_ascii_digit() })
+    let Some((stamp, cycle)) = name.split_once("_cycle_") else {
+        return false;
+    };
+    stamp.len() == 19
+        && stamp.bytes().enumerate().all(|(i, b)| {
+            if i == 8 || i == 15 {
+                b == b'_'
+            } else {
+                b.is_ascii_digit()
+            }
+        })
         && safe_cycle_id(cycle)
 }
 
 fn pending_files_safe(path: &Path) -> Result<bool, String> {
-    let entries = std::fs::read_dir(path).map_err(|e| format!("读取孤立录制失败 {}：{e}", path.display()))?;
+    let entries =
+        std::fs::read_dir(path).map_err(|e| format!("读取孤立录制失败 {}：{e}", path.display()))?;
     for (i, entry) in entries.enumerate() {
-        if i == PENDING_FILE_LIMIT { return Ok(false); }
+        if i == PENDING_FILE_LIMIT {
+            return Ok(false);
+        }
         let entry = entry.map_err(|e| e.to_string())?;
         let meta = entry.path().symlink_metadata().map_err(|e| e.to_string())?;
         #[cfg(windows)]
         {
             use std::os::windows::fs::MetadataExt;
-            if meta.file_attributes() & 0x400 != 0 { return Ok(false); }
+            if meta.file_attributes() & 0x400 != 0 {
+                return Ok(false);
+            }
         }
-        if !meta.is_file() || meta.file_type().is_symlink() { return Ok(false); }
+        if !meta.is_file() || meta.file_type().is_symlink() {
+            return Ok(false);
+        }
     }
     Ok(true)
 }
 
 impl PendingCleaner {
-    fn sweep(&mut self, root: &Path, active: &Mutex<HashSet<PathBuf>>, protection: &PendingProtection, in_use: &[PathBuf]) -> Vec<String> {
+    fn sweep(
+        &mut self,
+        root: &Path,
+        active: &Mutex<HashSet<PathBuf>>,
+        protection: &PendingProtection,
+        in_use: &[PathBuf],
+    ) -> Vec<String> {
         let pending = root.join("_pending");
-        if !pending.exists() { self.entries = None; return Vec::new(); }
+        if !pending.exists() {
+            self.entries = None;
+            return Vec::new();
+        }
         if !plain_directory(root) || !plain_directory(&pending) {
             self.entries = None;
             return vec!["孤立录制清理拒绝包含链接的 records/_pending 目录".into()];
@@ -1100,42 +1228,81 @@ impl PendingCleaner {
         let mut errors = Vec::new();
         let mut candidates = Vec::new();
         for _ in 0..PENDING_SWEEP_LIMIT {
-            let Some(entry) = self.entries.as_mut().unwrap().next() else { self.entries = None; break };
+            let Some(entry) = self.entries.as_mut().unwrap().next() else {
+                self.entries = None;
+                break;
+            };
             let path = match entry {
                 Ok(entry) => entry.path(),
-                Err(error) => { errors.push(format!("扫描孤立录制目录项失败：{error}")); continue; },
+                Err(error) => {
+                    errors.push(format!("扫描孤立录制目录项失败：{error}"));
+                    continue;
+                }
             };
-            if !path.file_name().and_then(|n| n.to_str()).is_some_and(pending_name) || !plain_directory(&path) { continue; }
-            if !active.lock().unwrap().contains(&path) { candidates.push(path); }
+            if !path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(pending_name)
+                || !plain_directory(&path)
+            {
+                continue;
+            }
+            if !active.lock().unwrap().contains(&path) {
+                candidates.push(path);
+            }
         }
-        if candidates.is_empty() { return errors; }
+        if candidates.is_empty() {
+            return errors;
+        }
         let mut protected = match protection() {
             Ok(paths) => paths,
-            Err(error) => { self.entries = None; errors.push(format!("读取录制历史引用失败，暂停孤立录制清理：{error}")); return errors; },
+            Err(error) => {
+                self.entries = None;
+                errors.push(format!("读取录制历史引用失败，暂停孤立录制清理：{error}"));
+                return errors;
+            }
         };
         protected.extend_from_slice(in_use);
         let mut canonical_protected = Vec::new();
         for path in protected {
             match path.canonicalize() {
                 Ok(path) => canonical_protected.push(path),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
-                Err(error) => return vec![format!("录制引用路径无法解析，暂停孤立录制清理 {}：{error}", path.display())],
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return vec![format!(
+                        "录制引用路径无法解析，暂停孤立录制清理 {}：{error}",
+                        path.display()
+                    )]
+                }
             }
         }
         for path in candidates {
-            let Some(_claim) = PendingClaim::acquire(active, &path) else { continue };
+            let Some(_claim) = PendingClaim::acquire(active, &path) else {
+                continue;
+            };
             let checked = match path.canonicalize() {
                 Ok(checked) if checked.parent() == Some(checked_pending.as_path()) => checked,
-                _ => { errors.push(format!("孤立录制路径无效，保留 {}", path.display())); continue; },
+                _ => {
+                    errors.push(format!("孤立录制路径无效，保留 {}", path.display()));
+                    continue;
+                }
             };
-            if canonical_protected.iter().any(|p| p.starts_with(&checked) || checked.starts_with(p)) { continue; }
+            if canonical_protected
+                .iter()
+                .any(|p| p.starts_with(&checked) || checked.starts_with(p))
+            {
+                continue;
+            }
             match pending_files_safe(&path) {
                 Ok(true) => {
                     if let Err(error) = std::fs::remove_dir_all(&path) {
                         errors.push(format!("清理孤立录制失败 {}：{error}", path.display()));
                     }
-                },
-                Ok(false) => errors.push(format!("孤立录制包含链接、子目录或过多文件，保留 {}", path.display())),
+                }
+                Ok(false) => errors.push(format!(
+                    "孤立录制包含链接、子目录或过多文件，保留 {}",
+                    path.display()
+                )),
                 Err(error) => errors.push(error),
             }
         }
@@ -1144,7 +1311,8 @@ impl PendingCleaner {
 }
 
 fn dir_bytes(dir: &Path) -> Result<u64, String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("读取录制大小失败 {}：{e}", dir.display()))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("读取录制大小失败 {}：{e}", dir.display()))?;
     let mut size = 0u64;
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -1185,7 +1353,12 @@ fn prune(
         match path.canonicalize() {
             Ok(path) => protected.push(path),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return vec![format!("保留目录无法解析，暂停清理录制 {}：{error}", path.display())],
+            Err(error) => {
+                return vec![format!(
+                    "保留目录无法解析，暂停清理录制 {}：{error}",
+                    path.display()
+                )]
+            }
         }
     }
     let mut parts = Vec::new();
@@ -1257,7 +1430,10 @@ fn prune(
         let canonical = match path.canonicalize() {
             Ok(path) => path,
             Err(error) => {
-                errors.push(format!("旧录制路径无法解析，保留 {}：{error}", path.display()));
+                errors.push(format!(
+                    "旧录制路径无法解析，保留 {}：{error}",
+                    path.display()
+                ));
                 continue;
             }
         };
@@ -1270,7 +1446,10 @@ fn prune(
     }
     if let Some(release) = release {
         if let Err(error) = release(&victims) {
-            errors.push(format!("历史记录的原图引用未能同步，本次不清理 {} 件旧录制：{error}", victims.len()));
+            errors.push(format!(
+                "历史记录的原图引用未能同步，本次不清理 {} 件旧录制：{error}",
+                victims.len()
+            ));
             return errors;
         }
     }

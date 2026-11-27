@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 const RESTARTING: &str = "GLUESIGHT_RESTARTING";
 const RESTART_WAIT: Duration = Duration::from_secs(20);
 
-pub struct InstanceLease { _file: File }
+pub struct InstanceLease {
+    _file: File,
+}
 
 /// 切换项目时由旧进程调用：重启出来的新进程要等旧进程退出、释放数据目录锁。
 pub fn restart(app: &tauri::AppHandle) -> ! {
@@ -23,8 +25,13 @@ pub fn acquire(data: &Path) -> Result<InstanceLease, String> {
 
 fn acquire_within(data: &Path, wait: Duration) -> Result<InstanceLease, String> {
     fs::create_dir_all(data).map_err(|error| format!("无法创建应用数据目录：{error}"))?;
-    let file = OpenOptions::new().create(true).truncate(false).read(true).write(true)
-        .open(data.join(".gluesight-instance.lock")).map_err(|error| format!("无法打开数据目录锁：{error}"))?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(data.join(".gluesight-instance.lock"))
+        .map_err(|error| format!("无法打开数据目录锁：{error}"))?;
     let deadline = Instant::now() + wait;
     loop {
         match file.try_lock() {

@@ -143,7 +143,11 @@ const STARTUP_PROFILE_MAX: usize = 247 - r"\EBWebView".len();
 
 fn check_webview_profiles(root: &Path, user: &str, startup_window: bool) -> Result<(), String> {
     let main = ("主窗口", root.join("webview").join(user), MAIN_PROFILE_MAX);
-    let startup = ("资料准备窗口", bootstrap_root(root).join("webview").join(user), STARTUP_PROFILE_MAX);
+    let startup = (
+        "资料准备窗口",
+        bootstrap_root(root).join("webview").join(user),
+        STARTUP_PROFILE_MAX,
+    );
     for (window, profile, max) in std::iter::once(main).chain(startup_window.then_some(startup)) {
         let length = profile.to_string_lossy().encode_utf16().count();
         if length > max {

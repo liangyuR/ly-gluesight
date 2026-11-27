@@ -1,4 +1,7 @@
-use ly_plc::{Access, ConnectionConfig, DataType, EdgeMode, HeartbeatConfig, PlcConfig, PlcPoint, ProtocolKind, S7Options};
+use ly_plc::{
+    Access, ConnectionConfig, DataType, EdgeMode, HeartbeatConfig, PlcConfig, PlcPoint,
+    ProtocolKind, S7Options,
+};
 
 pub mod tag {
     pub const PLC_VERSION: &str = "plcVersion";
@@ -87,12 +90,25 @@ pub fn s7_phase1_config(plc_db: u16, pc_db: u16) -> Result<PlcConfig, String> {
         .collect();
     let config = PlcConfig {
         connection: ConnectionConfig {
-            protocol: ProtocolKind::S7, host: DEFAULT_PLC_HOST.into(), port: 102, poll_interval_ms: 50,
-            s7: S7Options { rack: 0, slot: 1, local_tsap: None, remote_tsap: None, pdu_size: 480, ..S7Options::default() },
+            protocol: ProtocolKind::S7,
+            host: DEFAULT_PLC_HOST.into(),
+            port: 102,
+            poll_interval_ms: 50,
+            s7: S7Options {
+                rack: 0,
+                slot: 1,
+                local_tsap: None,
+                remote_tsap: None,
+                pdu_size: 480,
+                ..S7Options::default()
+            },
             ..ConnectionConfig::default()
         },
         points,
-        heartbeat: HeartbeatConfig { point_id: Some(format!("p_{}", tag::PC_HEARTBEAT)), interval_ms: 500 },
+        heartbeat: HeartbeatConfig {
+            point_id: Some(format!("p_{}", tag::PC_HEARTBEAT)),
+            interval_ms: 500,
+        },
         auto_connect: false,
         ..PlcConfig::default()
     };
@@ -127,9 +143,19 @@ pub fn drop_teaching_points(config: &mut PlcConfig) -> usize {
 }
 
 pub fn reserved_s7_point(config: &PlcConfig, id: &str) -> bool {
-    if config.connection.protocol != ProtocolKind::S7 { return false; }
-    if config.heartbeat.point_id.as_deref() == Some(id) { return true; }
-    let Some(point) = config.points.iter().find(|p| p.id == id) else { return false; };
-    s7_phase1_config(DEFAULT_PLC_DB, DEFAULT_PC_DB).is_ok_and(|template| template.points.iter().any(|preset|
-        preset.tags.iter().any(|tag| point.tags.contains(tag))))
+    if config.connection.protocol != ProtocolKind::S7 {
+        return false;
+    }
+    if config.heartbeat.point_id.as_deref() == Some(id) {
+        return true;
+    }
+    let Some(point) = config.points.iter().find(|p| p.id == id) else {
+        return false;
+    };
+    s7_phase1_config(DEFAULT_PLC_DB, DEFAULT_PC_DB).is_ok_and(|template| {
+        template
+            .points
+            .iter()
+            .any(|preset| preset.tags.iter().any(|tag| point.tags.contains(tag)))
+    })
 }

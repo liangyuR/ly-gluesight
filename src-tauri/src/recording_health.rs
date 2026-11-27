@@ -50,10 +50,19 @@ enum Evidence {
 }
 
 fn evidence(outcome: &RecordingOutcome) -> Evidence {
-    let unsaved = matches!(outcome.state, RecordingState::Failed | RecordingState::Incomplete);
-    let write_errors: Vec<&String> = outcome.errors.iter().filter(|error| is_write_error(error)).collect();
+    let unsaved = matches!(
+        outcome.state,
+        RecordingState::Failed | RecordingState::Incomplete
+    );
+    let write_errors: Vec<&String> = outcome
+        .errors
+        .iter()
+        .filter(|error| is_write_error(error))
+        .collect();
     match write_errors.as_slice() {
-        [] if outcome.errors.is_empty() && unsaved => Evidence::Failed(format!("录制状态 {:?}", outcome.state)),
+        [] if outcome.errors.is_empty() && unsaved => {
+            Evidence::Failed(format!("录制状态 {:?}", outcome.state))
+        }
         [] if unsaved && outcome.files.is_empty() => Evidence::Inconclusive,
         [] => Evidence::Healthy,
         [only] => Evidence::Failed((*only).clone()),
@@ -62,14 +71,29 @@ fn evidence(outcome: &RecordingOutcome) -> Evidence {
 }
 
 impl RecordingHealth {
-    pub fn observe(&self, scope: HistoryScope, outcome: &RecordingOutcome, now: i64) -> Option<AlarmChange> {
-        let mut scopes = self.scopes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    pub fn observe(
+        &self,
+        scope: HistoryScope,
+        outcome: &RecordingOutcome,
+        now: i64,
+    ) -> Option<AlarmChange> {
+        let mut scopes = self
+            .scopes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let current = &mut scopes[slot(scope)];
         match evidence(outcome) {
             Evidence::Failed(reason) => {
-                let (consecutive, since) = current.as_ref().map_or((1, now), |alarm| (alarm.consecutive.saturating_add(1), alarm.since));
+                let (consecutive, since) = current.as_ref().map_or((1, now), |alarm| {
+                    (alarm.consecutive.saturating_add(1), alarm.since)
+                });
                 let raised = current.is_none();
-                let alarm = RecordingAlarm { consecutive, cycle_id: outcome.cycle_id.clone(), reason, since };
+                let alarm = RecordingAlarm {
+                    consecutive,
+                    cycle_id: outcome.cycle_id.clone(),
+                    reason,
+                    since,
+                };
                 *current = Some(alarm.clone());
                 raised.then_some(AlarmChange::Raised(alarm))
             }
@@ -79,6 +103,9 @@ impl RecordingHealth {
     }
 
     pub fn alarm(&self, scope: HistoryScope) -> Option<RecordingAlarm> {
-        self.scopes.lock().unwrap_or_else(|poisoned| poisoned.into_inner())[slot(scope)].clone()
+        self.scopes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())[slot(scope)]
+        .clone()
     }
 }

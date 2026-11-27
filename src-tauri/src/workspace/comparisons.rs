@@ -86,27 +86,50 @@ impl Comparisons {
         Ok(warnings)
     }
 
-    pub(super) fn save(&self, root: &Path, store: &Store, comparison: &Comparison) -> Result<(), String> {
+    pub(super) fn save(
+        &self,
+        root: &Path,
+        store: &Store,
+        comparison: &Comparison,
+    ) -> Result<(), String> {
         let mut cache = self.0.lock().unwrap();
         valid_identity(comparison)?;
-        let cycle = store.comparison_cycle(comparison.history_id)?.ok_or("历史记录已清理，复测结果未保存")?;
-        if cycle != comparison.cycle_id { return Err("历史工件身份已改变，复测结果未保存".into()); }
+        let cycle = store
+            .comparison_cycle(comparison.history_id)?
+            .ok_or("历史记录已清理，复测结果未保存")?;
+        if cycle != comparison.cycle_id {
+            return Err("历史工件身份已改变，复测结果未保存".into());
+        }
         let dir = directory(root, comparison.history_id, true)?;
         let mut files = inventory(&dir, comparison.history_id, &mut cache)?;
         let file = dir.join(format!("{}.json", comparison.id));
         let temporary = dir.join(format!("{}.tmp", comparison.id));
         checked_directory(&dir, false)?;
-        if fs::symlink_metadata(&file).is_ok() { return Err("复测记录文件已存在".into()); }
+        if fs::symlink_metadata(&file).is_ok() {
+            return Err("复测记录文件已存在".into());
+        }
         let bytes = serde_json::to_vec(comparison).map_err(error)?;
-        let mut writer = OpenOptions::new().write(true).create_new(true).open(&temporary).map_err(error)?;
+        let mut writer = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(error)?;
         let written = writer.write_all(&bytes).and_then(|_| writer.sync_all());
         drop(writer);
-        if let Err(e) = written { let _ = fs::remove_file(&temporary); return Err(error(e)); }
-        if let Err(e) = fs::rename(&temporary, &file) { let _ = fs::remove_file(&temporary); return Err(error(e)); }
+        if let Err(e) = written {
+            let _ = fs::remove_file(&temporary);
+            return Err(error(e));
+        }
+        if let Err(e) = fs::rename(&temporary, &file) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error(e));
+        }
         files.push((file.clone(), comparison.into()));
         if let Err(e) = reconcile(files, comparison.history_id, Some(&cycle), &mut cache) {
             let rollback = remove_checked(&file);
-            return Err(format!("复测记录保留清理失败：{e}；新记录回退：{rollback:?}"));
+            return Err(format!(
+                "复测记录保留清理失败：{e}；新记录回退：{rollback:?}"
+            ));
         }
         Ok(())
     }
@@ -120,9 +143,13 @@ impl Comparisons {
         history_id: i64,
     ) -> Result<Vec<Comparison>, String> {
         let mut cache = self.0.lock().unwrap();
-        let Some(cycle) = store.comparison_cycle(history_id)? else { return Ok(Vec::new()); };
+        let Some(cycle) = store.comparison_cycle(history_id)? else {
+            return Ok(Vec::new());
+        };
         let dir = directory(root, history_id, false)?;
-        if !exists(&dir)? { return Ok(Vec::new()); }
+        if !exists(&dir)? {
+            return Ok(Vec::new());
+        }
         let mut files = inventory(&dir, history_id, &mut cache)?;
         files.retain(|(_, saved)| saved.cycle_id == cycle);
         newest_first(&mut files);
@@ -209,42 +236,65 @@ impl Comparisons {
         let comparisons = root.join("comparisons");
         let scan = (|| {
             checked_directory(&comparisons, false)?;
-            if !exists(&comparisons)? { return Ok(()); }
+            if !exists(&comparisons)? {
+                return Ok(());
+            }
             for entry in fs::read_dir(&comparisons).map_err(error)? {
                 let entry = entry.map_err(error)?;
                 let path = entry.path();
                 let cleaned = (|| {
-                    let name = entry.file_name().into_string().map_err(|_| "复测目录名称无效".to_string())?;
-                    let id: i64 = name.parse().map_err(|_| "复测目录不是历史编号".to_string())?;
-                    if id <= 0 || name != id.to_string() { return Err("复测目录编号无效".into()); }
+                    let name = entry
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| "复测目录名称无效".to_string())?;
+                    let id: i64 = name
+                        .parse()
+                        .map_err(|_| "复测目录不是历史编号".to_string())?;
+                    if id <= 0 || name != id.to_string() {
+                        return Err("复测目录编号无效".into());
+                    }
                     checked_directory(&path, false)?;
                     let cycle = store.comparison_cycle(id)?;
                     let files = inventory(&path, id, &mut cache)?;
                     reconcile(files, id, cycle.as_deref(), &mut cache)?;
-                    if cycle.is_none() { fs::remove_dir(&path).map_err(error)?; }
+                    if cycle.is_none() {
+                        fs::remove_dir(&path).map_err(error)?;
+                    }
                     Ok::<_, String>(())
                 })();
-                if let Err(e) = cleaned { warnings.push(format!("{}：{e}；未确认文件已保留", path.display())); }
+                if let Err(e) = cleaned {
+                    warnings.push(format!("{}：{e}；未确认文件已保留", path.display()));
+                }
             }
             Ok::<_, String>(())
         })();
-        if let Err(e) = scan { warnings.push(format!("复测目录清理未完成：{e}")); }
+        if let Err(e) = scan {
+            warnings.push(format!("复测目录清理未完成：{e}"));
+        }
         Ok((count, warnings, orphaned))
     }
 }
 
-fn error(e: impl std::fmt::Display) -> String { e.to_string() }
+fn error(e: impl std::fmt::Display) -> String {
+    e.to_string()
+}
 
 fn valid_identity(saved: &Comparison) -> Result<(), String> {
     let prefix = format!("{}-", saved.history_id);
-    if saved.history_id <= 0 || saved.cycle_id.is_empty() || !saved.id.starts_with(&prefix)
+    if saved.history_id <= 0
+        || saved.cycle_id.is_empty()
+        || !saved.id.starts_with(&prefix)
         || !saved.id.bytes().all(|b| b.is_ascii_digit() || b == b'-')
-    { return Err("复测记录身份无效".into()); }
+    {
+        return Err("复测记录身份无效".into());
+    }
     Ok(())
 }
 
 fn directory(root: &Path, history_id: i64, create: bool) -> Result<PathBuf, String> {
-    if history_id <= 0 { return Err("历史编号无效".into()); }
+    if history_id <= 0 {
+        return Err("历史编号无效".into());
+    }
     let dir = root.join("comparisons").join(history_id.to_string());
     checked_directory(&dir, create)?;
     Ok(dir)
@@ -262,14 +312,22 @@ fn plain(metadata: &Metadata) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes() & 0x400 != 0 { return Err("拒绝复测目录中的 reparse point".into()); }
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err("拒绝复测目录中的 reparse point".into());
+        }
     }
-    if metadata.file_type().is_symlink() { return Err("拒绝复测目录中的符号链接".into()); }
+    if metadata.file_type().is_symlink() {
+        return Err("拒绝复测目录中的符号链接".into());
+    }
     Ok(())
 }
 
 pub(super) fn checked_directory(path: &Path, create: bool) -> Result<(), String> {
-    if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
         return Err("复测目录必须是绝对路径且不能跳转".into());
     }
     let ancestors: Vec<_> = path.ancestors().collect();
@@ -284,7 +342,9 @@ pub(super) fn checked_directory(path: &Path, create: bool) -> Result<(), String>
             Err(e) => return Err(error(e)),
         };
         plain(&metadata)?;
-        if !metadata.is_dir() { return Err("复测路径包含非目录项".into()); }
+        if !metadata.is_dir() {
+            return Err("复测路径包含非目录项".into());
+        }
     }
     Ok(())
 }
@@ -363,7 +423,11 @@ fn inventory(
 }
 
 fn newest_first(files: &mut [(PathBuf, ComparisonSummary)]) {
-    files.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at).then_with(|| b.1.id.cmp(&a.1.id)));
+    files.sort_by(|a, b| {
+        b.1.created_at
+            .cmp(&a.1.created_at)
+            .then_with(|| b.1.id.cmp(&a.1.id))
+    });
 }
 
 fn reconcile(
@@ -399,7 +463,9 @@ fn remove_checked(file: &Path) -> Result<(), String> {
         Err(e) => return Err(error(e)),
         Ok(metadata) => {
             plain(&metadata)?;
-            if !metadata.is_file() { return Err("拒绝删除非普通复测文件".into()); }
+            if !metadata.is_file() {
+                return Err("拒绝删除非普通复测文件".into());
+            }
         }
     }
     fs::remove_file(file).map_err(error)

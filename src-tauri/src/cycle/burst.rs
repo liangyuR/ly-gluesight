@@ -400,7 +400,16 @@ fn checked(metrics: FrameMetrics, camera: usize, seq: u64) -> FrameMetrics {
             .as_ref()
             .is_none_or(|e| e.valid())
         && metrics.widths.iter().flatten().all(|w| w.is_finite());
-    if valid { metrics } else { unmeasured(camera, seq, FrameState::Error, "测量输出与送测帧不一致或含无效数值".into()) }
+    if valid {
+        metrics
+    } else {
+        unmeasured(
+            camera,
+            seq,
+            FrameState::Error,
+            "测量输出与送测帧不一致或含无效数值".into(),
+        )
+    }
 }
 
 /// 结论摘要（旧 `Judgement` 的形状）：verdict / plc_code / fault_code / reason 与区域判定相同，segments、gaps 为空。
@@ -492,7 +501,9 @@ impl Part {
             .as_ref()
             .and_then(|gate| gate.opens(frame.cam, now));
         let burst = &mut self.burst;
-        let Some(camera) = burst.cams.iter().position(|c| c.cam == frame.cam) else { return Some(Arrival::Unknown) };
+        let Some(camera) = burst.cams.iter().position(|c| c.cam == frame.cam) else {
+            return Some(Arrival::Unknown);
+        };
         if !burst.trusted.contains(&frame.counter) {
             let reason = format!(
                 "相机 {} 的帧计数来源变为{}，本件帧号不可信",
@@ -559,10 +570,15 @@ impl Part {
     /// 没测成（队满、超时、失败）记为 Unmeasured / Error，只算检测不完整，不判 ERR（D-SB-13）。
     pub(super) fn apply_burst(&mut self, measured: FrameMeasured) -> Option<FrameMetrics> {
         self.expire_burst(Instant::now(), self.proc_timeout);
-        if measured.cycle_id != self.cycle_id { return None; }
+        if measured.cycle_id != self.cycle_id {
+            return None;
+        }
         let burst = &mut self.burst;
         let (camera, seq) = (measured.camera_idx, measured.seq);
-        let frame = burst.frames.get_mut(&(camera, seq)).filter(|f| f.measuring_since.is_some())?;
+        let frame = burst
+            .frames
+            .get_mut(&(camera, seq))
+            .filter(|f| f.measuring_since.is_some())?;
         let metrics = checked(measured.metrics(), camera, seq);
         frame.metrics = Some(metrics.clone());
         frame.measuring_since = None;
@@ -575,7 +591,9 @@ impl Part {
         let burst = &mut self.burst;
         let mut expired = Vec::new();
         for (&(camera, seq), frame) in burst.frames.iter_mut() {
-            let Some(since) = frame.measuring_since else { continue };
+            let Some(since) = frame.measuring_since else {
+                continue;
+            };
             if now.saturating_duration_since(since) >= proc {
                 let why = MeasureError::Timeout.message();
                 frame.metrics = Some(unmeasured(camera, seq, FrameState::Unmeasured, why));
@@ -685,7 +703,11 @@ impl Part {
                 ..BurstJudgement::error(*code, reason.clone())
             };
         }
-        let metrics: Vec<FrameMetrics> = burst.frames.values().filter_map(|frame| frame.metrics.clone()).collect();
+        let metrics: Vec<FrameMetrics> = burst
+            .frames
+            .values()
+            .filter_map(|frame| frame.metrics.clone())
+            .collect();
         let segments = &burst.segments;
         let (_, regions) = burst.regions();
         let layout = burst.pass_layout();
@@ -724,20 +746,49 @@ impl Part {
                 ..decided
             })
             .unwrap_or_else(|| BurstJudgement {
-            group_count: u32::try_from(group_count).unwrap_or(u32::MAX),
-            alarms: loss_alarms(&burst.grouper.camera_counts()),
-            ..from_summary(judgement)
-        });
-        let region = |seq: u64| decided.regions.iter().position(|r| (r.region.first_seq..=r.region.last_seq).contains(&seq));
+                group_count: u32::try_from(group_count).unwrap_or(u32::MAX),
+                alarms: loss_alarms(&burst.grouper.camera_counts()),
+                ..from_summary(judgement)
+            });
+        let region = |seq: u64| {
+            decided
+                .regions
+                .iter()
+                .position(|r| (r.region.first_seq..=r.region.last_seq).contains(&seq))
+        };
         let frames = (1..=group_count)
             .flat_map(|seq| (0..burst.cams.len()).map(move |camera| (camera, seq)))
             .map(|(camera, seq)| match burst.frames.get(&(camera, seq)) {
                 Some(frame) => {
-                    let metrics = frame.metrics.clone().unwrap_or_else(|| unmeasured(camera, seq, FrameState::Unmeasured, "本件结束时测量仍未完成".into()));
-                    FrameRecord { camera, seq, status: metrics.state, frame_counter: Some(frame.frame_counter), trigger_counter: frame.trigger_counter,
-                        region: region(seq), metrics: Some(metrics), raw_file: None }
+                    let metrics = frame.metrics.clone().unwrap_or_else(|| {
+                        unmeasured(
+                            camera,
+                            seq,
+                            FrameState::Unmeasured,
+                            "本件结束时测量仍未完成".into(),
+                        )
+                    });
+                    FrameRecord {
+                        camera,
+                        seq,
+                        status: metrics.state,
+                        frame_counter: Some(frame.frame_counter),
+                        trigger_counter: frame.trigger_counter,
+                        region: region(seq),
+                        metrics: Some(metrics),
+                        raw_file: None,
+                    }
                 }
-                None => FrameRecord { camera, seq, status: FrameState::Missing, frame_counter: None, trigger_counter: None, region: region(seq), metrics: None, raw_file: None },
+                None => FrameRecord {
+                    camera,
+                    seq,
+                    status: FrameState::Missing,
+                    frame_counter: None,
+                    trigger_counter: None,
+                    region: region(seq),
+                    metrics: None,
+                    raw_file: None,
+                },
             })
             .collect();
         BurstRecord {
@@ -841,7 +892,11 @@ impl Part {
             device_triggers: self.device_triggers.map(u32::from),
             group_count: burst.grouper.group_count(),
             camera_frames: burst.grouper.camera_counts(),
-            measured_frames: burst.frames.values().filter(|frame| frame.metrics.is_some()).count(),
+            measured_frames: burst
+                .frames
+                .values()
+                .filter(|frame| frame.metrics.is_some())
+                .count(),
             pending_measure: burst.pending,
             groups,
         }

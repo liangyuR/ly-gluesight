@@ -373,7 +373,10 @@ pub struct Store {
 }
 
 fn verdict_str(v: Verdict) -> String {
-    serde_json::to_value(v).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
 }
 
 fn parse_verdict(s: &str) -> Verdict {
@@ -388,8 +391,18 @@ const SUMMARY_COLS: &str = "id, ts, sn, recipe_id, recipe_version, recipe_revisi
 const SUMMARY_LEN: usize = 29;
 
 fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
-    let flags: Option<Flags> = row.get::<_, Option<String>>(22)?.map(|text| serde_json::from_str(&text)
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(22, rusqlite::types::Type::Text, Box::new(e)))).transpose()?;
+    let flags: Option<Flags> = row
+        .get::<_, Option<String>>(22)?
+        .map(|text| {
+            serde_json::from_str(&text).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    22,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })
+        })
+        .transpose()?;
     let burst = match flags {
         Some(_) => Some(BurstSummary {
             expected_total: row.get(23)?,
@@ -431,12 +444,21 @@ fn db_err(e: rusqlite::Error) -> String {
 }
 
 fn enum_name(value: impl Serialize) -> String {
-    serde_json::to_value(value).unwrap().as_str().unwrap().to_string()
+    serde_json::to_value(value)
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
-fn json_column<T: serde::de::DeserializeOwned>(row: &rusqlite::Row, index: usize) -> rusqlite::Result<T> {
+fn json_column<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row,
+    index: usize,
+) -> rusqlite::Result<T> {
     let text: String = row.get(index)?;
-    serde_json::from_str(&text).map_err(|e| rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(e)))
+    serde_json::from_str(&text).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(e))
+    })
 }
 
 fn recording_row(row: &rusqlite::Row, index: usize) -> rusqlite::Result<RecordingEvidence> {
@@ -448,20 +470,36 @@ fn recording_row(row: &rusqlite::Row, index: usize) -> rusqlite::Result<Recordin
     })
 }
 
-fn enum_column<T: serde::de::DeserializeOwned>(row: &rusqlite::Row, index: usize) -> rusqlite::Result<T> {
+fn enum_column<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row,
+    index: usize,
+) -> rusqlite::Result<T> {
     let text: String = row.get(index)?;
-    serde_json::from_value(serde_json::Value::String(text))
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(e)))
+    serde_json::from_value(serde_json::Value::String(text)).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(e))
+    })
 }
 
 fn count_column(row: &rusqlite::Row, index: usize) -> rusqlite::Result<Option<u64>> {
     row.get::<_, Option<String>>(index)?
-        .map(|s| s.parse::<u64>().map_err(|e| rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(e))))
+        .map(|s| {
+            s.parse::<u64>().map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    index,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })
+        })
         .transpose()
 }
 
 fn delivery_row(row: &rusqlite::Row, first: usize) -> rusqlite::Result<PlcDelivery> {
-    Ok(PlcDelivery { state: enum_column(row, first)?, updated_at: row.get(first + 1)?, message: row.get(first + 2)? })
+    Ok(PlcDelivery {
+        state: enum_column(row, first)?,
+        updated_at: row.get(first + 1)?,
+        message: row.get(first + 2)?,
+    })
 }
 
 /// 各相机的走廊、测量区间、当量，配方检测参数，以及各段的检测参数覆盖、逐帧定向与找边参数决定每帧指标（计划身份另见 burst_plan_identity）；
@@ -501,7 +539,8 @@ pub fn same_burst_plan(original: &Recipe, candidate: &Recipe) -> bool {
 
 /// 已存的每帧指标能否在候选上复用：测量布局与计划身份都相同（计划身份变了，区域与预期帧数的口径就变了，需要原图复测）。
 pub fn same_measurement_layout(original: &Recipe, candidate: &Recipe) -> bool {
-    measurement_layout(original) == measurement_layout(candidate) && burst_plan_identity(original) == burst_plan_identity(candidate)
+    measurement_layout(original) == measurement_layout(candidate)
+        && burst_plan_identity(original) == burst_plan_identity(candidate)
 }
 
 fn validate_raw_path(file: &str) -> Result<(), String> {
@@ -509,7 +548,9 @@ fn validate_raw_path(file: &str) -> Result<(), String> {
         || file.contains('\\')
         || file.contains(':')
         || file.contains('\0')
-        || Path::new(file).components().any(|c| !matches!(c, Component::Normal(_)))
+        || Path::new(file)
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
     {
         return Err("原图文件必须是录制根目录内的相对路径，使用 / 分隔".into());
     }
@@ -538,7 +579,13 @@ fn validate_burst(r: &PartRecord, recipe: &Recipe, burst: &BurstRecord) -> Resul
         return Err("段配方记录按帧落库，不能带旧帧信息".into());
     }
     let j = &burst.judgement;
-    if (r.judgement.verdict, r.judgement.plc_code, r.judgement.fault_code, r.judgement.reason.as_str()) != (j.verdict, j.plc_code, j.fault_code, j.reason.as_str()) {
+    if (
+        r.judgement.verdict,
+        r.judgement.plc_code,
+        r.judgement.fault_code,
+        r.judgement.reason.as_str(),
+    ) != (j.verdict, j.plc_code, j.fault_code, j.reason.as_str())
+    {
         return Err("段配方记录的结论摘要与区域判定不一致".into());
     }
     if burst.expected_total != recipe.expected_total()
@@ -566,8 +613,12 @@ fn validate_burst(r: &PartRecord, recipe: &Recipe, burst: &BurstRecord) -> Resul
             return Err(format!("相机 {camera} 第 {seq} 帧引用的区域不存在"));
         }
         if let Some(metrics) = &frame.metrics {
-            if (metrics.camera, metrics.seq, metrics.state) != (camera, seq, frame.status) || !finite_metrics(metrics) {
-                return Err(format!("相机 {camera} 第 {seq} 帧的指标与帧身份不一致或不是有限数"));
+            if (metrics.camera, metrics.seq, metrics.state) != (camera, seq, frame.status)
+                || !finite_metrics(metrics)
+            {
+                return Err(format!(
+                    "相机 {camera} 第 {seq} 帧的指标与帧身份不一致或不是有限数"
+                ));
             }
         }
         if let Some(file) = &frame.raw_file {
@@ -578,14 +629,24 @@ fn validate_burst(r: &PartRecord, recipe: &Recipe, burst: &BurstRecord) -> Resul
 }
 
 /// 已入库的段配方记录与一份待入库记录是否同一检测内容；原图引用是事后补的证据，不参与比较。
-fn same_burst(actual: Option<&PartDetailBurst>, expected: Option<&BurstRecord>) -> Result<bool, String> {
+fn same_burst(
+    actual: Option<&PartDetailBurst>,
+    expected: Option<&BurstRecord>,
+) -> Result<bool, String> {
     let (actual, expected) = match (actual, expected) {
         (None, None) => return Ok(true),
         (Some(actual), Some(expected)) => (actual, expected),
         _ => return Ok(false),
     };
     let content = |frames: &[FrameRecord]| -> Result<serde_json::Value, String> {
-        let mut frames: Vec<FrameRecord> = frames.iter().cloned().map(|frame| FrameRecord { raw_file: None, ..frame }).collect();
+        let mut frames: Vec<FrameRecord> = frames
+            .iter()
+            .cloned()
+            .map(|frame| FrameRecord {
+                raw_file: None,
+                ..frame
+            })
+            .collect();
         frames.sort_by_key(|frame| (frame.camera, frame.seq));
         serde_json::to_value(frames).map_err(|error| error.to_string())
     };
@@ -662,29 +723,40 @@ fn decode_snapshot(
     snapshot: Option<RawSnapshot>,
     revision_id: &str,
 ) -> Result<Option<Recipe>, String> {
-    snapshot.map(|(id, version, json)| {
-        let recipe = Recipe::from_snapshot(serde_json::from_str(&json).map_err(|e| e.to_string())?)?;
-        if recipe.revision_id != revision_id || recipe.id != id || recipe.version != version {
-            return Err("原配方快照身份或版本损坏".into());
-        }
-        Ok(recipe)
-    })
-    .transpose()
+    snapshot
+        .map(|(id, version, json)| {
+            let recipe =
+                Recipe::from_snapshot(serde_json::from_str(&json).map_err(|e| e.to_string())?)?;
+            if recipe.revision_id != revision_id || recipe.id != id || recipe.version != version {
+                return Err("原配方快照身份或版本损坏".into());
+            }
+            Ok(recipe)
+        })
+        .transpose()
 }
 
 fn backup_old_database(conn: Connection, path: &Path, version: i64) -> Result<PathBuf, String> {
-    conn.pragma_update(None, "locking_mode", "EXCLUSIVE").map_err(db_err)?;
-    conn.execute_batch("BEGIN EXCLUSIVE; COMMIT;").map_err(db_err)?;
-    let (busy, log, done): (i64, i64, i64) =
-        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(db_err)?;
+    conn.pragma_update(None, "locking_mode", "EXCLUSIVE")
+        .map_err(db_err)?;
+    conn.execute_batch("BEGIN EXCLUSIVE; COMMIT;")
+        .map_err(db_err)?;
+    let (busy, log, done): (i64, i64, i64) = conn
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .map_err(db_err)?;
     if busy != 0 || (log >= 0 && done < log) {
         return Err("旧记录库仍在使用，WAL 未完整合并；保留原库，关闭其他实例后重试".into());
     }
-    let mode: String = conn.query_row("PRAGMA journal_mode = DELETE", [], |r| r.get(0)).map_err(db_err)?;
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode = DELETE", [], |r| r.get(0))
+        .map_err(db_err)?;
     if mode != "delete" {
         return Err("旧记录库无法退出 WAL 模式，保留原库".into());
     }
-    let token: String = conn.query_row("SELECT lower(hex(randomblob(8)))", [], |r| r.get(0)).map_err(db_err)?;
+    let token: String = conn
+        .query_row("SELECT lower(hex(randomblob(8)))", [], |r| r.get(0))
+        .map_err(db_err)?;
     conn.close().map_err(|(_, e)| db_err(e))?;
     for suffix in ["-wal", "-shm"] {
         let mut name = path.as_os_str().to_os_string();
@@ -693,18 +765,34 @@ fn backup_old_database(conn: Connection, path: &Path, version: i64) -> Result<Pa
             return Err("旧记录库仍有 WAL/SHM 文件，保留原库以防丢失数据".into());
         }
     }
-    let name = path.file_name().ok_or("记录库路径没有文件名")?.to_string_lossy();
-    let backup = path.with_file_name(format!("{name}.v{version}.{}.{token}.bak", ly_plc::now_ms()));
+    let name = path
+        .file_name()
+        .ok_or("记录库路径没有文件名")?
+        .to_string_lossy();
+    let backup = path.with_file_name(format!(
+        "{name}.v{version}.{}.{token}.bak",
+        ly_plc::now_ms()
+    ));
     std::fs::rename(path, &backup).map_err(|e| format!("备份旧记录库失败，原库未重建：{e}"))?;
     Ok(backup)
 }
 
 fn fail_interrupted_recordings(conn: &mut Connection) -> Result<usize, String> {
     const REASON: &str = "检测服务在录制完成前退出，原图完整性未确认";
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_err)?;
     let pending = {
-        let mut stmt = tx.prepare("SELECT id,recording_errors FROM parts WHERE recording_state='pending' ORDER BY id").map_err(db_err)?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, json_column::<Vec<String>>(row, 1)?))).map_err(db_err)?;
+        let mut stmt = tx
+            .prepare(
+                "SELECT id,recording_errors FROM parts WHERE recording_state='pending' ORDER BY id",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, json_column::<Vec<String>>(row, 1)?))
+            })
+            .map_err(db_err)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?
     };
     let mut interrupted = 0;
@@ -779,10 +867,13 @@ impl Store {
         let existing = path.metadata().map(|m| m.len() > 0).unwrap_or(false);
         let mut conn = Connection::open(path).map_err(db_err)?;
         conn.busy_timeout(Duration::from_secs(2)).map_err(db_err)?;
-        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(db_err)?;
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .map_err(db_err)?;
         let backup_path = if existing && version != 10 && version != DB_VERSION {
             let backup = backup_old_database(conn, path, version)?;
-            conn = Connection::open(path).map_err(|e| format!("旧记录库已备份到 {}；新库打开失败：{e}", backup.display()))?;
+            conn = Connection::open(path)
+                .map_err(|e| format!("旧记录库已备份到 {}；新库打开失败：{e}", backup.display()))?;
             conn.busy_timeout(Duration::from_secs(2)).map_err(db_err)?;
             Some(backup)
         } else {
@@ -955,7 +1046,11 @@ impl Store {
             .map_err(db_err)
     }
 
-    pub(crate) fn workspace_instance(&self, recipe_id: &str, instance_id: u64) -> Result<u64, String> {
+    pub(crate) fn workspace_instance(
+        &self,
+        recipe_id: &str,
+        instance_id: u64,
+    ) -> Result<u64, String> {
         let conn = self.conn.lock().unwrap();
         if instance_id == 0 {
             let allocated: i64 = conn.query_row(
@@ -980,13 +1075,21 @@ impl Store {
     }
 
     pub fn reserve_cycle_ids(&self, count: usize) -> Result<Vec<String>, String> {
-        if !(1..=32).contains(&count) { return Err("工件身份批量分配数量必须为 1–32".into()); }
+        if !(1..=32).contains(&count) {
+            return Err("工件身份批量分配数量必须为 1–32".into());
+        }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(db_err)?;
-        let ids = (0..count).map(|_| tx.query_row(
-            "INSERT INTO cycle_ids (created_at) VALUES (?1) RETURNING id",
-            [ly_plc::now_ms()], |row| row.get(0),
-        ).map_err(db_err)).collect::<Result<Vec<String>, String>>()?;
+        let ids = (0..count)
+            .map(|_| {
+                tx.query_row(
+                    "INSERT INTO cycle_ids (created_at) VALUES (?1) RETURNING id",
+                    [ly_plc::now_ms()],
+                    |row| row.get(0),
+                )
+                .map_err(db_err)
+            })
+            .collect::<Result<Vec<String>, String>>()?;
         tx.commit().map_err(db_err)?;
         Ok(ids)
     }
@@ -1037,8 +1140,12 @@ impl Store {
                 if id != recipe.id || version != recipe.version {
                     return Err("原配方快照 ID 或版本损坏，拒绝追加记录".into());
                 }
-                let previous = Recipe::from_snapshot(serde_json::from_str(&previous).map_err(|e| e.to_string())?)?;
-                if serde_json::to_value(&previous).map_err(|e| e.to_string())? != serde_json::to_value(recipe).map_err(|e| e.to_string())? {
+                let previous = Recipe::from_snapshot(
+                    serde_json::from_str(&previous).map_err(|e| e.to_string())?,
+                )?;
+                if serde_json::to_value(&previous).map_err(|e| e.to_string())?
+                    != serde_json::to_value(recipe).map_err(|e| e.to_string())?
+                {
                     return Err("相同配方修订号对应了不同快照，拒绝覆盖原记录".into());
                 }
             }
@@ -1118,17 +1225,24 @@ impl Store {
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             ).map_err(db_err)?;
             for frame in &burst.frames {
-                insert.execute(params![
-                    id,
-                    frame.camera as i64,
-                    frame.seq as i64,
-                    enum_name(frame.status),
-                    frame.frame_counter.map(|n| n.to_string()),
-                    frame.trigger_counter.map(|n| n.to_string()),
-                    frame.region.map(|n| n as i64),
-                    frame.metrics.as_ref().map(serde_json::to_string).transpose().map_err(|e| e.to_string())?,
-                    frame.raw_file,
-                ]).map_err(db_err)?;
+                insert
+                    .execute(params![
+                        id,
+                        frame.camera as i64,
+                        frame.seq as i64,
+                        enum_name(frame.status),
+                        frame.frame_counter.map(|n| n.to_string()),
+                        frame.trigger_counter.map(|n| n.to_string()),
+                        frame.region.map(|n| n as i64),
+                        frame
+                            .metrics
+                            .as_ref()
+                            .map(serde_json::to_string)
+                            .transpose()
+                            .map_err(|e| e.to_string())?,
+                        frame.raw_file,
+                    ])
+                    .map_err(db_err)?;
             }
         }
         tx.commit().map_err(db_err)?;
@@ -1137,7 +1251,9 @@ impl Store {
 
     pub fn matches_record(&self, record: &PartRecord<'_>) -> Result<bool, String> {
         let cycle = record.cycle_id.ok_or("审计重放缺少 cycleId")?;
-        let Some(existing) = self.detail_by_cycle(cycle)? else { return Ok(false); };
+        let Some(existing) = self.detail_by_cycle(cycle)? else {
+            return Ok(false);
+        };
         let summary = &existing.summary;
         let actual_recipe = match summary.recipe_revision.as_deref() {
             Some(revision) => self.recipe_snapshot(&summary.project_id, revision)?,
@@ -1150,13 +1266,19 @@ impl Store {
             && summary.bundle_id.as_deref() == record.bundle_id
             && summary.recipe_id.as_deref() == record.recipe.map(|recipe| recipe.id.as_str())
             && summary.recipe_version == record.recipe.map(|recipe| recipe.version)
-            && summary.recipe_revision.as_deref() == record.recipe.map(|recipe| recipe.revision_id.as_str())
-            && summary.frames_expected == record.frames_expected && summary.frames_received == record.frames_received
+            && summary.recipe_revision.as_deref()
+                == record.recipe.map(|recipe| recipe.revision_id.as_str())
+            && summary.frames_expected == record.frames_expected
+            && summary.frames_received == record.frames_received
             && summary.source == record.source
-            && existing.triggers == record.triggers && existing.software_version == record.software_version
-            && serde_json::to_value(&existing.judgement).map_err(|error| error.to_string())? == serde_json::to_value(record.judgement).map_err(|error| error.to_string())?
-            && serde_json::to_value(&existing.frames).map_err(|error| error.to_string())? == serde_json::to_value(record.frames).map_err(|error| error.to_string())?
-            && serde_json::to_value(actual_recipe).map_err(|error| error.to_string())? == serde_json::to_value(record.recipe).map_err(|error| error.to_string())?
+            && existing.triggers == record.triggers
+            && existing.software_version == record.software_version
+            && serde_json::to_value(&existing.judgement).map_err(|error| error.to_string())?
+                == serde_json::to_value(record.judgement).map_err(|error| error.to_string())?
+            && serde_json::to_value(&existing.frames).map_err(|error| error.to_string())?
+                == serde_json::to_value(record.frames).map_err(|error| error.to_string())?
+            && serde_json::to_value(actual_recipe).map_err(|error| error.to_string())?
+                == serde_json::to_value(record.recipe).map_err(|error| error.to_string())?
             && same_burst(existing.burst.as_ref(), record.burst)?;
         Ok(consistent && record.shots.is_empty() && record.table.is_none())
     }
@@ -1165,13 +1287,27 @@ impl Store {
         let value = i64::try_from(drain_ms).map_err(|_| "PLC 提交耗时超出存储范围")?;
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(db_err)?;
-        let previous = tx.query_row("SELECT drain_ms FROM parts WHERE cycle_id=?1", [cycle_id], |row| row.get::<_, Option<i64>>(0))
-            .optional().map_err(db_err)?;
-        let Some(previous) = previous else { return Ok(false); };
+        let previous = tx
+            .query_row(
+                "SELECT drain_ms FROM parts WHERE cycle_id=?1",
+                [cycle_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(db_err)?;
+        let Some(previous) = previous else {
+            return Ok(false);
+        };
         if let Some(previous) = previous {
-            if previous != value { return Err("PLC 提交耗时已确认，不能替换原始观测".into()); }
+            if previous != value {
+                return Err("PLC 提交耗时已确认，不能替换原始观测".into());
+            }
         } else {
-            tx.execute("UPDATE parts SET drain_ms=?2 WHERE cycle_id=?1", params![cycle_id, value]).map_err(db_err)?;
+            tx.execute(
+                "UPDATE parts SET drain_ms=?2 WHERE cycle_id=?1",
+                params![cycle_id, value],
+            )
+            .map_err(db_err)?;
         }
         tx.commit().map_err(db_err)?;
         Ok(true)
@@ -1184,20 +1320,32 @@ impl Store {
             .query_row("SELECT delivery_state,delivery_updated_at,delivery_message FROM parts WHERE cycle_id=?1", [cycle_id], |r| delivery_row(r, 0))
             .optional()
             .map_err(db_err)?;
-        let Some(previous) = previous else { return Ok(false) };
+        let Some(previous) = previous else {
+            return Ok(false);
+        };
         if delivery.updated_at < previous.updated_at {
             return Ok(false);
         }
-        if previous.state == PlcDeliveryState::Acknowledged && delivery.state != PlcDeliveryState::Acknowledged {
+        if previous.state == PlcDeliveryState::Acknowledged
+            && delivery.state != PlcDeliveryState::Acknowledged
+        {
             return Err("PLC 已确认交付，不能回退交付状态".into());
         }
-        if previous.state == PlcDeliveryState::NotRequired && delivery.state != PlcDeliveryState::NotRequired {
+        if previous.state == PlcDeliveryState::NotRequired
+            && delivery.state != PlcDeliveryState::NotRequired
+        {
             return Err("该记录无需 PLC 交付，不能追加到其他事务".into());
         }
-        if previous.state != PlcDeliveryState::NotRequired && delivery.state == PlcDeliveryState::NotRequired {
+        if previous.state != PlcDeliveryState::NotRequired
+            && delivery.state == PlcDeliveryState::NotRequired
+        {
             return Err("已有 PLC 交付事务，不能改为无需交付".into());
         }
-        if matches!(previous.state, PlcDeliveryState::Submitted | PlcDeliveryState::Failed) && delivery.state == PlcDeliveryState::Pending {
+        if matches!(
+            previous.state,
+            PlcDeliveryState::Submitted | PlcDeliveryState::Failed
+        ) && delivery.state == PlcDeliveryState::Pending
+        {
             return Err("PLC 交付已尝试，不能回退为待提交".into());
         }
         tx.execute(
@@ -1211,25 +1359,44 @@ impl Store {
 
     /// 段配方记录补原图引用：按 (camera, seq) 只增不换——已保存的引用不能改成另一个文件，重复写同一文件是幂等的。
     /// 一批里有不存在的记录或帧时整批不写，返回 false。
-    pub fn update_frame_raw_files(&self, cycle_id: &str, files: &std::collections::BTreeMap<FrameKey, String>) -> Result<bool, String> {
+    pub fn update_frame_raw_files(
+        &self,
+        cycle_id: &str,
+        files: &std::collections::BTreeMap<FrameKey, String>,
+    ) -> Result<bool, String> {
         for file in files.values() {
             validate_raw_path(file)?;
         }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(db_err)?;
-        let Some(id) = tx.query_row("SELECT id FROM parts WHERE cycle_id=?1", [cycle_id], |row| row.get::<_, i64>(0)).optional().map_err(db_err)? else {
+        let Some(id) = tx
+            .query_row(
+                "SELECT id FROM parts WHERE cycle_id=?1",
+                [cycle_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(db_err)?
+        else {
             return Ok(false);
         };
         for (key, file) in files {
             let seq = i64::try_from(key.seq).map_err(|_| "帧组序号超出存储范围")?;
             let previous: Option<Option<String>> = tx
-                .query_row("SELECT raw_file FROM part_frames WHERE part_id=?1 AND camera=?2 AND seq=?3", params![id, key.camera as i64, seq], |row| row.get(0))
+                .query_row(
+                    "SELECT raw_file FROM part_frames WHERE part_id=?1 AND camera=?2 AND seq=?3",
+                    params![id, key.camera as i64, seq],
+                    |row| row.get(0),
+                )
                 .optional()
                 .map_err(db_err)?;
             match previous {
                 None => return Ok(false),
                 Some(Some(previous)) if previous != *file => {
-                    return Err(format!("相机 {} 第 {} 帧的原图身份已保存，不能替换为另一个文件", key.camera, key.seq));
+                    return Err(format!(
+                        "相机 {} 第 {} 帧的原图身份已保存，不能替换为另一个文件",
+                        key.camera, key.seq
+                    ));
                 }
                 Some(Some(_)) => (),
                 Some(None) => {
@@ -1242,9 +1409,15 @@ impl Store {
         Ok(true)
     }
 
-    pub fn update_recording(&self, cycle_id: &str, evidence: &RecordingEvidence) -> Result<bool, String> {
+    pub fn update_recording(
+        &self,
+        cycle_id: &str,
+        evidence: &RecordingEvidence,
+    ) -> Result<bool, String> {
         if evidence.available != (evidence.state == RecordingState::Complete)
-            || (evidence.available && (!evidence.errors.is_empty() || evidence.directory.as_deref().is_none_or(str::is_empty)))
+            || (evidence.available
+                && (!evidence.errors.is_empty()
+                    || evidence.directory.as_deref().is_none_or(str::is_empty)))
         {
             return Err("只有带实际目录且无错误的完整录制才能标记原图可用".into());
         }
@@ -1256,7 +1429,9 @@ impl Store {
             })
             .optional()
             .map_err(db_err)?;
-        let Some((id, previous)) = previous else { return Ok(false) };
+        let Some((id, previous)) = previous else {
+            return Ok(false);
+        };
         if previous.state != RecordingState::Pending && previous != *evidence {
             return Err("原录制收尾证据已保存，不能替换或回退".into());
         }
@@ -1289,12 +1464,20 @@ impl Store {
             args.push(SqlValue::Integer(to));
         }
         if !q.verdicts.is_empty() {
-            clauses.push(format!("{prefix}verdict IN ({})", vec!["?"; q.verdicts.len()].join(",")));
+            clauses.push(format!(
+                "{prefix}verdict IN ({})",
+                vec!["?"; q.verdicts.len()].join(",")
+            ));
             args.extend(q.verdicts.iter().map(|v| SqlValue::Text(verdict_str(*v))));
         }
         if let Some(sn) = q.sn.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             clauses.push(format!("{prefix}sn LIKE ? ESCAPE '\\'"));
-            args.push(SqlValue::Text(format!("%{}%", sn.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"))));
+            args.push(SqlValue::Text(format!(
+                "%{}%",
+                sn.replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            )));
         }
         if let Some(tag) = q.tag.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             clauses.push(format!(
@@ -1413,9 +1596,15 @@ impl Store {
     /// 滚动清理即将删除这些录制目录：引用它们的记录改为“按保留策略不存图”并写明原因，不再显示“已核验落盘”。
     pub fn release_recordings(&self, directories: &[PathBuf]) -> Result<(), String> {
         let note = "原图已按录制保留件数或容量上限滚动清理";
-        let directories: Vec<_> = directories.iter().map(|directory| directory.to_string_lossy()).collect();
+        let directories: Vec<_> = directories
+            .iter()
+            .map(|directory| directory.to_string_lossy())
+            .collect();
         let directories = serde_json::to_string(&directories).map_err(|e| e.to_string())?;
-        let conn = self.conn.lock().map_err(|_| "数据库锁异常，暂停滚动清理".to_string())?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "数据库锁异常，暂停滚动清理".to_string())?;
         conn.execute("UPDATE parts SET recording_state=?3, recording_available=0, recording_errors=json_insert(recording_errors,'$[#]',?2) \
             WHERE recording_directory IN (SELECT value FROM json_each(?1)) AND recording_state IN ('complete','incomplete')",
             params![directories, note, enum_name(RecordingState::NotRetained)]).map_err(db_err)?;
@@ -1427,8 +1616,16 @@ impl Store {
         let (filter, args) = Self::filter(q, "");
         let mut counts = VerdictCounts::default();
         let mut total = 0;
-        let mut stmt = conn.prepare(&format!("SELECT verdict, COUNT(*) FROM parts{filter} GROUP BY verdict")).map_err(db_err)?;
-        let rows = stmt.query_map(params_from_iter(args.iter()), |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))).map_err(db_err)?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT verdict, COUNT(*) FROM parts{filter} GROUP BY verdict"
+            ))
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params_from_iter(args.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })
+            .map_err(db_err)?;
         for row in rows {
             let (v, n) = row.map_err(db_err)?;
             counts.add(parse_verdict(&v), n);
@@ -1437,12 +1634,24 @@ impl Store {
         let limit = if q.limit == 0 { 50 } else { q.limit.min(500) };
         let sql = format!("SELECT {SUMMARY_COLS} FROM parts{filter} ORDER BY ts DESC, id DESC LIMIT {limit} OFFSET {}", q.offset);
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let items = stmt.query_map(params_from_iter(args.iter()), summary).map_err(db_err)?.collect::<Result<_, _>>().map_err(db_err)?;
-        Ok(HistoryPage { total, counts, items })
+        let items = stmt
+            .query_map(params_from_iter(args.iter()), summary)
+            .map_err(db_err)?
+            .collect::<Result<_, _>>()
+            .map_err(db_err)?;
+        Ok(HistoryPage {
+            total,
+            counts,
+            items,
+        })
     }
 
     /// 同一筛选条件下与 id 相邻的记录：(较早一件, 较晚一件)，按（时间, 编号）排序，与历史列表同序。
-    pub fn neighbors(&self, q: &HistoryQuery, id: i64) -> Result<(Option<i64>, Option<i64>), String> {
+    pub fn neighbors(
+        &self,
+        q: &HistoryQuery,
+        id: i64,
+    ) -> Result<(Option<i64>, Option<i64>), String> {
         let conn = self.conn.lock().unwrap();
         let Some(ts) = conn
             .query_row("SELECT ts FROM parts WHERE id = ?1", [id], |row| {
@@ -1597,7 +1806,8 @@ impl Store {
         Ok(PartDetail {
             summary,
             judgement: serde_json::from_str(&judgement).map_err(|e| e.to_string())?,
-            frames: serde_json::from_str(&frames).map_err(|e| format!("记录 {id} 的帧信息损坏：{e}"))?,
+            frames: serde_json::from_str(&frames)
+                .map_err(|e| format!("记录 {id} 的帧信息损坏：{e}"))?,
             triggers,
             software_version,
             points: None,
@@ -1711,12 +1921,20 @@ impl Store {
     }
 
     /// 取出重判候选；ids 为空时按筛选条件。
-    pub fn measurements(&self, q: &HistoryQuery, ids: &[i64], limit: usize) -> Result<Vec<StoredMeasurement>, String> {
+    pub fn measurements(
+        &self,
+        q: &HistoryQuery,
+        ids: &[i64],
+        limit: usize,
+    ) -> Result<Vec<StoredMeasurement>, String> {
         let conn = self.conn.lock().unwrap();
         let (filter, args) = if ids.is_empty() {
             Self::filter(q, "p.")
         } else {
-            (format!(" WHERE p.id IN ({})", vec!["?"; ids.len()].join(",")), ids.iter().map(|&i| SqlValue::Integer(i)).collect())
+            (
+                format!(" WHERE p.id IN ({})", vec!["?"; ids.len()].join(",")),
+                ids.iter().map(|&i| SqlValue::Integer(i)).collect(),
+            )
         };
         let sql = format!(
             "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, p.burst_judgement, p.project_id FROM parts p{filter} ORDER BY p.ts DESC, p.id DESC LIMIT {limit}"
@@ -1949,9 +2167,16 @@ impl Store {
     }
 
     pub(crate) fn comparison_cycle(&self, id: i64) -> Result<Option<String>, String> {
-        self.conn.lock().unwrap().query_row(
-            "SELECT COALESCE(cycle_id, '') FROM parts WHERE id = ?1", [id], |row| row.get(0)
-        ).optional().map_err(db_err)
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COALESCE(cycle_id, '') FROM parts WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)
     }
 
     /// 删除本机全部项目里早于 ts 的记录，`keep` 里的历史件（被示教件引用，按 cycleId）不删；返回删除件数与其中非当前项目记录、

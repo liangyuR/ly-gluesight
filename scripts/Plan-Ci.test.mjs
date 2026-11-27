@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const planner = fileURLToPath(new URL("./Plan-Ci.mjs", import.meta.url));
 
-for (const { name, event = "pull_request", change, required } of [
+for (const { name, event = "pull_request", change, required, rustFormat } of [
   { name: "只有 README 和文档变更 → 跳过校验", required: false,
     change: ({ write }) => { write("README.md", "updated\n"); write("docs/guide.md", "guide\n"); } },
   { name: "文档与代码混合变更 → 必须校验", required: true,
@@ -19,6 +19,8 @@ for (const { name, event = "pull_request", change, required } of [
     change: ({ write, commit }) => { write("src/example.rs", "fn changed() {}\n"); commit(); write("README.md", "updated\n"); } },
   { name: "手动运行只有文档变更 → 必须校验", event: "workflow_dispatch", required: true,
     change: ({ write }) => { write("docs/guide.md", "guide\n"); } },
+  { name: "只升级 Rust 工具链 → 重跑全仓格式检查", required: true, rustFormat: true,
+    change: ({ write }) => { write("rust-toolchain.toml", '[toolchain]\nchannel = "1.100.0"\n'); } },
 ]) {
   test(name, () => {
     const root = mkdtempSync(join(tmpdir(), "gluesight-ci-plan-"));
@@ -51,6 +53,7 @@ for (const { name, event = "pull_request", change, required } of [
       });
       const outputs = Object.fromEntries(readFileSync(output, "utf8").trim().split("\n").map((line) => line.split("=")));
       assert.equal(outputs.required, String(required));
+      if (rustFormat !== undefined) assert.equal(outputs["rust-format"], String(rustFormat));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

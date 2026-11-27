@@ -416,13 +416,21 @@ fn judge_regions(
     cameras: &[String],
     loss: &[LossAlarm],
 ) -> BurstJudgement {
-    let group_count = u32::try_from(groups.iter().map(|g| g.seq).max().unwrap_or(0)).unwrap_or(u32::MAX);
+    let group_count =
+        u32::try_from(groups.iter().map(|g| g.seq).max().unwrap_or(0)).unwrap_or(u32::MAX);
     // 每个 (seq, 相机) 一帧；不是计划相机的帧不参与
-    let frames: BTreeMap<(u64, usize), &FrameMetrics> =
-        metrics.iter().filter(|m| m.camera < cameras.len()).map(|m| ((m.seq, m.camera), m)).collect();
+    let frames: BTreeMap<(u64, usize), &FrameMetrics> = metrics
+        .iter()
+        .filter(|m| m.camera < cameras.len())
+        .map(|m| ((m.seq, m.camera), m))
+        .collect();
 
     if !frames.values().any(|m| m.state == FrameState::Measured) {
-        let reason = if frames.values().all(|m| m.state == FrameState::Missing) { "三台相机整件没有收到帧" } else { "三台相机整件没有一帧测成" };
+        let reason = if frames.values().all(|m| m.state == FrameState::Missing) {
+            "三台相机整件没有收到帧"
+        } else {
+            "三台相机整件没有一帧测成"
+        };
         let mix_alarm = regions.iter().any(|region| {
             let scope = covered(segments, region);
             let allowed = region_cameras_for(cameras, region, &scope);
@@ -451,7 +459,10 @@ fn judge_regions(
             )
         };
     }
-    if regions.iter().any(|region| covered(segments, region).is_empty()) {
+    if regions
+        .iter()
+        .any(|region| covered(segments, region).is_empty())
+    {
         return BurstJudgement::error(fault::INVALID_POINTS, "分段区域与配方的段不一致");
     }
 
@@ -486,7 +497,11 @@ fn judge_regions(
         }
     }
 
-    let verdict = results.iter().map(|r| r.verdict).max().unwrap_or(Verdict::Ok);
+    let verdict = results
+        .iter()
+        .map(|r| r.verdict)
+        .max()
+        .unwrap_or(Verdict::Ok);
     let warned = |warning: WidthWarning| results.iter().any(|r| r.warnings.contains(&warning));
     let mut reason = match verdict {
         Verdict::Ok => format!("{group_count} 个帧组全部合格"),
@@ -630,7 +645,10 @@ fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding
     let stations = || frame.widths.iter().flatten().copied();
     let width = &checks.width;
     if width.enabled {
-        let (lower, upper) = (width.nominal_mm - width.tol_lower, width.nominal_mm + width.tol_upper);
+        let (lower, upper) = (
+            width.nominal_mm - width.tol_lower,
+            width.nominal_mm + width.tol_upper,
+        );
         let length_known = !frame.widths.is_empty() && frame.spacing_mm > 0.0;
         let (narrow, mut wide) = if !length_known {
             let beyond = |out: bool| if out { f64::INFINITY } else { 0.0 };
@@ -704,7 +722,11 @@ pub fn frame_verdict(frame: &FrameMetrics, checks: &SegmentChecks) -> Verdict {
     if frame.measurement_evidence.is_some() && !frame.has_usable_evidence() {
         return Verdict::ErrInspect;
     }
-    judge_frame(frame, checks).iter().map(|f| f.verdict()).max().unwrap_or(Verdict::Ok)
+    judge_frame(frame, checks)
+        .iter()
+        .map(|f| f.verdict())
+        .max()
+        .unwrap_or(Verdict::Ok)
 }
 
 /// 一帧的单帧结论（帧格颜色，TS `FrameVerdict`）。
@@ -774,7 +796,10 @@ pub fn frame_verdicts(
 /// 直线段胶偏（xs 已去掉区域首尾各一帧，非空）：x 均值 − x_ref 判整段偏移，各帧 x 与均值的最大偏差判局部跑偏。
 fn straight_offset(xs: &[f64], x_ref: f64, check: &OffsetCheck) -> (OffsetStat, BTreeSet<Finding>) {
     let mean = xs.iter().sum::<f64>() / xs.len() as f64;
-    let stat = OffsetStat { mean_shift: mean - x_ref, max_dev: xs.iter().map(|x| (x - mean).abs()).fold(0.0, f64::max) };
+    let stat = OffsetStat {
+        mean_shift: mean - x_ref,
+        max_dev: xs.iter().map(|x| (x - mean).abs()).fold(0.0, f64::max),
+    };
     let mut found = BTreeSet::new();
     if stat.mean_shift.abs() > check.max_mean_shift_mm {
         found.insert(Finding::Shift);
@@ -799,10 +824,17 @@ struct PartInput<'a> {
 fn covered<'a>(segments: &'a [PathSegment], region: &Region) -> Vec<&'a PathSegment> {
     let (first, last) = match region.kind {
         RegionKind::Straight { segment } | RegionKind::Corner { segment } => (segment, segment),
-        RegionKind::Unsegmented { first_segment, last_segment, .. } => (first_segment, last_segment),
+        RegionKind::Unsegmented {
+            first_segment,
+            last_segment,
+            ..
+        } => (first_segment, last_segment),
         RegionKind::Skipped { segment, .. } => (segment, segment),
     };
-    segments.iter().filter(|segment| (first..=last).contains(&segment.index)).collect()
+    segments
+        .iter()
+        .filter(|segment| (first..=last).contains(&segment.index))
+        .collect()
 }
 
 /// 区域参与判定的相机下标（计划相机顺序）。
@@ -883,9 +915,16 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
         in_region,
     } = RegionScope::of(part, region);
     let straight = matches!(region.kind, RegionKind::Straight { .. });
-    let measured: Vec<&FrameMetrics> = in_region.iter().copied().filter(|m| m.state == FrameState::Measured).collect();
+    let measured: Vec<&FrameMetrics> = in_region
+        .iter()
+        .copied()
+        .filter(|m| m.state == FrameState::Measured)
+        .collect();
 
-    let mut findings: BTreeSet<Finding> = measured.iter().flat_map(|m| judge_frame(m, &checks)).collect();
+    let mut findings: BTreeSet<Finding> = measured
+        .iter()
+        .flat_map(|m| judge_frame(m, &checks))
+        .collect();
     // 均匀性：只在直线区域判（D-SB-16）
     if straight && checks.width.enabled {
         let means: Vec<f64> = measured.iter().filter_map(|m| m.width_mean).collect();
@@ -898,7 +937,8 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
 
     let (offset, offset_unjudged) = match region.kind {
         RegionKind::Straight { .. } => {
-            let (offset, unjudged, found) = region_offset(covered[0], &checks, region, &measured, part.cameras);
+            let (offset, unjudged, found) =
+                region_offset(covered[0], &checks, region, &measured, part.cameras);
             findings.extend(found);
             (offset, unjudged)
         }
@@ -910,9 +950,10 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
             ..
         } => (None, None),
         RegionKind::Unsegmented { reason, .. } => {
-            let would_judge = covered
-                .iter()
-                .any(|segment| segment.kind == SegmentKind::Straight && segment.checks.offset.as_ref().is_some_and(|o| o.enabled));
+            let would_judge = covered.iter().any(|segment| {
+                segment.kind == SegmentKind::Straight
+                    && segment.checks.offset.as_ref().is_some_and(|o| o.enabled)
+            });
             let unjudged = match reason {
                 UnsegReason::LowConfidence => OffsetUnjudged::LowConfidence,
                 UnsegReason::AlgorithmPending | UnsegReason::Transition => {
@@ -923,7 +964,11 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
         }
     };
 
-    let verdict = findings.iter().map(|f| f.verdict()).max().unwrap_or(Verdict::Ok);
+    let verdict = findings
+        .iter()
+        .map(|f| f.verdict())
+        .max()
+        .unwrap_or(Verdict::Ok);
     let reason = findings
         .iter()
         .filter(|f| f.verdict() == verdict && f.warning().is_none())
@@ -1003,7 +1048,11 @@ fn region_offset(
     region: &Region,
     measured: &[&FrameMetrics],
     cameras: &[String],
-) -> (Option<OffsetStat>, Option<OffsetUnjudged>, BTreeSet<Finding>) {
+) -> (
+    Option<OffsetStat>,
+    Option<OffsetUnjudged>,
+    BTreeSet<Finding>,
+) {
     match offset_series(segment, checks, region, measured, cameras) {
         Err(why) => (None, why, BTreeSet::new()),
         Ok((check, x_ref, series)) => {
@@ -1096,10 +1145,20 @@ fn spread(values: &[f64]) -> Option<f64> {
 }
 
 fn width_stats(measured: &[&FrameMetrics]) -> Option<WidthStats> {
-    let min = measured.iter().filter_map(|m| m.width_min).reduce(f64::min)?;
-    let max = measured.iter().filter_map(|m| m.width_max).reduce(f64::max)?;
+    let min = measured
+        .iter()
+        .filter_map(|m| m.width_min)
+        .reduce(f64::min)?;
+    let max = measured
+        .iter()
+        .filter_map(|m| m.width_max)
+        .reduce(f64::max)?;
     let means: Vec<f64> = measured.iter().filter_map(|m| m.width_mean).collect();
-    let mean = if means.is_empty() { (min + max) / 2.0 } else { means.iter().sum::<f64>() / means.len() as f64 };
+    let mean = if means.is_empty() {
+        (min + max) / 2.0
+    } else {
+        means.iter().sum::<f64>() / means.len() as f64
+    };
     Some(WidthStats { min, max, mean })
 }
 
@@ -1114,7 +1173,11 @@ fn region_label(region: &Region) -> String {
         } => {
             format!("第 {first_segment}–{last_segment} 段边界过渡区")
         }
-        RegionKind::Unsegmented { first_segment, last_segment, .. } if first_segment == last_segment => {
+        RegionKind::Unsegmented {
+            first_segment,
+            last_segment,
+            ..
+        } if first_segment == last_segment => {
             format!("未分段区域（第 {first_segment} 段）")
         }
         RegionKind::Unsegmented {
@@ -1211,11 +1274,16 @@ mod tests {
 
     /// seq 1..=n 三台相机全部合格。
     fn frames(n: u64) -> Vec<FrameMetrics> {
-        (1..=n).flat_map(|seq| (0..CAMS).map(move |camera| ok(camera, seq))).collect()
+        (1..=n)
+            .flat_map(|seq| (0..CAMS).map(move |camera| ok(camera, seq)))
+            .collect()
     }
 
     fn at(metrics: &mut [FrameMetrics], camera: usize, seq: u64) -> &mut FrameMetrics {
-        metrics.iter_mut().find(|m| m.camera == camera && m.seq == seq).unwrap()
+        metrics
+            .iter_mut()
+            .find(|m| m.camera == camera && m.seq == seq)
+            .unwrap()
     }
 
     /// 逐站胶宽，同时更新帧内极值与均值。
@@ -1232,15 +1300,27 @@ mod tests {
         (1..=total)
             .map(|seq| {
                 let present: Vec<bool> = (0..CAMS)
-                    .map(|camera| metrics.iter().any(|m| m.camera == camera && m.seq == seq && m.state != FrameState::Missing))
+                    .map(|camera| {
+                        metrics.iter().any(|m| {
+                            m.camera == camera && m.seq == seq && m.state != FrameState::Missing
+                        })
+                    })
                     .collect();
-                FrameGroup { seq, incomplete: present.contains(&false), present }
+                FrameGroup {
+                    seq,
+                    incomplete: present.contains(&false),
+                    present,
+                }
             })
             .collect()
     }
 
     fn region(kind: RegionKind, first_seq: u64, last_seq: u64) -> Region {
-        Region { kind, first_seq, last_seq }
+        Region {
+            kind,
+            first_seq,
+            last_seq,
+        }
     }
 
     fn run(

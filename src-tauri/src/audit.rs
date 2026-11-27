@@ -101,12 +101,22 @@ impl Event {
 
 mod part_recipe {
     use super::*;
-    pub fn serialize<S: serde::Serializer>(recipe: &Option<Arc<Recipe>>, serializer: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: serde::Serializer>(
+        recipe: &Option<Arc<Recipe>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
         recipe.as_deref().serialize(serializer)
     }
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Arc<Recipe>>, D::Error> {
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Arc<Recipe>>, D::Error> {
         Option::<serde_json::Value>::deserialize(deserializer)?
-            .map(|value| Recipe::from_snapshot(value).map(Arc::new).map_err(serde::de::Error::custom)).transpose()
+            .map(|value| {
+                Recipe::from_snapshot(value)
+                    .map(Arc::new)
+                    .map_err(serde::de::Error::custom)
+            })
+            .transpose()
     }
 }
 
@@ -114,24 +124,60 @@ mod part_table {
     use super::*;
     /// 数值按位保存，NaN、负零原样往返。d_bits 为空即有胶、无位置基准。
     #[derive(Serialize, Deserialize)]
-    enum Point { Pending, Measured { d_bits: Option<u32>, w_bits: u32 }, OutOfRange { w_bits: Option<u32> }, Gap, Invalid }
-    pub fn serialize<S: serde::Serializer>(table: &Option<Vec<PointState>>, serializer: S) -> Result<S::Ok, S::Error> {
-        table.as_ref().map(|table| table.iter().map(|point| match point {
-            PointState::Pending => Point::Pending,
-            PointState::Measured { d, w } => Point::Measured { d_bits: d.map(f32::to_bits), w_bits: w.to_bits() },
-            PointState::OutOfRange { w } => Point::OutOfRange { w_bits: w.map(f32::to_bits) },
-            PointState::Gap => Point::Gap,
-            PointState::Invalid => Point::Invalid,
-        }).collect::<Vec<_>>()).serialize(serializer)
+    enum Point {
+        Pending,
+        Measured { d_bits: Option<u32>, w_bits: u32 },
+        OutOfRange { w_bits: Option<u32> },
+        Gap,
+        Invalid,
     }
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Vec<PointState>>, D::Error> {
-        Option::<Vec<Point>>::deserialize(deserializer).map(|table| table.map(|table| table.into_iter().map(|point| match point {
-            Point::Pending => PointState::Pending,
-            Point::Measured { d_bits, w_bits } => PointState::Measured { d: d_bits.map(f32::from_bits), w: f32::from_bits(w_bits) },
-            Point::OutOfRange { w_bits } => PointState::OutOfRange { w: w_bits.map(f32::from_bits) },
-            Point::Gap => PointState::Gap,
-            Point::Invalid => PointState::Invalid,
-        }).collect()))
+    pub fn serialize<S: serde::Serializer>(
+        table: &Option<Vec<PointState>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        table
+            .as_ref()
+            .map(|table| {
+                table
+                    .iter()
+                    .map(|point| match point {
+                        PointState::Pending => Point::Pending,
+                        PointState::Measured { d, w } => Point::Measured {
+                            d_bits: d.map(f32::to_bits),
+                            w_bits: w.to_bits(),
+                        },
+                        PointState::OutOfRange { w } => Point::OutOfRange {
+                            w_bits: w.map(f32::to_bits),
+                        },
+                        PointState::Gap => Point::Gap,
+                        PointState::Invalid => Point::Invalid,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Vec<PointState>>, D::Error> {
+        Option::<Vec<Point>>::deserialize(deserializer).map(|table| {
+            table.map(|table| {
+                table
+                    .into_iter()
+                    .map(|point| match point {
+                        Point::Pending => PointState::Pending,
+                        Point::Measured { d_bits, w_bits } => PointState::Measured {
+                            d: d_bits.map(f32::from_bits),
+                            w: f32::from_bits(w_bits),
+                        },
+                        Point::OutOfRange { w_bits } => PointState::OutOfRange {
+                            w: w_bits.map(f32::from_bits),
+                        },
+                        Point::Gap => PointState::Gap,
+                        Point::Invalid => PointState::Invalid,
+                    })
+                    .collect()
+            })
+        })
     }
 }
 
@@ -451,14 +497,35 @@ fn log_recording(outcome: &RecordingOutcome) {
 
 fn recording_records(outcome: &RecordingOutcome) -> Vec<RecordingRecord> {
     let mut records = Vec::new();
-    let own = || applog::Fields { cycle_id: Some(outcome.cycle_id.clone()), ..applog::Fields::default() };
+    let own = || applog::Fields {
+        cycle_id: Some(outcome.cycle_id.clone()),
+        ..applog::Fields::default()
+    };
     if !outcome.retention_errors.is_empty() {
-        records.push(RecordingRecord { level: Some("warn"), event: "录制保留清理失败", message: format!("cycleId={}：{}", outcome.cycle_id, outcome.retention_errors.join("；")), fields: own() });
+        records.push(RecordingRecord {
+            level: Some("warn"),
+            event: "录制保留清理失败",
+            message: format!(
+                "cycleId={}：{}",
+                outcome.cycle_id,
+                outcome.retention_errors.join("；")
+            ),
+            fields: own(),
+        });
     }
-    if outcome.state == RecorderState::Off { return records; }
-    let failed = !outcome.errors.is_empty() || matches!(outcome.state, RecorderState::Failed | RecorderState::Incomplete)
+    if outcome.state == RecorderState::Off {
+        return records;
+    }
+    let failed = !outcome.errors.is_empty()
+        || matches!(
+            outcome.state,
+            RecorderState::Failed | RecorderState::Incomplete
+        )
         || (outcome.available && outcome.files.is_empty());
-    let directory = outcome.directory.as_ref().map(|path| path.display().to_string());
+    let directory = outcome
+        .directory
+        .as_ref()
+        .map(|path| path.display().to_string());
     let fields = applog::Fields {
         stage: Some("recording".into()),
         data: Some(serde_json::json!({
@@ -468,15 +535,38 @@ fn recording_records(outcome: &RecordingOutcome) -> Vec<RecordingRecord> {
         ..own()
     };
     records.push(if failed {
-        let message = format!("cycleId={}：状态 {:?}，目录 {}，实际原图 {} 张，可用={}，{}；原检测结论不变", outcome.cycle_id, outcome.state,
-            directory.as_deref().unwrap_or("无目录"), outcome.files.len(), outcome.available, outcome.errors.join("；"));
-        RecordingRecord { level: Some("err"), event: "原图录制未完成", message, fields }
+        let message = format!(
+            "cycleId={}：状态 {:?}，目录 {}，实际原图 {} 张，可用={}，{}；原检测结论不变",
+            outcome.cycle_id,
+            outcome.state,
+            directory.as_deref().unwrap_or("无目录"),
+            outcome.files.len(),
+            outcome.available,
+            outcome.errors.join("；")
+        );
+        RecordingRecord {
+            level: Some("err"),
+            event: "原图录制未完成",
+            message,
+            fields,
+        }
     } else {
         let message = match outcome.state {
-            RecorderState::NotRetained => format!("cycleId={}：按录制策略不保留本件原图", outcome.cycle_id),
-            _ => format!("cycleId={}：{} 张原图已核验落盘", outcome.cycle_id, outcome.files.len()),
+            RecorderState::NotRetained => {
+                format!("cycleId={}：按录制策略不保留本件原图", outcome.cycle_id)
+            }
+            _ => format!(
+                "cycleId={}：{} 张原图已核验落盘",
+                outcome.cycle_id,
+                outcome.files.len()
+            ),
         };
-        RecordingRecord { level: None, event: "原图录制完成", message, fields }
+        RecordingRecord {
+            level: None,
+            event: "原图录制完成",
+            message,
+            fields,
+        }
     });
     records
 }
@@ -494,7 +584,11 @@ trait Sink {
     fn delivery(&mut self, cycle: &str, delivery: &PlcDelivery) -> Result<bool, String>;
     fn submission_timing(&mut self, cycle: &str, drain_ms: u64) -> Result<bool, String>;
     /// 原图引用，按 (camera, seq) 一批写入
-    fn frame_files(&mut self, cycle: &str, files: &BTreeMap<FrameKey, String>) -> Result<bool, String>;
+    fn frame_files(
+        &mut self,
+        cycle: &str,
+        files: &BTreeMap<FrameKey, String>,
+    ) -> Result<bool, String>;
     fn recording(&mut self, cycle: &str, evidence: &RecordingEvidence) -> Result<bool, String>;
 }
 
@@ -519,32 +613,57 @@ impl Sink for AppSink {
             .history_cycle_deleted(cycle)
     }
     fn find(&mut self, cycle: &str) -> Result<Option<PartDetail>, String> {
-        self.0.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.detail_by_cycle(cycle)
+        self.0
+            .try_state::<Store>()
+            .ok_or("检测记录数据库尚未初始化")?
+            .detail_by_cycle(cycle)
     }
 
     fn insert(&mut self, part: &RecordedPart) -> Result<InsertResult, String> {
-        let store = self.0.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?;
+        let store = self
+            .0
+            .try_state::<Store>()
+            .ok_or("检测记录数据库尚未初始化")?;
         insert_store(&store, part)
     }
 
     fn delivery(&mut self, cycle: &str, delivery: &PlcDelivery) -> Result<bool, String> {
-        self.0.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.update_delivery(cycle, delivery)
+        self.0
+            .try_state::<Store>()
+            .ok_or("检测记录数据库尚未初始化")?
+            .update_delivery(cycle, delivery)
     }
 
     fn matches_record(&mut self, part: &RecordedPart) -> Result<bool, String> {
-        self.0.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.matches_record(&part.borrowed())
+        self.0
+            .try_state::<Store>()
+            .ok_or("检测记录数据库尚未初始化")?
+            .matches_record(&part.borrowed())
     }
 
     fn submission_timing(&mut self, cycle: &str, drain_ms: u64) -> Result<bool, String> {
-        self.0.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.update_submission_timing(cycle, drain_ms)
+        self.0
+            .try_state::<Store>()
+            .ok_or("检测记录数据库尚未初始化")?
+            .update_submission_timing(cycle, drain_ms)
     }
 
-    fn frame_files(&mut self, cycle: &str, files: &BTreeMap<FrameKey, String>) -> Result<bool, String> {
-        self.0.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.update_frame_raw_files(cycle, files)
+    fn frame_files(
+        &mut self,
+        cycle: &str,
+        files: &BTreeMap<FrameKey, String>,
+    ) -> Result<bool, String> {
+        self.0
+            .try_state::<Store>()
+            .ok_or("检测记录数据库尚未初始化")?
+            .update_frame_raw_files(cycle, files)
     }
 
     fn recording(&mut self, cycle: &str, evidence: &RecordingEvidence) -> Result<bool, String> {
-        self.0.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.update_recording(cycle, evidence)
+        self.0
+            .try_state::<Store>()
+            .ok_or("检测记录数据库尚未初始化")?
+            .update_recording(cycle, evidence)
     }
 }
 
@@ -552,11 +671,27 @@ impl Sink for AppSink {
 enum Notice {
     Inserted(i64),
     Updated(String),
-    Log { level: &'static str, event: &'static str, cycle: String, message: String },
+    Log {
+        level: &'static str,
+        event: &'static str,
+        cycle: String,
+        message: String,
+    },
 }
 
-fn log(notices: &mut Vec<Notice>, level: &'static str, event: &'static str, cycle: &str, message: impl AsRef<str>) {
-    notices.push(Notice::Log { level, event, cycle: cycle.into(), message: format!("cycleId={cycle}：{}；原检测结论不变", message.as_ref()) });
+fn log(
+    notices: &mut Vec<Notice>,
+    level: &'static str,
+    event: &'static str,
+    cycle: &str,
+    message: impl AsRef<str>,
+) {
+    notices.push(Notice::Log {
+        level,
+        event,
+        cycle: cycle.into(),
+        message: format!("cycleId={cycle}：{}；原检测结论不变", message.as_ref()),
+    });
 }
 
 #[derive(Default)]
@@ -605,7 +740,12 @@ struct Coordinator {
 impl Coordinator {
     fn new(pending_limit: usize, cache_limit: usize) -> Self {
         assert!(pending_limit > 0);
-        Self { entries: HashMap::new(), order: VecDeque::new(), pending_limit, cache_limit }
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            pending_limit,
+            cache_limit,
+        }
     }
 
     /// 写入失败、到了退避时间的件再写一次。
@@ -656,7 +796,13 @@ impl Coordinator {
         let cycle = event.cycle_id().to_string();
         let mut notices = Vec::new();
         if cycle.is_empty() || cycle.len() > 128 {
-            log(&mut notices, "err", "追溯身份无效", &cycle, "cycleId 长度必须为 1–128");
+            log(
+                &mut notices,
+                "err",
+                "追溯身份无效",
+                &cycle,
+                "cycleId 长度必须为 1–128",
+            );
             return notices;
         }
         let mut entry = match self.entries.remove(&cycle) {
@@ -664,7 +810,9 @@ impl Coordinator {
             None => {
                 let mut entry = CycleEntry::default();
                 match sink.find(&cycle) {
-                    Ok(Some(existing)) => restore_existing(&cycle, &mut entry, existing, &mut notices),
+                    Ok(Some(existing)) => {
+                        restore_existing(&cycle, &mut entry, existing, &mut notices)
+                    }
                     Ok(None) if !matches!(event, Event::Insert(_)) => match sink.deleted(&cycle) {
                         Ok(true) => {
                             log(
@@ -700,11 +848,15 @@ impl Coordinator {
                     false
                 }
             }
-            Event::Delivery(_, delivery) => merge_delivery(&cycle, &mut entry.delivery, delivery, &mut notices),
+            Event::Delivery(_, delivery) => {
+                merge_delivery(&cycle, &mut entry.delivery, delivery, &mut notices)
+            }
             Event::Submission(_, delivery, drain_ms) => {
-                let delivery_changed = merge_delivery(&cycle, &mut entry.delivery, delivery, &mut notices);
-                merge_timing(&cycle, &mut entry.drain_ms, drain_ms, &mut notices) || delivery_changed
-            },
+                let delivery_changed =
+                    merge_delivery(&cycle, &mut entry.delivery, delivery, &mut notices);
+                merge_timing(&cycle, &mut entry.drain_ms, drain_ms, &mut notices)
+                    || delivery_changed
+            }
             Event::Recording(outcome) => merge_recording(&cycle, &mut entry, outcome, &mut notices),
         };
         if changed {
@@ -728,9 +880,24 @@ impl Coordinator {
         for cycle in expired {
             self.evict(&cycle, "等待检测记录或磁盘恢复已超过 30 分钟", notices);
         }
-        while self.entries.values().filter(|entry| entry.pending()).count() > self.pending_limit {
-            let cycle = self.order.iter().find(|cycle| self.entries[*cycle].pending()).unwrap().clone();
-            self.evict(&cycle, &format!("待写 cycle 数量达到上限 {}", self.pending_limit), notices);
+        while self
+            .entries
+            .values()
+            .filter(|entry| entry.pending())
+            .count()
+            > self.pending_limit
+        {
+            let cycle = self
+                .order
+                .iter()
+                .find(|cycle| self.entries[*cycle].pending())
+                .unwrap()
+                .clone();
+            self.evict(
+                &cycle,
+                &format!("待写 cycle 数量达到上限 {}", self.pending_limit),
+                notices,
+            );
         }
         while self
             .entries
@@ -753,8 +920,16 @@ impl Coordinator {
         let entry = self.entries.remove(cycle).unwrap();
         self.order.retain(|key| key != cycle);
         if entry.pending() {
-            let verdict =
-                entry.record.as_ref().map(|part| format!("，待入库原判定 {:?}：{}", part.judgement.verdict, part.judgement.reason)).unwrap_or_default();
+            let verdict = entry
+                .record
+                .as_ref()
+                .map(|part| {
+                    format!(
+                        "，待入库原判定 {:?}：{}",
+                        part.judgement.verdict, part.judgement.reason
+                    )
+                })
+                .unwrap_or_default();
             log(
                 notices,
                 "err",
@@ -771,19 +946,40 @@ impl Coordinator {
     }
 }
 
-fn merge_delivery(cycle: &str, current: &mut Option<PlcDelivery>, mut incoming: PlcDelivery, notices: &mut Vec<Notice>) -> bool {
+fn merge_delivery(
+    cycle: &str,
+    current: &mut Option<PlcDelivery>,
+    mut incoming: PlcDelivery,
+    notices: &mut Vec<Notice>,
+) -> bool {
     if let Some(previous) = current.as_ref() {
-        if previous.state == PlcDeliveryState::Acknowledged && incoming.state != PlcDeliveryState::Acknowledged {
+        if previous.state == PlcDeliveryState::Acknowledged
+            && incoming.state != PlcDeliveryState::Acknowledged
+        {
             return false;
         }
-        if (previous.state == PlcDeliveryState::NotRequired) != (incoming.state == PlcDeliveryState::NotRequired) {
-            log(notices, "err", "PLC 交付身份冲突", cycle, "无需交付与已有 PLC 事务不能相互替换");
+        if (previous.state == PlcDeliveryState::NotRequired)
+            != (incoming.state == PlcDeliveryState::NotRequired)
+        {
+            log(
+                notices,
+                "err",
+                "PLC 交付身份冲突",
+                cycle,
+                "无需交付与已有 PLC 事务不能相互替换",
+            );
             return false;
         }
-        if matches!(previous.state, PlcDeliveryState::Submitted | PlcDeliveryState::Failed) && incoming.state == PlcDeliveryState::Pending {
+        if matches!(
+            previous.state,
+            PlcDeliveryState::Submitted | PlcDeliveryState::Failed
+        ) && incoming.state == PlcDeliveryState::Pending
+        {
             return false;
         }
-        if incoming.state == PlcDeliveryState::Acknowledged && previous.state != PlcDeliveryState::Acknowledged {
+        if incoming.state == PlcDeliveryState::Acknowledged
+            && previous.state != PlcDeliveryState::Acknowledged
+        {
             incoming.updated_at = incoming.updated_at.max(previous.updated_at);
         } else if incoming.updated_at < previous.updated_at {
             return false;
@@ -796,15 +992,31 @@ fn merge_delivery(cycle: &str, current: &mut Option<PlcDelivery>, mut incoming: 
     true
 }
 
-fn merge_timing(cycle: &str, current: &mut Option<u64>, incoming: Option<u64>, notices: &mut Vec<Notice>) -> bool {
-    let Some(incoming) = incoming else { return false };
+fn merge_timing(
+    cycle: &str,
+    current: &mut Option<u64>,
+    incoming: Option<u64>,
+    notices: &mut Vec<Notice>,
+) -> bool {
+    let Some(incoming) = incoming else {
+        return false;
+    };
     match current {
         Some(previous) if *previous != incoming => {
-            log(notices, "err", "PLC 提交耗时身份冲突", cycle, "已有不同的实际提交耗时，保留首次观测");
+            log(
+                notices,
+                "err",
+                "PLC 提交耗时身份冲突",
+                cycle,
+                "已有不同的实际提交耗时，保留首次观测",
+            );
             false
-        },
+        }
         Some(_) => false,
-        None => { *current = Some(incoming); true },
+        None => {
+            *current = Some(incoming);
+            true
+        }
     }
 }
 
@@ -817,22 +1029,53 @@ fn raw_file(file: RecordedRawFile) -> Result<(FrameKey, String), String> {
             key.camera, key.seq
         ));
     }
-    if file.file.is_empty() || file.file.contains(['\\', ':', '\0']) || file.file.split('/').any(|part| matches!(part, "" | "." | "..")) {
+    if file.file.is_empty()
+        || file.file.contains(['\\', ':', '\0'])
+        || file
+            .file
+            .split('/')
+            .any(|part| matches!(part, "" | "." | ".."))
+    {
         return Err("原图文件不是录制根目录内的相对路径".into());
     }
     Ok((key, file.file))
 }
 
 /// 一帧的原图引用：只增不换，原记录没有这一帧时不归属。
-fn merge_frame_file(cycle: &str, entry: &mut CycleEntry, key: FrameKey, incoming: String, notices: &mut Vec<Notice>) -> bool {
-    if entry.frame_keys.as_ref().is_some_and(|keys| !keys.contains(&key)) {
-        log(notices, "err", "原图归属失败", cycle, format!("原记录没有相机 {} 第 {} 帧", key.camera, key.seq));
+fn merge_frame_file(
+    cycle: &str,
+    entry: &mut CycleEntry,
+    key: FrameKey,
+    incoming: String,
+    notices: &mut Vec<Notice>,
+) -> bool {
+    if entry
+        .frame_keys
+        .as_ref()
+        .is_some_and(|keys| !keys.contains(&key))
+    {
+        log(
+            notices,
+            "err",
+            "原图归属失败",
+            cycle,
+            format!("原记录没有相机 {} 第 {} 帧", key.camera, key.seq),
+        );
         return false;
     }
     match entry.frame_files.get(&key) {
         Some(previous) if *previous == incoming => false,
         Some(_) => {
-            log(notices, "err", "原图身份冲突", cycle, format!("相机 {} 第 {} 帧已有关联文件，保留首次原图证据", key.camera, key.seq));
+            log(
+                notices,
+                "err",
+                "原图身份冲突",
+                cycle,
+                format!(
+                    "相机 {} 第 {} 帧已有关联文件，保留首次原图证据",
+                    key.camera, key.seq
+                ),
+            );
             false
         }
         None => {
@@ -842,7 +1085,12 @@ fn merge_frame_file(cycle: &str, entry: &mut CycleEntry, key: FrameKey, incoming
     }
 }
 
-fn merge_recording(cycle: &str, entry: &mut CycleEntry, outcome: RecordingOutcome, notices: &mut Vec<Notice>) -> bool {
+fn merge_recording(
+    cycle: &str,
+    entry: &mut CycleEntry,
+    outcome: RecordingOutcome,
+    notices: &mut Vec<Notice>,
+) -> bool {
     if entry.last_recording.as_ref() == Some(&outcome) {
         return false;
     }
@@ -866,21 +1114,47 @@ fn merge_recording(cycle: &str, entry: &mut CycleEntry, outcome: RecordingOutcom
         RecorderState::Incomplete => RecordingState::Incomplete,
         RecorderState::Failed => RecordingState::Failed,
     };
-    let available = state == RecordingState::Complete && outcome.available && had_files && errors.is_empty() && outcome.directory.is_some();
+    let available = state == RecordingState::Complete
+        && outcome.available
+        && had_files
+        && errors.is_empty()
+        && outcome.directory.is_some();
     if state == RecordingState::Complete && !available {
-        state = if had_files { RecordingState::Incomplete } else { RecordingState::Failed };
+        state = if had_files {
+            RecordingState::Incomplete
+        } else {
+            RecordingState::Failed
+        };
         errors.push("录制结果缺少完整落盘证据，原图不可用".into());
     }
-    let evidence = RecordingEvidence { state, available, directory: outcome.directory.map(|path| path.to_string_lossy().into_owned()), errors };
+    let evidence = RecordingEvidence {
+        state,
+        available,
+        directory: outcome
+            .directory
+            .map(|path| path.to_string_lossy().into_owned()),
+        errors,
+    };
     changed |= merge_evidence(cycle, &mut entry.recording, evidence, notices);
     changed
 }
 
-fn merge_evidence(cycle: &str, current: &mut Option<RecordingEvidence>, evidence: RecordingEvidence, notices: &mut Vec<Notice>) -> bool {
+fn merge_evidence(
+    cycle: &str,
+    current: &mut Option<RecordingEvidence>,
+    evidence: RecordingEvidence,
+    notices: &mut Vec<Notice>,
+) -> bool {
     match current.as_ref() {
         Some(previous) if previous == &evidence => false,
         Some(previous) if previous.state != RecordingState::Pending => {
-            log(notices, "err", "录制收尾证据冲突", cycle, "保留首次收尾状态、可用性和错误，不替换为另一份结果");
+            log(
+                notices,
+                "err",
+                "录制收尾证据冲突",
+                cycle,
+                "保留首次收尾状态、可用性和错误，不替换为另一份结果",
+            );
             false
         }
         _ => {
@@ -890,7 +1164,12 @@ fn merge_evidence(cycle: &str, current: &mut Option<RecordingEvidence>, evidence
     }
 }
 
-fn restore_existing(cycle: &str, entry: &mut CycleEntry, existing: PartDetail, notices: &mut Vec<Notice>) {
+fn restore_existing(
+    cycle: &str,
+    entry: &mut CycleEntry,
+    existing: PartDetail,
+    notices: &mut Vec<Notice>,
+) {
     let frames = existing.burst.map(|burst| burst.frames).unwrap_or_default();
     restore(
         cycle,
@@ -918,7 +1197,15 @@ fn restore(
     entry.saved_drain_ms = drain_ms;
     merge_timing(cycle, &mut entry.drain_ms, pending_timing, notices);
     entry.record = None;
-    entry.frame_keys = Some(frames.iter().map(|frame| FrameKey { camera: frame.camera, seq: frame.seq }).collect());
+    entry.frame_keys = Some(
+        frames
+            .iter()
+            .map(|frame| FrameKey {
+                camera: frame.camera,
+                seq: frame.seq,
+            })
+            .collect(),
+    );
     let pending_delivery = entry.delivery.take();
     entry.saved_delivery = Some(delivery.clone());
     entry.delivery = Some(delivery);
@@ -932,8 +1219,19 @@ fn restore(
         merge_evidence(cycle, &mut entry.recording, recording, notices);
     }
     let pending = std::mem::take(&mut entry.frame_files);
-    entry.saved_frame_files = frames.into_iter()
-        .filter_map(|frame| frame.raw_file.map(|file| (FrameKey { camera: frame.camera, seq: frame.seq }, file)))
+    entry.saved_frame_files = frames
+        .into_iter()
+        .filter_map(|frame| {
+            frame.raw_file.map(|file| {
+                (
+                    FrameKey {
+                        camera: frame.camera,
+                        seq: frame.seq,
+                    },
+                    file,
+                )
+            })
+        })
         .collect();
     entry.frame_files = entry.saved_frame_files.clone();
     for (key, file) in pending {
@@ -941,7 +1239,13 @@ fn restore(
     }
 }
 
-fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, notices: &mut Vec<Notice>) {
+fn flush(
+    cycle: &str,
+    entry: &mut CycleEntry,
+    sink: &mut impl Sink,
+    now: i64,
+    notices: &mut Vec<Notice>,
+) {
     if now < entry.retry_at {
         return;
     }
@@ -963,7 +1267,13 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, no
             }
             Ok(InsertResult::Existing(existing)) => {
                 restore_existing(cycle, entry, *existing, notices);
-                log(notices, "info", "重复追溯入库", cycle, "数据库已有相同 cycleId，保留原记录及原图证据");
+                log(
+                    notices,
+                    "info",
+                    "重复追溯入库",
+                    cycle,
+                    "数据库已有相同 cycleId，保留原记录及原图证据",
+                );
             }
             Err(error) => {
                 let verdict = part.judgement.verdict;
@@ -973,7 +1283,10 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, no
                     "err",
                     "追溯入库失败",
                     cycle,
-                    format!("{error}；保留待写原判定 {verdict:?}，写入失败 {} 次，将退避重试", entry.failures),
+                    format!(
+                        "{error}；保留待写原判定 {verdict:?}，写入失败 {} 次，将退避重试",
+                        entry.failures
+                    ),
                 );
                 return;
             }
@@ -991,7 +1304,13 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, no
                 }
                 Ok(false) if entry.inserted => {
                     failed = true;
-                    log(notices, "err", "PLC 交付追溯未写入", cycle, "原记录不存在或数据库已有更新的交付状态，保留待写交付事件");
+                    log(
+                        notices,
+                        "err",
+                        "PLC 交付追溯未写入",
+                        cycle,
+                        "原记录不存在或数据库已有更新的交付状态，保留待写交付事件",
+                    );
                 }
                 Ok(false) => (),
                 Err(error) => {
@@ -1004,14 +1323,31 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, no
     if entry.drain_ms != entry.saved_drain_ms {
         if let Some(drain_ms) = entry.drain_ms {
             match sink.submission_timing(cycle, drain_ms) {
-                Ok(true) => { entry.saved_drain_ms = Some(drain_ms); changed = true; },
-                Ok(false) if entry.inserted => { failed = true; log(notices, "err", "PLC 提交耗时未写入", cycle, "原记录不存在，保留实际耗时事件"); },
+                Ok(true) => {
+                    entry.saved_drain_ms = Some(drain_ms);
+                    changed = true;
+                }
+                Ok(false) if entry.inserted => {
+                    failed = true;
+                    log(
+                        notices,
+                        "err",
+                        "PLC 提交耗时未写入",
+                        cycle,
+                        "原记录不存在，保留实际耗时事件",
+                    );
+                }
                 Ok(false) => (),
-                Err(error) => { failed = true; log(notices, "err", "PLC 提交耗时写入失败", cycle, error); },
+                Err(error) => {
+                    failed = true;
+                    log(notices, "err", "PLC 提交耗时写入失败", cycle, error);
+                }
             }
         }
     }
-    let frame_files: BTreeMap<FrameKey, String> = entry.frame_files.iter()
+    let frame_files: BTreeMap<FrameKey, String> = entry
+        .frame_files
+        .iter()
         .filter(|(key, file)| entry.saved_frame_files.get(*key) != Some(*file))
         .map(|(key, file)| (*key, file.clone()))
         .collect();
@@ -1024,7 +1360,16 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, no
             }
             Ok(false) if entry.inserted => {
                 failed = true;
-                log(notices, "err", "原图追溯未写入", cycle, format!("原记录或其中的相机帧不存在，保留待写的 {} 帧原图引用", frame_files.len()));
+                log(
+                    notices,
+                    "err",
+                    "原图追溯未写入",
+                    cycle,
+                    format!(
+                        "原记录或其中的相机帧不存在，保留待写的 {} 帧原图引用",
+                        frame_files.len()
+                    ),
+                );
             }
             Ok(false) => (),
             Err(error) => {
@@ -1044,7 +1389,13 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, no
                     }
                     Ok(false) if entry.inserted => {
                         failed = true;
-                        log(notices, "err", "录制状态未写入", cycle, "原检测记录不存在，保留待写录制证据");
+                        log(
+                            notices,
+                            "err",
+                            "录制状态未写入",
+                            cycle,
+                            "原检测记录不存在，保留待写录制证据",
+                        );
                     }
                     Ok(false) => (),
                     Err(error) => {
@@ -1150,8 +1501,16 @@ fn immutable_record(part: &RecordedPart) -> Result<serde_json::Value, String> {
     fields.remove("delivery");
     fields.remove("drain_ms");
     // 原图引用是事后补的证据；其余帧、区域、标记都属于不可变检测内容
-    if let Some(frames) = fields.get_mut("burst").and_then(|burst| burst.get_mut("frames")).and_then(serde_json::Value::as_array_mut) {
-        for frame in frames { if let Some(fields) = frame.as_object_mut() { fields.remove("rawFile"); } }
+    if let Some(frames) = fields
+        .get_mut("burst")
+        .and_then(|burst| burst.get_mut("frames"))
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for frame in frames {
+            if let Some(fields) = frame.as_object_mut() {
+                fields.remove("rawFile");
+            }
+        }
     }
     Ok(value)
 }
@@ -1282,7 +1641,11 @@ fn apply_legacy(
 
 fn writer(audit: Audit, rx: Receiver<Vec<Event>>, mut sink: impl Sink) {
     struct Running(Arc<AtomicBool>);
-    impl Drop for Running { fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); } }
+    impl Drop for Running {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
     let _running = Running(audit.running.clone());
     let mut last_retry = Instant::now();
     loop {

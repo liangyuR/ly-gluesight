@@ -1,6 +1,6 @@
-use std::time::Duration;
 use crate::plan::{PathSegment, SegmentKind};
 use crate::segmentation::synthetic;
+use std::time::Duration;
 
 /// 段配方离线脉冲的默认频率（Hz）：规格 §0 按视野选 10–25 Hz。
 pub const SIM_HZ: f64 = 20.0;
@@ -59,12 +59,23 @@ impl PulseProfile {
     pub fn pulses(&self, lost: &[(usize, u64)]) -> Vec<Pulse> {
         let mut seq = 0;
         let mut pulses = Vec::new();
-        for (segment, (&(kind, _), &count)) in self.segments.iter().zip(&self.counts()).enumerate() {
+        for (segment, (&(kind, _), &count)) in self.segments.iter().zip(&self.counts()).enumerate()
+        {
             for position in 0..count {
                 seq += 1;
                 let progress = ((position as f64 + 0.5) / count as f64) as f32;
-                let lost = lost.iter().filter(|&&(_, s)| s == seq).map(|&(camera, _)| camera).collect();
-                pulses.push(Pulse { seq, segment, kind, progress, lost });
+                let lost = lost
+                    .iter()
+                    .filter(|&&(_, s)| s == seq)
+                    .map(|&(camera, _)| camera)
+                    .collect();
+                pulses.push(Pulse {
+                    seq,
+                    segment,
+                    kind,
+                    progress,
+                    lost,
+                });
             }
         }
         pulses
@@ -73,14 +84,33 @@ impl PulseProfile {
 
 /// 段配方的名义剖面（不含波动）：各段 N_exp；有段待标定时按段长 × 频率 / 速度估算（没有段长按类型取默认帧数），
 /// 已有整件 ΣN_exp（整件标定）时把待标定的段按估算比例缩放，使合计等于 ΣN_exp，按比例分段的边界与正常件对得上。
-pub fn nominal_frames(segments: &[PathSegment], expected_total: Option<u32>, hz: f64) -> Vec<(SegmentKind, u32)> {
-    let estimate = |segment: &PathSegment| segment.length_mm.map_or(match segment.kind {
-        SegmentKind::Straight => DEFAULT_STRAIGHT_FRAMES,
-        SegmentKind::Corner => DEFAULT_CORNER_FRAMES,
-    }, |length| (length / SIM_SPEED_MM_S * hz).round().max(1.0) as u32);
-    let mut frames: Vec<(SegmentKind, u32)> = segments.iter().map(|s| (s.kind, s.expected_frames.unwrap_or_else(|| estimate(s)))).collect();
-    let pending: Vec<usize> = segments.iter().enumerate().filter(|(_, s)| s.expected_frames.is_none()).map(|(i, _)| i).collect();
-    let Some(total) = expected_total.filter(|_| !pending.is_empty()) else { return frames };
+pub fn nominal_frames(
+    segments: &[PathSegment],
+    expected_total: Option<u32>,
+    hz: f64,
+) -> Vec<(SegmentKind, u32)> {
+    let estimate = |segment: &PathSegment| {
+        segment.length_mm.map_or(
+            match segment.kind {
+                SegmentKind::Straight => DEFAULT_STRAIGHT_FRAMES,
+                SegmentKind::Corner => DEFAULT_CORNER_FRAMES,
+            },
+            |length| (length / SIM_SPEED_MM_S * hz).round().max(1.0) as u32,
+        )
+    };
+    let mut frames: Vec<(SegmentKind, u32)> = segments
+        .iter()
+        .map(|s| (s.kind, s.expected_frames.unwrap_or_else(|| estimate(s))))
+        .collect();
+    let pending: Vec<usize> = segments
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.expected_frames.is_none())
+        .map(|(i, _)| i)
+        .collect();
+    let Some(total) = expected_total.filter(|_| !pending.is_empty()) else {
+        return frames;
+    };
     let known: u32 = segments.iter().filter_map(|s| s.expected_frames).sum();
     let budget = total.saturating_sub(known).max(pending.len() as u32);
     let estimated: u32 = pending.iter().map(|&i| frames[i].1).sum();
@@ -90,7 +120,8 @@ pub fn nominal_frames(segments: &[PathSegment], expected_total: Option<u32>, hz:
             budget - assigned
         } else {
             let left = (pending.len() - n - 1) as u32;
-            ((u64::from(frames[i].1) * u64::from(budget) / u64::from(estimated.max(1))) as u32).clamp(1, budget - assigned - left)
+            ((u64::from(frames[i].1) * u64::from(budget) / u64::from(estimated.max(1))) as u32)
+                .clamp(1, budget - assigned - left)
         };
         frames[i].1 = share;
         assigned += share;
@@ -105,9 +136,15 @@ pub fn locate(frames: &[(SegmentKind, u32)], seq: u64) -> Option<(usize, Segment
         let count = u64::from(count.max(1));
         if seq <= start + count {
             let position = seq.saturating_sub(start + 1);
-            return Some((segment, kind, ((position as f64 + 0.5) / count as f64) as f32));
+            return Some((
+                segment,
+                kind,
+                ((position as f64 + 0.5) / count as f64) as f32,
+            ));
         }
         start += count;
     }
-    frames.last().map(|&(kind, _)| (frames.len() - 1, kind, 1.0))
+    frames
+        .last()
+        .map(|&(kind, _)| (frames.len() - 1, kind, 1.0))
 }

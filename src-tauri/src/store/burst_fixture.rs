@@ -47,7 +47,11 @@ pub(crate) fn frames(groups: u64, missing: &[(usize, u64)]) -> Vec<FrameRecord> 
             FrameRecord {
                 camera,
                 seq,
-                status: if lost { FrameState::Missing } else { FrameState::Measured },
+                status: if lost {
+                    FrameState::Missing
+                } else {
+                    FrameState::Measured
+                },
                 frame_counter: (!lost).then_some(u64::MAX - 100 + seq),
                 trigger_counter: (!lost).then_some(seq),
                 region: None,
@@ -60,15 +64,28 @@ pub(crate) fn frames(groups: u64, missing: &[(usize, u64)]) -> Vec<FrameRecord> 
 
 /// 按配方判一件：区域缺省为覆盖全部段的未分段区域；各相机帧数、丢帧告警、帧所属区域按帧记录算出。
 /// 返回入库用的结论摘要（verdict / 结果码 / 原因与区域判定相同）和段配方记录。
-pub(crate) fn record(recipe: &Recipe, mut frames: Vec<FrameRecord>, regions: Option<Vec<Region>>, device_triggers: Option<u32>) -> (Judgement, BurstRecord) {
+pub(crate) fn record(
+    recipe: &Recipe,
+    mut frames: Vec<FrameRecord>,
+    regions: Option<Vec<Region>>,
+    device_triggers: Option<u32>,
+) -> (Judgement, BurstRecord) {
     let cameras = recipe.plan_cameras();
     let total = frames.iter().map(|frame| frame.seq).max().unwrap_or(0);
     let groups: Vec<FrameGroup> = (1..=total)
         .map(|seq| {
             let present: Vec<bool> = (0..cameras.len())
-                .map(|camera| frames.iter().any(|f| (f.camera, f.seq) == (camera, seq) && f.status != FrameState::Missing))
+                .map(|camera| {
+                    frames.iter().any(|f| {
+                        (f.camera, f.seq) == (camera, seq) && f.status != FrameState::Missing
+                    })
+                })
                 .collect();
-            FrameGroup { seq, incomplete: present.contains(&false), present }
+            FrameGroup {
+                seq,
+                incomplete: present.contains(&false),
+                present,
+            }
         })
         .collect();
     let regions = regions.unwrap_or_else(|| {
@@ -82,9 +99,17 @@ pub(crate) fn record(recipe: &Recipe, mut frames: Vec<FrameRecord>, regions: Opt
         )
     });
     let camera_frames: Vec<u32> = (0..cameras.len())
-        .map(|camera| frames.iter().filter(|f| f.camera == camera && f.status != FrameState::Missing).count() as u32)
+        .map(|camera| {
+            frames
+                .iter()
+                .filter(|f| f.camera == camera && f.status != FrameState::Missing)
+                .count() as u32
+        })
         .collect();
-    let metrics: Vec<FrameMetrics> = frames.iter().filter_map(|frame| frame.metrics.clone()).collect();
+    let metrics: Vec<FrameMetrics> = frames
+        .iter()
+        .filter_map(|frame| frame.metrics.clone())
+        .collect();
     let alarms = loss_alarms(&camera_frames);
     let judgement = burst_judge::judge(
         &recipe.path_segments,
@@ -97,7 +122,9 @@ pub(crate) fn record(recipe: &Recipe, mut frames: Vec<FrameRecord>, regions: Opt
         PassRules::NONE,
     );
     for frame in &mut frames {
-        frame.region = regions.iter().position(|region| (region.first_seq..=region.last_seq).contains(&frame.seq));
+        frame.region = regions
+            .iter()
+            .position(|region| (region.first_seq..=region.last_seq).contains(&frame.seq));
     }
     let summary = Judgement {
         verdict: judgement.verdict,
