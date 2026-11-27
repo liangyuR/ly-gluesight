@@ -7,6 +7,8 @@ import { historyApi } from "../src/features/history/api";
 import { workspaceApi } from "../src/features/workspace/api";
 import { burstImageApi } from "../src/features/workspace/burstImages";
 import { useWorkspace } from "../src/features/workspace/context";
+import { scheduleFrameRead } from "../src/features/workspace/previewCache";
+import * as desktop from "../src/lib/desktop";
 import { burstJudgement, burstPartDetail, burstWorkspaceView, frameMetrics, workspaceState } from "./fixtures";
 import type { Comparison } from "../src/features/workspace/types";
 import type { HistoryDetailState } from "../src/features/history/types";
@@ -85,6 +87,53 @@ describe("历史详情（段配方记录）", () => {
     expect(new Set(vi.mocked(workspaceApi.historyFrameView).mock.calls.map(([, , seq]) => seq))).toEqual(new Set([5]));
     expect(new Set(vi.mocked(historyApi.frameDetail).mock.calls.map(([, camera, seq]) => `${camera}:${seq}`))).toEqual(new Set(["2:5"]));
     expect(new Set(vi.mocked(workspaceApi.historyCompareOptions).mock.calls.map(([, id]) => id))).toEqual(new Set(["B"]));
+  });
+
+  it("历史详情快速翻帧 → 跳过过期逐站读取，原图队列忙时仍显示目标帧指标", async () => {
+    const actual = await vi.importActual<typeof import("../src/features/history/api")>("../src/features/history/api");
+    vi.mocked(historyApi.frameDetail).mockImplementation(actual.historyApi.frameDetail);
+    const burst = detail.burst!;
+    const detailFor = (camera: number, seq: number) => ({ ...detail, burst: { ...burst,
+      frames: burst.frames.filter(frame => frame.camera === camera && frame.seq === seq).map(frame => ({
+        ...frame, metrics: frameMetrics(camera, seq, { widthMin: seq + 10, widthMean: seq + 11, widthMax: seq + 12 }),
+      })),
+    } });
+    let finishFirst!: (value: typeof detail) => void;
+    const first = new Promise<typeof detail>(resolve => { finishFirst = resolve; });
+    const requested: number[] = [];
+    const desktopCall = desktop.desktopCall;
+    vi.spyOn(desktop, "desktopCall").mockImplementation(async (command, args) => {
+      if (command !== "history_frame_detail") return desktopCall(command, args);
+      const { camera, seq } = args as { camera: number; seq: number };
+      requested.push(seq);
+      return seq === 1 ? first : detailFor(camera, seq);
+    });
+
+    let releaseImages!: () => void;
+    const blockedImage = new Promise<void>(resolve => { releaseImages = resolve; });
+    const imageReads = [scheduleFrameRead(() => blockedImage), scheduleFrameRead(() => blockedImage)];
+    try {
+      show();
+      const user = userEvent.setup();
+      await waitFor(() => expect(requested).toEqual([1]));
+      for (const seq of [3, 4, 6]) {
+        await user.click(screen.getByRole("button", { name: `帧组 ${seq} · CAM-1 · OK` }));
+      }
+      expect(screen.getByRole("button", { name: "帧组 6 · CAM-1 · OK", pressed: true })).toBeVisible();
+      expect(requested).toEqual([1]);
+      expect(screen.getByText("正在读取逐站指标…")).toBeVisible();
+
+      await act(async () => { finishFirst(detailFor(0, 1)); });
+      expect(await screen.findByText(/CAM-1 · 帧组 6 逐站胶宽/)).toBeVisible();
+      expect(screen.getByText("16.00 / 18.00 / 17.00 mm")).toBeVisible();
+      expect(requested).toEqual([1, 6]);
+    } finally {
+      await act(async () => {
+        finishFirst(detailFor(0, 1));
+        releaseImages();
+        await Promise.all(imageReads);
+      });
+    }
   });
 
   it("对照有生产跳过区域 → 帧格、详情和区域显示跳过，切回原始记录恢复真实NG", async () => {

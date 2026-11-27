@@ -183,11 +183,17 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const [frameDetail, setFrameDetail] = useState<{ key: string; frame: FrameRecord | null; error: string } | null>(null);
   useEffect(() => {
     if (waitingForComparison || !originalShown || !summaryFrame?.metrics) return;
-    let live = true;
-    void historyApi.frameDetail(s.id, selection.camera, selection.seq)
-      .then(value => live && setFrameDetail({ key: frameKey, frame: value.burst?.frames.find(frame => frame.camera === selection.camera && frame.seq === selection.seq) ?? null, error: "" }))
-      .catch(error => live && setFrameDetail({ key: frameKey, frame: null, error: errorText(error) }));
-    return () => { live = false; };
+    const request = new AbortController();
+    void historyApi.frameDetail(s.id, selection.camera, selection.seq, request.signal)
+      .then(value => {
+        if (request.signal.aborted) return;
+        const frame = value.burst?.frames.find(frame => frame.camera === selection.camera && frame.seq === selection.seq) ?? null;
+        setFrameDetail({ key: frameKey, frame, error: "" });
+      })
+      .catch(error => {
+        if (!request.signal.aborted) setFrameDetail({ key: frameKey, frame: null, error: errorText(error) });
+      });
+    return () => request.abort();
   }, [frameKey, originalShown, burst, waitingForComparison]);
   const frame = originalShown && frameDetail?.key === frameKey ? frameDetail.frame ?? summaryFrame : summaryFrame;
   const frameLoading = originalShown && !!summaryFrame?.metrics && frameDetail?.key !== frameKey;

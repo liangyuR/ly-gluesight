@@ -1,6 +1,9 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { HistoryDeleted, HistoryPackageExported, HistoryPackageImported, HistoryPackagePreview, HistoryPage, HistoryQuery, PartDetail, RejudgeRequest, RejudgeResult } from "./types";
 import { desktopCall } from "../../lib/desktop";
+import { createFrameReadQueue } from "../../lib/frameReadQueue";
+
+const readFrameDetail = createFrameReadQueue(1);
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri()) return Promise.resolve(fallback());
@@ -15,7 +18,8 @@ export const historyApi = {
   detail: (id: number) => call<PartDetail>("history_detail", { id }, () => Promise.reject("浏览器预览模式") as never),
   overview: (id: number) => desktopCall<PartDetail>("history_overview", { id }),
   idByCycle: (cycleId: string) => desktopCall<number | null>("history_id_by_cycle", { cycleId }),
-  frameDetail: (id: number, camera: number, seq: number) => desktopCall<PartDetail>("history_frame_detail", { id, camera, seq }),
+  frameDetail: (id: number, camera: number, seq: number, signal?: AbortSignal) =>
+    readFrameDetail(() => desktopCall<PartDetail>("history_frame_detail", { id, camera, seq }), signal),
   neighbors: (id: number, query: HistoryQuery | null) => call<{ older: number | null; newer: number | null }>("history_neighbors", { id, query }, () => ({ older: null, newer: null })),
   rejudge: (request: RejudgeRequest) =>
     desktopCall<RejudgeResult>("history_rejudge", { request }),
