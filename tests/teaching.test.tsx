@@ -119,6 +119,24 @@ describe("站距", () => {
 
 describe("出胶点标定", () => {
 
+  it.each([true, false])("逐帧定向为 %s 时，按本段是否使用推算出胶点决定越界提示与试测状态", async heading => {
+    ws.data!.workspace.doc.segments![0].heading = heading ? { toleranceDeg: 5 } : null;
+    ws.data!.workspace.doc.inspect![1].segments = [{ segment: 1, corridor: [[10, 10], [80, 30]] }];
+    ws.data!.plan.cameraTeaching[1].nozzle = { point: [100, 30], calibrated: false, warning: null };
+    ws.frameDirty = heading;
+    show("/recipe/teach?camera=CAM-2&segment=1");
+    await screen.findByRole("img", { name: "CAM-2 · 1-1 · 示教帧" });
+    const trial = screen.getByRole("button", { name: "全段试测" });
+    if (heading) {
+      expect(screen.getByText(/从走廊推算的出胶点/)).toBeVisible();
+      expect(screen.getByRole("button", { name: "标出实际胶点" })).toBeDisabled();
+      expect(trial).toBeDisabled();
+    } else {
+      expect(screen.queryByText("出胶点超出示教帧")).not.toBeInTheDocument();
+      expect(trial).toBeEnabled();
+    }
+  });
+
   // 防的回归（D-SB-47）：标出胶点时点图仍按编辑点给走廊加点；出胶点写到段走廊而不是相机上，别的段用不到
   it("在图像右下边缘标出胶点 → 写入这台相机的最后一个像素中心并显示叠加，走廊不加点", async () => {
     ws.data!.workspace.doc.segments![0].heading = { toleranceDeg: 5 };

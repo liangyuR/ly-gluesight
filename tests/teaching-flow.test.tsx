@@ -174,6 +174,37 @@ it("走廊自动保存期间开启逐帧定向 → 保存结果回来开关保�
   expect(saves[1].revision).toBe(saves[0].revision + 1);
 });
 
+it("已标定的出胶点越界 → 重新标定当前相机并恢复定向试测", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate((inspect, view) => {
+    inspect.nozzle = [99.000001, 30];
+    inspect.window = null;
+    inspect.segments = [{ segment: 1, corridor: [[10, 10], [80, 30]] }];
+    view.workspace.doc.segments![0].heading = { toleranceDeg: 5 };
+    view.plan.cameraTeaching[1].segments[0].saved = true;
+  });
+  mockSite(candidate, { workspace_save_doc: savingDoc(candidate) });
+  renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  expect(screen.getByText("出胶点超出示教帧")).toBeVisible();
+  expect(screen.getByRole("button", { name: "试测当前帧" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "全段试测" })).toBeDisabled();
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(calls("workspace_save_doc")).toEqual([]);
+
+  fireEvent.click(screen.getByRole("button", { name: "重新标出胶点" }));
+  expect(screen.getByRole("button", { name: "标出胶点" })).toHaveAttribute("aria-pressed", "true");
+  expect(calls("workspace_save_doc")).toEqual([]);
+  fireEvent.pointerDown(image, { clientX: 33.2, clientY: 26.4 });
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(await screen.findByText("草稿已保存")).toBeVisible();
+  expect(screen.queryByText("出胶点超出示教帧")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "全段试测" })).toBeEnabled();
+  const saves = calls("workspace_save_doc") as { doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(saves.map(({ doc }) => doc.inspect)).toEqual([candidate.workspace.doc.inspect!.map(item => item.camera === "CAM-2"
+    ? { ...item, nozzle: [33.2, 26.4] } : item)]);
+});
+
 it("已保存的走廊有边缘越界点 → 提示并等待用户修复，再保存并恢复试测", async () => {
   const candidate = corridorCandidate((inspect, view) => {
     inspect.segments = [{ segment: 1, corridor: [[10, 10], [99.4, 45], [100, 60]] }];

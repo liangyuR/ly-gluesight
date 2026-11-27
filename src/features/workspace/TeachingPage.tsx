@@ -305,6 +305,8 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
   const update = (next: typeof t) => { if (editable && segment != null) setCorridorDraft(key, next); };
   const setPath = (corridor: [number, number][]) => update({ ...t, corridor });
   const canEdit = editable && !!frame && !choosingNow;
+  const sharedHeadingLocked = editing || frameDirty;
+  const canMarkNozzle = canEdit && !sharedHeadingLocked;
   const repairBounds = () => {
     if (!canEdit || !frameSize || !bounds?.edgeOnly) return;
     const [width, height] = frameSize;
@@ -434,13 +436,15 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
   // 出胶点、测量区间与搜索扇区都按候选配方即时算，保存前后显示不换来源
   const savedNozzle = plan.cameraTeaching.find(item => item.camera === camera)?.nozzle ?? null;
   const derivedNozzle = savedNozzle && !savedNozzle.calibrated ? savedNozzle.point : null;
-  const nozzleWarning = !params.nozzle && savedNozzle && !savedNozzle.calibrated ? savedNozzle.warning : null;
   const segmentDoc = segment == null ? undefined : doc.segments?.find(item => item.index === segment);
   const headingOn = !!segmentDoc?.heading;
   const zoneWindow = headingWindow(segmentDoc, params).window;
   const cameraScale = params.mmPerPx != null && Number.isFinite(params.mmPerPx) && params.mmPerPx > 0 ? params.mmPerPx : null;
   const nozzlePoint = params.nozzle ?? derivedNozzle;
-  const headingGuide: HeadingGuide | null = headingOn && nozzlePoint ? {
+  const outOfFrameNozzle = headingOn && frameSize && nozzlePoint && !(nozzlePoint[0] >= 0 && nozzlePoint[0] <= frameSize[0] - 1
+    && nozzlePoint[1] >= 0 && nozzlePoint[1] <= frameSize[1] - 1) ? nozzlePoint : null;
+  const nozzleWarning = !outOfFrameNozzle && !params.nozzle && derivedNozzle ? savedNozzle?.warning ?? null : null;
+  const headingGuide: HeadingGuide | null = headingOn && nozzlePoint && !outOfFrameNozzle ? {
     nozzle: nozzlePoint, calibrated: !!params.nozzle, focus: headingFocus, turned: sectorDeg != null,
     zone: zoneWindow && cameraScale ? [zoneWindow.startMm / cameraScale, (zoneWindow.startMm + zoneWindow.lengthMm) / cameraScale] : null,
     sector: frame ? searchSector(nozzlePoint, frame.size, sectorDeg) : null,
@@ -509,7 +513,7 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
                       : done ? doneHint
                         : segmentItem?.kind === "corner" ? `弯道：从出胶点起沿胶条画一小段（不超过 ${CORNER_CORRIDOR_MM} mm）`
                           : "直线段：从出胶点一侧起，沿胶条方向画整段走廊";
-  const picking = pointMode === "nozzle" && headingOn;
+  const picking = pointMode === "nozzle" && headingOn && canMarkNozzle;
   const pointing = pointMode === "edit";
   const editHint = !picking && !pointing ? "只看：点图不改走廊，可缩放、平移、拖动扇区把手；要加点或拖点请选“编辑点”。" : picking ? `点击胶嘴出胶处标定 ${camera} 的出胶点（${camera} 各段共用，自动保存到候选配方）；叠加图上的编号与右侧“逐帧定向”面板各行对应，指着面板某一行时图上只突出它。`
     : "点击图像加点（绿圈为起点），拖动点可调整；密集走廊打开“点柄”显示全部点，Ctrl＋滚轮缩放。";
@@ -530,7 +534,8 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
       { value: "edit", label: modeLabel(<MousePointer2 size={14} aria-hidden="true"/>, "编辑点：点图加点、拖动点", "编辑"), "aria-label": "编辑点" },
       { value: "brush", label: modeLabel(<Brush size={14} aria-hidden="true"/>, "沿胶路刷选", "刷选"), "aria-label": "沿胶路刷选" },
       { value: "box", label: modeLabel(<SquareDashed size={14} aria-hidden="true"/>, "矩形框选", "框选"), "aria-label": "矩形框选" },
-      ...(headingOn ? [{ value: "nozzle", label: modeLabel(<Crosshair size={14} aria-hidden="true"/>, "标出胶点", "出胶点"), "aria-label": "标出胶点" }] : []),
+      ...(headingOn ? [{ value: "nozzle", disabled: !canMarkNozzle, label: modeLabel(<Crosshair size={14} aria-hidden="true"/>,
+        sharedHeadingLocked ? "先保存走廊，再标出胶点" : "标出胶点", "出胶点"), "aria-label": "标出胶点" }] : []),
     ]} onValueChange={changeMode}/>
     {brushing && <span className="wp-inline-num" title={snapByColor ? "笔刷宽度：一半是允许偏离胶中心的距离" : "笔刷宽度：约为胶宽的 3 倍较稳"}>笔刷<NumberField aria-label="笔刷宽度" unit="px" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? brushWidth : ""} disabled={!canEdit} onValueChange={value => changeBrushWidth(value === "" ? NaN : value)}/></span>}
     {(regionMode || pointing) && <span className="wp-inline-num" title="走廊点间距：提取与按笔划生成都按它取点，转弯处保留点">点距<NumberField aria-label="走廊点间距" unit="px" min={4} max={80} step={2} value={Number.isFinite(pointSpacing) ? pointSpacing : ""} disabled={!canEdit} onValueChange={value => setPointSpacing(value === "" ? NaN : value)}/></span>}
@@ -585,7 +590,7 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
     const span = trialRangeFor(item.index);
     return span ? [{ start: Math.max(1, span.start - guard), end: Math.min(trialGroups, span.end + guard), segment: item.index }] : [];
   }) : [];
-  const trialLocked = productionBusy ? "工件正在检测，结束后再试测" : bounds ? "请先修正走廊的越界点"
+  const trialLocked = productionBusy ? "工件正在检测，结束后再试测" : bounds ? "请先修正走廊的越界点" : outOfFrameNozzle ? "请先标出图内的出胶点"
     : editing && invalid ? `走廊未完成：${invalid}` : !ready ? "正在处理，请稍候" : !hasPath ? "这一段还没有走廊" : "";
   const paramsError = cameraParamsError(params);
   const paramsDisabled = !editable;
@@ -625,6 +630,13 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
       {!choosingNow && bounds && <Alert tone="warn" title="走廊有越界点"
         action={bounds.edgeOnly ? <Button size="sm" disabled={!canEdit} onClick={repairBounds}>修正边缘点</Button> : undefined}>
         {boundsReason}。{bounds.edgeOnly ? "可将越界点移到最后一个像素中心。" : "请编辑越界点或重新绘制走廊。"}
+      </Alert>}
+      {!choosingNow && outOfFrameNozzle && <Alert tone="warn" title="出胶点超出示教帧"
+        action={<Button size="sm" disabled={!canMarkNozzle || !image} onClick={() => { setTrialSeq(null); changeMode("nozzle"); }}>
+          {params.nozzle ? "重新标出胶点" : "标出实际胶点"}
+        </Button>}>
+        {params.nozzle ? "已标定的" : "从走廊推算的"}出胶点（{outOfFrameNozzle.join("，")}）超出示教帧。{camera} 各定向段共用出胶点。
+        {sharedHeadingLocked && "走廊保存后可重新标定。"}
       </Alert>}
       {choosingNow
         ? previewViewer
@@ -669,7 +681,7 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
         </Surface>
         {segmentItem && <HeadingCard key={`heading-${camera}-${segment}`} camera={camera} params={params} derivedNozzle={derivedNozzle} nozzleWarning={nozzleWarning} segments={doc.segments ?? []} index={segment} headingSegments={[]}
           sector={{ range: headingGuide?.sector ?? null, turned: sectorDeg != null, onReset: () => setSectorDeg(null) }} disabled={checksDisabled}
-          sharedLocked={editing || frameDirty ? "走廊有未保存的修改：保存后再改出胶点与测量区间。" : ""} onFocus={setHeadingFocus}
+          sharedLocked={sharedHeadingLocked ? "走廊有未保存的修改：保存后再改出胶点与测量区间。" : ""} onFocus={setHeadingFocus}
           onSegments={changeSegments} onParams={setParams} />}
         {segmentItem && frame && <ColorCard key={`color-${camera}-${segment}-${image?.channels ?? "-"}`} camera={camera} segment={segment!} colorModel={colorModel} color={image ? image.channels === 3 : null}
           measure={measure} measureLocked={checksDisabled ? "当前不能修改" : editing ? "走廊有未保存的修改：保存后再改测量方式" : ""} blocked={colorBlocked} edited={editing} working={operation === "color"} onMeasure={changeMeasure} onFit={() => deferAction("color")} />}
