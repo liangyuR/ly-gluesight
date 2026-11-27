@@ -297,6 +297,7 @@ pub fn run() {
             plc::plc_check_address,
             plc::plc_s7_phase1_template,
             cycle::cycle_snapshot,
+            cycle::cycle_control_state,
             cycle::cycle_recipes,
             cycle::cycle_layout,
             cycle::cycle_get_settings,

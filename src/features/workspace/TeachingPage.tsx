@@ -6,8 +6,7 @@ import { ArrowRight, Brush, Camera, Crosshair, Eraser, Hand, Info, Maximize2, Mi
 import { Button, EmptyState, IconButton, NumberField, Popover, SegmentedControl, Surface } from "qing-steel";
 import { cameraApi } from "../camera/api";
 import type { CameraImaging } from "../camera/types";
-import { useCycle } from "../cycle/api";
-import { productionBusy as isProductionBusy } from "../cycle/phase";
+import { useProductionBusy } from "../cycle/control";
 import type { RecipeDoc } from "../cycle/types";
 import type { MeasureMode, PathSegment, WorkspacePlanView } from "../plan/types";
 import { workspaceApi } from "./api";
@@ -154,7 +153,7 @@ type Selection = { seq: number; camera: string; params: string | null; choosing:
 function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: RecipeDoc; plan: WorkspacePlanView }) {
   const href = useRecipeHref();
   const { dirty, busy, saving, acting, pendingSave, unsavable, saveNow, saveState, frameDirty, navigationDirty, corridorDrafts, setCorridorDraft, setDoc, act, setError } = useWorkspace();
-  const { snapshot } = useCycle();
+  const productionBusy = useProductionBusy();
   const navigate = useNavigate();
   const location = useLocation();
   const [search] = useSearchParams();
@@ -286,7 +285,6 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
   const ready = !alignmentPending && !acting && !working && !data.workspace.pending && !navigationDirty;
   const unlocked = ready && !busy && !dirty;
   const editable = !alignmentPending && (!busy || saving) && !working && !data.workspace.pending && !navigationDirty;
-  const productionBusy = isProductionBusy(snapshot);
   const update = (next: typeof t) => { if (editable && segment != null) setCorridorDraft(key, next); };
   const setPath = (corridor: [number, number][]) => update({ ...t, corridor });
   const canEdit = editable && !!frame && !choosingNow;

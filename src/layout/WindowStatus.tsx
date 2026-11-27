@@ -5,7 +5,7 @@ import { Alert, Button, Popover } from "qing-steel";
 import { getAppInfo, getEngineStatus, type AppInfo, type EngineStatus } from "../lib/api";
 import { desktopAvailable } from "../lib/desktop";
 import { linkStateLabels, usePlcStatus } from "../features/plc";
-import { useMaintenance } from "../features/cycle/api";
+import { useMaintenance } from "../features/cycle/control";
 import { devLyflowHint } from "../features/cycle/readiness";
 import { formatTime } from "../features/history/meta";
 

@@ -276,6 +276,37 @@ pub struct Snapshot {
     pub trial: Vec<crate::store::TrialProgress>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlState {
+    production_busy: bool,
+    plc_locked: bool,
+    plc_handshake: Option<SessionView>,
+    maintenance: Option<crate::settings::Maintenance>,
+}
+
+impl Snapshot {
+    fn production_busy(&self) -> bool {
+        !matches!(self.phase, Phase::Idle | Phase::Fault)
+    }
+
+    fn control_state(&self) -> ControlState {
+        ControlState {
+            production_busy: self.production_busy(),
+            plc_locked: self.plc_locked,
+            plc_handshake: self.plc_handshake.clone(),
+            maintenance: self.maintenance.clone(),
+        }
+    }
+
+    fn control_state_changed(&self, previous: &Self) -> bool {
+        self.production_busy() != previous.production_busy()
+            || self.plc_locked != previous.plc_locked
+            || self.plc_handshake != previous.plc_handshake
+            || self.maintenance != previous.maintenance
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecipeSummary {
@@ -1460,7 +1491,15 @@ impl Machine {
             .unwrap()
             .snapshot
             .replace(Arc::clone(&snapshot));
+        let control_changed = previous
+            .as_deref()
+            .is_none_or(|previous| snapshot.control_state_changed(previous));
         drop(previous);
+        if control_changed {
+            let _ = self
+                .app
+                .emit("cycle://control-state", snapshot.control_state());
+        }
         let _ = self.app.emit("cycle://snapshot", snapshot.as_ref());
     }
 
@@ -3047,6 +3086,11 @@ fn today_stats(app: &AppHandle, scope: HistoryScope) -> Stats {
 #[tauri::command]
 pub fn cycle_snapshot(cycle: State<'_, CycleHost>) -> Option<Arc<Snapshot>> {
     cycle.shared.lock().unwrap().snapshot.clone()
+}
+
+#[tauri::command]
+pub fn cycle_control_state(cycle: State<'_, CycleHost>) -> Option<ControlState> {
+    cycle_snapshot(cycle).map(|snapshot| snapshot.control_state())
 }
 
 #[tauri::command]

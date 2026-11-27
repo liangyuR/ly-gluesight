@@ -9,12 +9,11 @@ import { cameraHealth, StateBadge } from "../features/camera/components/health";
 import type { CameraConfigHandle } from "../features/camera/components/CameraConfigPanel";
 import { useRigConfig } from "../features/camera/useRigConfig";
 import { useUnsavedGuard } from "../features/camera/useUnsavedGuard";
-import { useCycle } from "../features/cycle";
+import { useProductionBusy } from "../features/cycle/control";
 import { desktopAvailable } from "../lib/desktop";
 import { Notice } from "../features/workspace/components";
 import type { CaptureNavigationState } from "../features/workspace/captureNavigation";
 import { ReturnButton } from "../features/workspace/returnNavigation";
-import { productionBusy } from "../features/cycle/phase";
 import { errorText } from "../lib/errors";
 import "../features/camera/camera-group.css";
 
@@ -23,7 +22,7 @@ export default function CameraPage() {
   const captureReturn=(location.state as CaptureNavigationState | null)?.captureReturn;
   const navigationState:CaptureNavigationState={...(location.state as CaptureNavigationState | null)};
   const {statuses,lastFrame}=useRigStatus();
-  const {snapshot}=useCycle();
+  const busy=useProductionBusy();
   const {configs,error,setError,loading,references,referencesReady,referenceError,reload}=useRigConfig({withReferences:true,preferredId:captureReturn?.cameraIds[0]});
   const [detailId,setDetailId]=useState<string|null>(captureReturn?.cameraIds[0]??null);
   const [action,setAction]=useState("");
@@ -40,7 +39,6 @@ export default function CameraPage() {
   const cam=detailId==null?-1:configs.findIndex(c=>c.id===detailId);
   const config=configs[cam]??null;
   const status=config?statusOf(cam):null;
-  const busy=productionBusy(snapshot);
   const desktop=desktopAvailable();
   const referencedBy=config?references[config.id]??[]:[];
   const lockedReason=busy?"工件结束后可修改":!desktop?"需要桌面后端":"";

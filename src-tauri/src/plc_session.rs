@@ -178,7 +178,7 @@ fn write_journal(path: &Path, text: &[u8]) -> Result<(), String> {
     std::fs::rename(&temporary, path).map_err(|e| e.to_string())
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionView {
     pub phase: SessionPhase,

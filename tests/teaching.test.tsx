@@ -4,11 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
-import { useCycle } from "../src/features/cycle/api";
-import { burstRecipe, burstWorkspaceView, captureRoundV2, frameMetrics, pathSegment, snapshot, workspaceState } from "./fixtures";
+import { useProductionBusy } from "../src/features/cycle/control";
+import { burstRecipe, burstWorkspaceView, captureRoundV2, frameMetrics, pathSegment, workspaceState } from "./fixtures";
 import { stubSvgPointer } from "./svg-pointer";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn() }));
+vi.mock("../src/features/cycle/control", () => ({ useProductionBusy: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn(), captureRoundThumbs: vi.fn(() => new Promise(() => {})), teachPreviewFrame: vi.fn(), teachPreviewSegment: vi.fn(), fitColorModel: vi.fn(), segmentTemplatePreview: vi.fn(), segmentTemplateSave: vi.fn() } }));
 
 let ws: ReturnType<typeof workspaceState>;
@@ -23,7 +23,7 @@ beforeEach(() => {
   ws.data!.workspace.captureReview = confirmedReview();
   vi.mocked(workspaceApi.segmentTemplatePreview).mockResolvedValue({ restructured: false, dropped: [], untaught: [], measurementCleared: false, coverage: null });
   vi.mocked(workspaceApi.segmentTemplateSave).mockImplementation(async () => ws.data!);
-  vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot() });
+  vi.mocked(useProductionBusy).mockReturnValue(false);
   vi.mocked(workspaceApi.image).mockResolvedValue(picture);
   vi.mocked(workspaceApi.captureFrameImage).mockResolvedValue(picture);
   vi.mocked(workspaceApi.captureGet).mockResolvedValue(captureRoundV2({ recipeId: "A" }));

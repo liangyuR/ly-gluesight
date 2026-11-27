@@ -170,13 +170,6 @@ export interface TagPreset {
   label: string;
 }
 
-export interface PlcOperationState {
-  phase: string;
-  plcLocked?: boolean;
-  plcHandshake?: PlcHandshakeState | null;
-  activeRecipeId?: string | null;
-}
-
 export interface PlcHandshakeState {
   phase: "notReady" | "idle" | "validating" | "acquiring" | "draining";
   /** 本件的件序号（partSeq） */

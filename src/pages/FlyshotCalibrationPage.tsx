@@ -4,13 +4,12 @@ import { CalibPanel, cameraApi, useRigStatus, type CameraConfig } from "../featu
 import CameraList, { type CalibrationSummary } from "../features/camera/components/CameraList";
 import type { CalibInfo } from "../features/camera/components/CalibPanel";
 import { useRigConfig } from "../features/camera/useRigConfig";
-import { useCycle } from "../features/cycle";
+import { useProductionBusy } from "../features/cycle/control";
 import { desktopAvailable } from "../lib/desktop";
 import { Notice } from "../features/workspace/components";
 import StationCapture, { type StationView } from "../features/workspace/StationCapture";
 import type { CaptureNavigationState } from "../features/workspace/captureNavigation";
 import { ReturnButton } from "../features/workspace/returnNavigation";
-import { productionBusy } from "../features/cycle/phase";
 
 async function calibrationSummary(config: CameraConfig, cam: number): Promise<CalibrationSummary> {
   if(config.source==="sim")return {tone:"ok",text:"内置标定 · 0.08 mm/px"};
@@ -31,7 +30,7 @@ export default function FlyshotCalibrationPage() {
   const captureReturn=(location.state as CaptureNavigationState | null)?.captureReturn;
   const navigationState:CaptureNavigationState={...(location.state as CaptureNavigationState | null)};
   const {statuses}=useRigStatus();
-  const {snapshot}=useCycle();
+  const busy=useProductionBusy();
   const {configs,cam,setCam,error,loading,reload}=useRigConfig({withReferences:false,preferredId:captureReturn?.cameraIds[0]});
   const [calibView,setCalibView]=useState(1);
   const [sample,setSample]=useState<StationView|null>(null);
@@ -56,7 +55,6 @@ export default function FlyshotCalibrationPage() {
   const corners=calibInfo?.sampleId!=null&&calibInfo.sampleId===current?.metadata.id?calibInfo.corners:null;
   const marks=useMemo(()=>corners?.map((at,i)=>({at,color:i===0?"var(--ov-ok)":"var(--ov-line)"})),[corners]);
   const status=statuses.find(s=>s.cam===cam)??null;
-  const busy=productionBusy(snapshot);
   const notice=error?<Notice title="操作未完成" tone="warn">{error}</Notice>:busy?<Notice title="当前工件正在检测">取样与标定在工件结束后可操作。</Notice>:null;
 
   return <div className="cam-page calib-page">

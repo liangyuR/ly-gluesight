@@ -7,7 +7,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import CameraPage from "../src/pages/CameraPage";
 import { defaultCameraConfig } from "../src/features/camera/api";
 import type { BandwidthEstimate, CameraConfig, CameraStatus } from "../src/features/camera/types";
-import { snapshot } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -33,7 +32,7 @@ beforeEach(() => {
       case "camera_save_config": return { saved: true, applied: true, warnings: [], applyError: null };
       case "camera_preview": return new ArrayBuffer(0);
       case "recipe_list": return { recipes: [], errors: [] };
-      case "cycle_snapshot": return snapshot();
+      case "cycle_control_state": return { productionBusy: false, plcLocked: false, plcHandshake: null, maintenance: null };
       default: return [];
     }
   });
@@ -120,7 +119,7 @@ describe("出图验证", () => {
     const original = vi.mocked(invoke).getMockImplementation()!;
     vi.mocked(invoke).mockImplementation(async (command, args, options) => {
       if (command === "camera_rig_status") return configs.map((c, i) => ({ ...status(i, c), ready: false, device: null, message }));
-      if (command === "cycle_snapshot") return { ...snapshot("FAULT"), plcLocked: true };
+      if (command === "cycle_control_state") return { productionBusy: false, plcLocked: true, plcHandshake: null, maintenance: null };
       return original(command, args, options);
     });
     await openCamera("左相机 cam1");

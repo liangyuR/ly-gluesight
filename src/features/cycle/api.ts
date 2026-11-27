@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { subscribe } from "../plc";
-import type { CycleSettings, Maintenance, Readiness, Recipe, RecipeDoc, RecipeSummary, Snapshot } from "./types";
+import type { CycleSettings, Readiness, Recipe, RecipeDoc, RecipeSummary, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["cycle_save_settings","cycle_set_maintenance","cycle_select_recipe"].includes(cmd))
@@ -134,20 +134,6 @@ export function useCycle() {
   }, []);
 
   return { snapshot };
-}
-
-export function useMaintenance() {
-  const [maintenance, setMaintenance] = useState<Maintenance | null>(null);
-  useEffect(() => {
-    let alive = true, received = false;
-    const update = (next: Maintenance | null) => {
-      if (alive) setMaintenance(prev => prev?.since === next?.since && prev?.reason === next?.reason ? prev : next);
-    };
-    const off = subscribe<Snapshot>("cycle://snapshot", snapshot => { received = true; update(snapshot.maintenance ?? null); });
-    void cycleApi.snapshot().then(snapshot => { if (!received) update(snapshot?.maintenance ?? null); }).catch(() => {});
-    return () => { alive = false; off(); };
-  }, []);
-  return maintenance;
 }
 
 /** 开工就绪报告：定时刷新，配方库变化或 refreshKey 变化时立即重查。 */

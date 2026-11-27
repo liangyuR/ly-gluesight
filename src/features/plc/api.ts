@@ -1,4 +1,4 @@
-import { phaseOccupied } from "../cycle/phase";
+import { useCycleControl, type CycleControlState } from "../cycle/control";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
@@ -14,7 +14,6 @@ import type {
   LogQuery,
   PlcConfig,
   PlcHandshakeState,
-  PlcOperationState,
   PlcStatus,
   PointValue,
 } from "./types";
@@ -78,35 +77,36 @@ export const plcApi = {
     call<string>("plc_check_address", { connection, address, dataType }, () => "预览模式不校验"),
   s7Phase1Template: (plcDb: number, pcDb: number) =>
     call<PlcConfig>("plc_s7_phase1_template", { plcDb, pcDb }, () => { throw new Error("重置 S7 通讯配置需要桌面后端"); }),
-  getOperationState: () => call<PlcOperationState | null>("cycle_snapshot", undefined, () => null),
 };
 
+interface PlcOperationView {
+  blockedReason: string;
+  handshake: PlcHandshakeState | null;
+}
+
+const pendingOperation: PlcOperationView = {
+  blockedReason: "正在核对生产状态，暂不能更改 PLC 配置或手动写入",
+  handshake: null,
+};
+
+function selectOperation(state: CycleControlState | null): PlcOperationView {
+  return {
+    blockedReason: !state ? "生产状态不可用，已锁定 PLC 配置和手动写入"
+      : state.plcLocked !== false ? "生产或结果交付尚未结束，PLC 配置和手动写入已锁定" : "",
+    handshake: state?.plcHandshake ?? null,
+  };
+}
+
+function sameOperation(current: PlcOperationView, next: PlcOperationView) {
+  const a = current.handshake, b = next.handshake;
+  return current.blockedReason === next.blockedReason && (a === b || (
+    a !== null && b !== null && a.phase === b.phase && a.requestSeq === b.requestSeq &&
+    a.message === b.message && a.connection === b.connection
+  ));
+}
+
 export function usePlcOperationState() {
-  const [operation, setOperation] = useState<{ blockedReason: string; handshake: PlcHandshakeState | null }>({
-    blockedReason: "正在核对生产状态，暂不能更改 PLC 配置或手动写入",
-    handshake: null,
-  });
-  useEffect(() => {
-    let alive = true;
-    let receivedEvent = false;
-    const update = (state: PlcOperationState | null) => {
-      if (!alive) return;
-      setOperation({
-        blockedReason: !state ? "生产状态不可用，已锁定 PLC 配置和手动写入"
-          : (state.plcLocked ?? phaseOccupied(state.phase))
-            ? "生产或结果交付尚未结束，PLC 配置和手动写入已锁定" : "",
-        handshake: state?.plcHandshake ?? null,
-      });
-    };
-    const off = subscribe<PlcOperationState>("cycle://snapshot", state => {
-      receivedEvent = true;
-      update(state);
-    }, () => { receivedEvent = true; update(null); });
-    plcApi.getOperationState().then(state => { if (!receivedEvent) update(state); })
-      .catch(() => { if (!receivedEvent) update(null); });
-    return () => { alive = false; off(); };
-  }, []);
-  return operation;
+  return useCycleControl(selectOperation, pendingOperation, sameOperation);
 }
 
 export function subscribe<T>(event: string, cb: (payload: T) => void, onError?: (error: unknown) => void): () => void {
