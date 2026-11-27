@@ -392,7 +392,7 @@ fn production_counts_keep_the_date_and_project_scope_when_latest_tags_are_invali
 }
 
 #[test]
-fn maintenance_statistics_read_committed_trial_counts_during_an_import() {
+fn history_and_maintenance_reads_see_only_committed_project_records_during_an_import() {
     use std::sync::mpsc::channel;
     use std::thread;
 
@@ -413,11 +413,23 @@ fn maintenance_statistics_read_committed_trial_counts_during_an_import() {
             })
             .unwrap()
     };
-    insert_trial(&target, "committed-trial");
+    let committed = insert_trial(&target, "committed-trial");
     insert_trial(&other, "other-project-trial");
     let incoming = insert_trial(&source, "incoming-trial");
     let package = db.0.join("trial-package.sqlite");
     source.export_parts(&[incoming], &package).unwrap();
+    let query = HistoryQuery {
+        project: Some("line-a".into()),
+        limit: 1,
+        ..HistoryQuery::default()
+    };
+    let read_history = || -> Result<_, String> {
+        Ok((
+            target.maintenance_statistics(HistoryScope::Real)?,
+            target.query(&query)?,
+            target.neighbors(&query, committed)?,
+        ))
+    };
 
     let (entered, wait_for_import) = channel();
     let (release, wait_for_release) = channel();
@@ -433,16 +445,20 @@ fn maintenance_statistics_read_committed_trial_counts_during_an_import() {
         });
         let read = wait_for_import.recv_timeout(WAIT).and_then(|()| {
             let (result, wait_for_read) = channel();
+            let read_history = &read_history;
             threads.spawn(move || {
-                let _ = result.send(store.maintenance_statistics(HistoryScope::Real));
+                let _ = result.send(read_history());
             });
             wait_for_read.recv_timeout(WAIT)
         });
         let _ = release.send(());
         (read, import.join().unwrap())
     });
-    assert_eq!(imported.unwrap().inserted, 1);
-    let result_during_import = read.expect("维护统计在导入提交前未返回").unwrap();
+    let imported = imported.unwrap();
+    assert_eq!(imported.inserted, 1);
+    let imported_id = imported.ids[&incoming];
+    let result_during_import = read.expect("历史读取在导入提交前未返回").unwrap();
+    let result_after_import = read_history().unwrap();
 
     let expected_trial = |ok| TrialProgress {
         recipe_id: recipe.id.clone(),
@@ -453,9 +469,20 @@ fn maintenance_statistics_read_committed_trial_counts_during_an_import() {
         },
         ng: Vec::new(),
     };
-    assert_eq!(result_during_import.trial, [expected_trial(1)]);
-    let after_commit = target.maintenance_statistics(HistoryScope::Real).unwrap();
-    assert_eq!(after_commit.trial, [expected_trial(2)]);
+    for ((stats, page, neighbors), total, first, newer) in [
+        (result_during_import, 1, committed, None),
+        (result_after_import, 2, imported_id, Some(imported_id)),
+    ] {
+        let trial = expected_trial(total);
+        assert_eq!(page.total, total);
+        assert_eq!(page.counts, trial.counts);
+        assert_eq!(stats.trial, [trial]);
+        assert_eq!(
+            page.items.iter().map(|part| part.id).collect::<Vec<_>>(),
+            [first]
+        );
+        assert_eq!(neighbors, (None, newer));
+    }
 }
 
 #[test]

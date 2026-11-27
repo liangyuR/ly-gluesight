@@ -1652,7 +1652,8 @@ impl Store {
     }
 
     pub fn query(&self, q: &HistoryQuery) -> Result<HistoryPage, String> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = open_read_only(&self.path)?;
+        let snapshot = conn.transaction().map_err(db_err)?;
         let page_filter = Self::filter(q, "");
         let with_facets = q.include_verdict_facets && !q.verdicts.is_empty();
         let facets_filter = with_facets.then(|| {
@@ -1673,7 +1674,7 @@ impl Store {
         let mut verdict_facets = with_facets.then(VerdictCounts::default);
         let mut counts = VerdictCounts::default();
         let mut total = 0;
-        Self::for_each_verdict_count(&conn, count_filter, count_args, |stored_verdict, n| {
+        Self::for_each_verdict_count(&snapshot, count_filter, count_args, |stored_verdict, n| {
             let verdict = parse_verdict(&stored_verdict);
             if let Some(facets) = &mut verdict_facets {
                 facets.add(verdict, n);
@@ -1686,12 +1687,14 @@ impl Store {
         let (filter, args) = page_filter;
         let limit = if q.limit == 0 { 50 } else { q.limit.min(500) };
         let sql = format!("SELECT {SUMMARY_COLS} FROM parts{filter} ORDER BY ts DESC, id DESC LIMIT {limit} OFFSET {}", q.offset);
-        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let items = stmt
+        let items = snapshot
+            .prepare(&sql)
+            .map_err(db_err)?
             .query_map(params_from_iter(args.iter()), summary)
             .map_err(db_err)?
             .collect::<Result<_, _>>()
             .map_err(db_err)?;
+        snapshot.commit().map_err(db_err)?;
         Ok(HistoryPage {
             total,
             counts,
@@ -1727,8 +1730,9 @@ impl Store {
         q: &HistoryQuery,
         id: i64,
     ) -> Result<(Option<i64>, Option<i64>), String> {
-        let conn = self.conn.lock().unwrap();
-        let Some(ts) = conn
+        let mut conn = open_read_only(&self.path)?;
+        let snapshot = conn.transaction().map_err(db_err)?;
+        let Some(ts) = snapshot
             .query_row("SELECT ts FROM parts WHERE id = ?1", [id], |row| {
                 row.get::<_, i64>(0)
             })
@@ -1740,15 +1744,13 @@ impl Store {
         let (filter, args) = Self::filter(q, "");
         let one = |cmp: &str, order: &str| -> Result<Option<i64>, String> {
             let mut values = args.clone();
-            values.extend([
-                SqlValue::Integer(ts),
-                SqlValue::Integer(ts),
-                SqlValue::Integer(id),
-            ]);
-            conn.query_row(&format!("SELECT id FROM parts{filter} AND (ts {cmp} ? OR (ts = ? AND id {cmp} ?)) ORDER BY ts {order}, id {order} LIMIT 1"),
+            values.extend([SqlValue::Integer(ts), SqlValue::Integer(id)]);
+            snapshot.query_row(&format!("SELECT id FROM parts{filter} AND (ts, id) {cmp} (?, ?) ORDER BY ts {order}, id {order} LIMIT 1"),
                 params_from_iter(values.iter()), |row| row.get(0)).optional().map_err(db_err)
         };
-        Ok((one("<", "DESC")?, one(">", "ASC")?))
+        let neighbors = (one("<", "DESC")?, one(">", "ASC")?);
+        snapshot.commit().map_err(db_err)?;
+        Ok(neighbors)
     }
 
     pub fn summary(&self, id: i64) -> Result<PartSummary, String> {

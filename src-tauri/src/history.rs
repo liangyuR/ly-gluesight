@@ -16,8 +16,8 @@ use crate::plan::{PathSegment, SegmentKind, WidthCheck};
 use crate::recipe::Recipe;
 use crate::segmentation::RegionKind;
 use crate::store::{
-    same_measurement_layout, FrameRecord, HistoryPage, HistoryQuery, HistoryScope, PartDetail,
-    PartSummary, Store, StoredMeasurement,
+    same_measurement_layout, FrameRecord, HistoryPage, HistoryQuery, PartDetail, PartSummary,
+    Store, StoredMeasurement,
 };
 
 pub fn local_midnight_ms(day: NaiveDate) -> i64 {
@@ -127,7 +127,7 @@ pub struct Neighbors {
     pub newer: Option<i64>,
 }
 
-/// 逐件回看：按历史列表当时的筛选找前后一件；没有筛选时只在本件所属的真机 / 离线 / 调试范围内找。
+/// 逐件回看：按历史列表当时的筛选查找；没有筛选时查本机全部真机记录。
 #[tauri::command]
 pub async fn history_neighbors(
     app: AppHandle,
@@ -135,15 +135,9 @@ pub async fn history_neighbors(
     query: Option<HistoryQuery>,
 ) -> Result<Neighbors, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let store = app.state::<Store>();
-        let query = match query {
-            Some(query) => query,
-            None => HistoryQuery {
-                scope: HistoryScope::of(store.detail(id)?.summary.source),
-                ..HistoryQuery::default()
-            },
-        };
-        let (older, newer) = store.neighbors(&query, id)?;
+        let (older, newer) = app
+            .state::<Store>()
+            .neighbors(&query.unwrap_or_default(), id)?;
         Ok(Neighbors { older, newer })
     })
     .await
