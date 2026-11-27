@@ -95,6 +95,140 @@ fn manual_tags_survive_reopen_and_keep_history_filter_counts_neighbors_and_rejud
 }
 
 #[test]
+fn history_export_keeps_one_snapshot_while_writer_commits_across_the_old_page_boundary() {
+    use std::sync::mpsc::channel;
+    use std::thread;
+
+    const WAIT: Duration = Duration::from_secs(5);
+
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let insert = |store: &Store, sn: &str, ts| {
+        store.insert(&PartRecord {
+            mode: PartMode::Production,
+            ts,
+            sn,
+            recipe: None,
+            judgement: &Judgement::error(95, "无配方"),
+            drain_ms: None,
+            frames: &[],
+            frames_expected: 0,
+            frames_received: 0,
+            triggers: 0,
+            table: None,
+            software_version: "test",
+            cycle_id: Some(sn),
+            bundle_id: None,
+            delivery: &PlcDelivery::default(),
+            shots: &[],
+            source: RecordSource::Real,
+            burst: None,
+        })
+    };
+    let ids: Vec<_> = (0..501)
+        .map(|n| insert(&store, &format!("csv-{n}"), 1234).unwrap())
+        .collect();
+    let tag = "待复核".to_owned();
+    for ids in ids.chunks(500) {
+        store
+            .set_history_tags(ids, std::slice::from_ref(&tag))
+            .unwrap();
+    }
+    insert(&store, "not-tagged", 1235).unwrap();
+    let query = HistoryQuery {
+        tag: Some(tag.clone()),
+        offset: 4,
+        limit: 2,
+        ..Default::default()
+    };
+
+    let (start_write, wait_for_first_row) = channel();
+    let (committed, wait_for_commit) = channel();
+    let mut exported = Vec::new();
+    let (visited, written) = thread::scope(|threads| {
+        let store = &store;
+        let tag = &tag;
+        let first = ids[0];
+        let writer = threads.spawn(move || -> Result<i64, String> {
+            wait_for_first_row
+                .recv_timeout(WAIT)
+                .map_err(|e| e.to_string())?;
+            let new = insert(store, "arrived-during-export", 1236)?;
+            store.set_history_tags(&[new], std::slice::from_ref(tag))?;
+            store.set_history_tags(&[first], &["已复核".into()])?;
+            let _ = committed.send(());
+            Ok(new)
+        });
+        let read = store.visit_history(&query, |part| {
+            if exported.is_empty() {
+                start_write.send(()).map_err(|e| e.to_string())?;
+                wait_for_commit
+                    .recv_timeout(WAIT)
+                    .map_err(|e| e.to_string())?;
+            }
+            exported.push((part.id, part.tags));
+            Ok(())
+        });
+        drop(start_write);
+        (read, writer.join().unwrap())
+    });
+    visited.expect("导出游标打开期间应能提交写入");
+    let new = written.unwrap();
+    assert_eq!(
+        exported.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        ids.iter().rev().copied().collect::<Vec<_>>()
+    );
+    assert!(exported
+        .iter()
+        .all(|(_, tags)| tags.as_slice() == std::slice::from_ref(&tag)));
+
+    let mut latest = Vec::new();
+    store
+        .visit_history(&query, |part| {
+            latest.push(part.id);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        latest,
+        std::iter::once(new)
+            .chain(ids[1..].iter().rev().copied())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn history_csv_publishes_complete_files_and_removes_output_on_read_failure() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let older = store
+        .insert(&burst_part(&recipe, "csv-older", &judgement, &burst))
+        .unwrap();
+    store
+        .insert(&burst_part(&recipe, "csv-newer", &judgement, &burst))
+        .unwrap();
+    let query = HistoryQuery::default();
+    let path = db.0.join("complete.csv");
+    crate::history::export_csv(&store, &query, &path).unwrap();
+    let file = std::fs::read_to_string(&path).unwrap();
+    assert!(file.starts_with("\u{feff}时间,来源,SN,"));
+    assert_eq!(file.matches("\r\n").count(), 3);
+    assert!(file.contains("\"csv-older\"") && file.contains("\"csv-newer\""));
+    assert!(!path.with_extension("csv.tmp").exists());
+
+    Connection::open(db.path())
+        .unwrap()
+        .execute("UPDATE parts SET tags = '[' WHERE id = ?1", [older])
+        .unwrap();
+    let path = db.0.join("failed.csv");
+    assert!(crate::history::export_csv(&store, &query, &path).is_err());
+    assert!(!path.exists() && !path.with_extension("csv.tmp").exists());
+}
+
+#[test]
 fn verdict_filter_keeps_page_and_total_exact_with_legacy_verdicts_in_facets() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

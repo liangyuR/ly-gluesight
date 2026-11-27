@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::fs::{self, File};
 use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 
 use chrono::{Local, NaiveDate, TimeZone};
@@ -591,38 +593,42 @@ fn flag_labels(flags: &Flags) -> Vec<&'static str> {
 
 pub(crate) const CSV_HEADER: &str = "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明,预期帧组数(ΣN_exp),各相机帧数,deviceTriggers,标记,项目,人工 Tag\r\n";
 
+pub(crate) fn export_csv(store: &Store, query: &HistoryQuery, path: &Path) -> Result<(), String> {
+    let temporary = path.with_extension("csv.tmp");
+    let file = File::create_new(&temporary).map_err(|e| e.to_string())?;
+    let write = || {
+        let mut file = std::io::BufWriter::new(file);
+        file.write_all(CSV_HEADER.as_bytes())
+            .map_err(|e| e.to_string())?;
+        store.visit_history(query, |part| {
+            file.write_all(csv_row(&part).as_bytes())
+                .map_err(|e| e.to_string())
+        })?;
+        file.flush().map_err(|e| e.to_string())
+    };
+    let result = write().and_then(|()| {
+        if path.try_exists().map_err(|e| e.to_string())? {
+            return Err("检测记录导出文件已存在，请重试".into());
+        }
+        fs::rename(&temporary, path).map_err(|e| e.to_string())
+    });
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 /// 按筛选条件导出 CSV（带 BOM，Excel 可直接打开），返回文件路径。
 #[tauri::command]
 pub async fn history_export(app: AppHandle, query: HistoryQuery) -> Result<String, String> {
     let dir = crate::storage::root(&app).join("exports");
     tauri::async_runtime::spawn_blocking(move || {
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!(
             "检测记录_{}.csv",
-            Local::now().format("%Y%m%d_%H%M%S")
+            Local::now().format("%Y%m%d_%H%M%S_%3f")
         ));
-        let mut f =
-            std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
-        f.write_all(CSV_HEADER.as_bytes())
-            .map_err(|e| e.to_string())?;
-        let store = app.state::<Store>();
-        let mut q = HistoryQuery {
-            limit: 500,
-            offset: 0,
-            ..query
-        };
-        loop {
-            let page = store.query(&q)?;
-            for p in &page.items {
-                f.write_all(csv_row(p).as_bytes())
-                    .map_err(|e| e.to_string())?;
-            }
-            if page.items.len() < q.limit as usize {
-                break;
-            }
-            q.offset += q.limit;
-        }
-        f.flush().map_err(|e| e.to_string())?;
+        export_csv(&app.state::<Store>(), &query, &path)?;
         Ok(path.display().to_string())
     })
     .await

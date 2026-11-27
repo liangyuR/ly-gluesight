@@ -1700,6 +1700,27 @@ impl Store {
         })
     }
 
+    pub fn visit_history(
+        &self,
+        q: &HistoryQuery,
+        mut visit: impl FnMut(PartSummary) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let conn = open_read_only(&self.path)?;
+        let (filter, args) = Self::filter(q, "");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {SUMMARY_COLS} FROM parts{filter} ORDER BY ts DESC, id DESC"
+            ))
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params_from_iter(args.iter()), summary)
+            .map_err(db_err)?;
+        for row in rows {
+            visit(row.map_err(db_err)?)?;
+        }
+        Ok(())
+    }
+
     /// 同一筛选条件下与 id 相邻的记录：(较早一件, 较晚一件)，按（时间, 编号）排序，与历史列表同序。
     pub fn neighbors(
         &self,
