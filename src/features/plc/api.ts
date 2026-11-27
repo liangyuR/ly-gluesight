@@ -135,10 +135,43 @@ export function usePlcStatus() {
 export function usePlcValues() {
   const [values, setValues] = useState<Record<string, PointValue>>({});
   useEffect(() => {
-    plcApi.getValues().then(setValues).catch(() => setValues({}));
-    return subscribe<Record<string, PointValue>>("plc://values", (changed) =>
-      setValues((prev) => (Object.keys(changed).length === 0 ? {} : { ...prev, ...changed })),
-    );
+    let active = true, acceptEvents = true, resetCount = 0;
+    let unlisten: UnlistenFn | undefined;
+    let latest: Record<string, PointValue> = {};
+
+    const start = async () => {
+      if (isTauri()) {
+        try {
+          const stop = await listen<Record<string, PointValue>>("plc://values", ({ payload }) => {
+            if (!active || !acceptEvents) return;
+            if (Object.keys(payload).length === 0) {
+              resetCount++;
+              latest = {};
+            } else {
+              latest = { ...latest, ...payload };
+            }
+            setValues(latest);
+          });
+          if (!active) { stop(); return; }
+          unlisten = stop;
+        } catch {
+          acceptEvents = false;
+        }
+      }
+      if (!active) return;
+      const resetCountAtRead = resetCount;
+      try {
+        const initial = await plcApi.getValues();
+        if (active && resetCount === resetCountAtRead) {
+          latest = { ...initial, ...latest };
+          setValues(latest);
+        }
+      } catch {
+        // 已收到的点位事件仍有效。
+      }
+    };
+    void start();
+    return () => { active = false; unlisten?.(); };
   }, []);
   return values;
 }
