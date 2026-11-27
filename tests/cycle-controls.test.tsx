@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { expect, it, vi } from "vitest";
 import { useMaintenance, useProductionBusy, type CycleControlState } from "../src/features/cycle/control";
+import { deferred } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -31,6 +32,8 @@ it("轻量状态的无关字段变化 → 只提交受影响的生产操作和�
       <Profiler id="badge" onRender={badge}><MaintenanceBadge /></Profiler>
     </>);
   });
+  expect(listen).toHaveBeenCalledExactlyOnceWith("cycle://control-state", expect.any(Function));
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("cycle_control_state");
   actions.mockClear(); badge.mockClear();
   const publish = (payload: CycleControlState) => act(() => listeners.forEach(listener => listener({ payload })));
   const button = screen.getByRole("button", { name: "相机操作" });
@@ -50,4 +53,27 @@ it("轻量状态的无关字段变化 → 只提交受影响的生产操作和�
   expect(button).toBeEnabled();
   expect(actions).toHaveBeenCalledTimes(2);
   expect(badge).toHaveBeenCalledTimes(1);
+});
+
+it("共享订阅在最后一个消费者离开后释放，迟到首查不影响下次挂载", async () => {
+  const unlisten = vi.fn();
+  const idle: CycleControlState = { productionBusy: false, plcLocked: false, plcHandshake: null, maintenance: null };
+  const first = deferred<CycleControlState>();
+  vi.mocked(listen).mockResolvedValue(unlisten);
+  vi.mocked(invoke).mockReturnValueOnce(first.promise).mockResolvedValue(idle);
+  const page = render(<><MaintenanceBadge /><CameraActions /></>);
+  await act(async () => {});
+  expect(listen).toHaveBeenCalledOnce();
+
+  page.rerender(<><MaintenanceBadge /></>);
+  expect(unlisten).not.toHaveBeenCalled();
+  page.unmount();
+  expect(unlisten).toHaveBeenCalledOnce();
+
+  render(<CameraActions />);
+  await act(async () => {});
+  expect(listen).toHaveBeenCalledTimes(2);
+  expect(invoke).toHaveBeenCalledTimes(2);
+  await act(async () => first.resolve({ ...idle, productionBusy: true }));
+  expect(screen.getByRole("button", { name: "相机操作" })).toBeEnabled();
 });
