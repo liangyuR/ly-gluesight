@@ -17,6 +17,7 @@ import { OperationStatus, useOperation } from "../../workspace/operation";
 import { recipeHref } from "../../workspace/recipeRoutes";
 import type { SegmentLocateState } from "../../workspace/segmentLocate";
 import { historyApi } from "../api";
+import { focusInHistory } from "../focus";
 import { errorText } from "../../../lib/errors";
 import { displayReason, formatTime, partVerdict, triggerModeLabel, verdictLabel } from "../meta";
 import { burstSideOf, comparisonBurst, regionDiffs } from "../replay";
@@ -87,13 +88,14 @@ function useFrameOverlay(historyId: number, comparison: Comparison | null, camer
 }
 
 /** 一台相机一帧的原图格：叠出测量所用的走廊、搜索带与胶边（原始记录按原发布包，对照按对照的配方）；点格子选中这台相机。 */
-function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, frame, skipped, selected, onSelect, station, onStation, anchor }: {
+function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, frame, skipped, selected, onSelect, station, onStation, anchor, onReturnToTrace }: {
   /** 显示对照结果时为该对照，显示原始记录时为 null；recordCamera 是这台相机在记录里的下标（读原图用，记录里没有为 null） */
   detail: PartDetail; comparison: Comparison | null; camera: number; recordCamera: number | null; cameraName: string; seq: number; frame: FrameRecord | null; selected: boolean; onSelect: () => void;
   /** 选中相机这一帧与胶宽折线联动的测站（0 起） */
   station: number | null; onStation: (station: number | null) => void;
   skipped: boolean;
   anchor?: Ref<HTMLDivElement>;
+  onReturnToTrace?: () => void;
 }) {
   const s = detail.summary;
   const image = useFrameImage(s.id, recordCamera ?? -1, seq, !!frame?.rawFile && recordCamera != null);
@@ -110,6 +112,7 @@ function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, 
       : frame.rawFile ? "" : `本帧原图未保存或已按保留策略清理；完整指标仍可在下方查看。${detail.recording.state === "complete" ? "" : recordingReason[detail.recording.state]}`;
   return <div className={"hist-frame-tile" + (selected ? " selected" : "")} onClickCapture={onSelect}
     ref={anchor} role="group" tabIndex={-1} aria-label={`${cameraName} · 帧组 ${seq} 原图`}>
+    {onReturnToTrace && <Button size="sm" variant="text" className="hist-frame-trace-return" onClick={onReturnToTrace}>返回逐帧追溯</Button>}
     <FrameViewer image={image.image} loading={image.loading} error={image.error || unavailable} label={`原始 SN ${s.sn} · ${cameraName} · 帧组 ${seq}`} overlay={overlay}
       caption={<>{cameraName} · 帧组 {seq}{skipped ? " · 生产跳过" : frame ? ` · ${frameStateName[frame.status]}` : ""}</>} />
     {traced.error && <p className="muted hint">叠图：{traced.error}</p>}
@@ -198,23 +201,18 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const frame = originalShown && frameDetail?.key === frameKey ? frameDetail.frame ?? summaryFrame : summaryFrame;
   const frameLoading = originalShown && !!summaryFrame?.metrics && frameDetail?.key !== frameKey;
   const imageAnchor = useRef<HTMLDivElement>(null);
-  const revealTraceImage = useRef(false);
+  const [traceJump, setTraceJump] = useState<{ camera: number; seq: number; target: "image" | "trace" } | null>(null);
   const restored = useRef("");
   const selectTraceFrame = useCallback((camera: number, seq: number, revealImage = false) => {
-    revealTraceImage.current = revealImage;
+    setTraceJump(revealImage ? { camera, seq, target: "image" } : null);
     if (revealImage) restored.current = location.key;
     setShowOriginal(true);
     setSelection({ camera, seq });
   }, [location.key]);
   useLayoutEffect(() => {
-    if (!revealTraceImage.current) return;
-    revealTraceImage.current = false;
-    const anchor = imageAnchor.current;
-    if (!anchor) return;
-    anchor.focus({ preventScroll: true });
-    const body = anchor.closest<HTMLElement>(".main-body");
-    if (body) body.scrollTop += anchor.getBoundingClientRect().top - body.getBoundingClientRect().top - 8;
-  }, [selection]);
+    if (traceJump?.target === "image" && imageAnchor.current) focusInHistory(imageAnchor.current);
+  }, [traceJump]);
+  const returnToTrace = () => setTraceJump(jump => jump && { ...jump, target: "trace" });
   const traceCamera = originalShown ? selection.camera : shown.recordCameras?.[selection.camera];
   const traceSelection = traceCamera == null ? null : { camera: traceCamera, seq: selection.seq };
   const step = (delta: number) => setSelection(prev => ({ ...prev, seq: Math.min(lastSeq, Math.max(groups[0]?.seq ?? 1, prev.seq + delta)) }));
@@ -429,7 +427,8 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
           <div className="hist-frame-tiles" aria-label={`帧组 ${selection.seq} 各相机原图`}>
             {shown.cameras.map((name, c) => <FrameTile key={c} detail={detail} comparison={viewing ? comparison : null} camera={c} recordCamera={shown.recordCameras ? shown.recordCameras[c] : c} cameraName={name} seq={selection.seq}
               frame={c === selection.camera ? frame : frames.get(`${c}:${selection.seq}`) ?? null} selected={c === selection.camera} onSelect={() => setSelection(prev => ({ ...prev, camera: c }))}
-              station={station} onStation={setStation} skipped={!!skipped} anchor={c === selection.camera ? imageAnchor : undefined} />)}
+              station={station} onStation={setStation} skipped={!!skipped} anchor={c === selection.camera ? imageAnchor : undefined}
+              onReturnToTrace={c === selection.camera && traceJump?.target === "image" ? returnToTrace : undefined} />)}
           </div>
           {skipped && <Text as="p" muted role="note">生产跳过 · {regionKindLabel(skipped.region.kind)} · 不参与判定，原图与测量数据仅供诊断。</Text>}
           <div className="wp-runtime-strip">
@@ -472,7 +471,8 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
           <span>后续复检</span><b>{detail.retests.length ? detail.retests.map(r => <Link key={r} to={"/history/" + r} state={partState}>#{r} </Link>) : "—"}</b>
         </div>
       </Panel>
-      <BurstPartTrace detail={detail} burst={burst} selected={traceSelection} onSelect={selectTraceFrame} />
+      <BurstPartTrace detail={detail} burst={burst} selected={traceSelection} onSelect={selectTraceFrame}
+        focusFrame={traceJump?.target === "trace" ? traceJump : undefined} />
     </div>
   </div>;
 }

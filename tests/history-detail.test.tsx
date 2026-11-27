@@ -199,7 +199,7 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.getByRole("button", { name: /^帧组 6 · CAM-3 ·/, pressed: true })).toBeVisible();
   });
 
-  it("键盘查看追溯原图 → 等待读图时就定位到目标相机，图像就绪后保留焦点", async () => {
+  it("键盘查看追溯原图 → 等待读图时就定位到相机，返回时恢复追溯焦点", async () => {
     const image = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
     let finishImage!: (value: typeof image) => void;
     const pending = new Promise<typeof image>(resolve => { finishImage = resolve; });
@@ -216,7 +216,9 @@ describe("历史详情（段配方记录）", () => {
     content.scrollTop = 600;
     vi.spyOn(content, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 54, 1000, 720));
     vi.spyOn(tile, "getBoundingClientRect").mockReturnValue(new DOMRect(10, -360, 280, 240));
-    screen.getByRole("button", { name: "查看 CAM-2 帧组 6 原图" }).focus();
+    const openerName = "查看 CAM-2 帧组 6 原图";
+    const opener = screen.getByRole("button", { name: openerName });
+    opener.focus();
     await user.keyboard("{Enter}");
     expect(tile).toHaveFocus();
     expect(content.scrollTop).toBeLessThan(600);
@@ -225,6 +227,49 @@ describe("历史详情（段配方记录）", () => {
     await act(async () => { finishImage(image); });
     expect(within(tile).getByRole("img", { name: "原始 SN SN-101 · CAM-2 · 帧组 6" })).toBeVisible();
     expect(tile).toHaveFocus();
+    await user.tab();
+    expect(within(tile).getByRole("button", { name: "返回逐帧追溯" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(opener).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    const cameraFilter = screen.getByLabelText("相机筛选", { selector: "select" });
+    await user.selectOptions(cameraFilter, "0");
+    expect(screen.queryByRole("button", { name: openerName })).not.toBeInTheDocument();
+    await user.click(within(tile).getByRole("button", { name: "返回逐帧追溯" }));
+    expect(screen.getByRole("group", { name: "逐帧追溯筛选" })).toHaveFocus();
+    expect(cameraFilter).toHaveValue("0");
+  });
+
+  it("查看原图途中翻到下一页 → 返回定位到原逐帧追溯行和查看按钮", async () => {
+    const burst = detail.burst!;
+    burst.cameras = ["CAM-1"];
+    burst.cameraFrames = [51];
+    burst.judgement.groupCount = 51;
+    burst.judgement.regions[0].region.lastSeq = 51;
+    const frame = burst.frames[0];
+    burst.frames = Array.from({ length: 51 }, (_, index) => {
+      const seq = index + 1;
+      return { ...frame, seq, frameCounter: seq, triggerCounter: seq, metrics: frameMetrics(0, seq), rawFile: `frames/CAM-1/${seq}.pgm` };
+    });
+    burst.frameVerdicts = burst.frames.map(({ seq }) => ({ camera: 0, seq, verdict: "OK" }));
+
+    show("/history/1?seq=50&view=original");
+    const user = userEvent.setup();
+    const openerName = "查看 CAM-1 帧组 50 原图";
+    await user.click(await screen.findByRole("button", { name: openerName }));
+    const tile = screen.getByRole("group", { name: "CAM-1 · 帧组 50 原图" });
+    expect(tile).toHaveFocus();
+    await user.keyboard("{ArrowRight}");
+    expect(await screen.findByRole("button", { name: "查看 CAM-1 帧组 51 原图" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: openerName })).not.toBeInTheDocument();
+
+    const currentTile = screen.getByRole("group", { name: "CAM-1 · 帧组 51 原图" });
+    await user.click(within(currentTile).getByRole("button", { name: "返回逐帧追溯" }));
+    const returned = await screen.findByRole("button", { name: openerName });
+    await waitFor(() => expect(returned).toHaveFocus());
+    expect(screen.getByText("第 1 / 2 页")).toBeVisible();
+    expect(screen.getByRole("group", { name: "CAM-1 · 帧组 51 原图" })).toBeVisible();
   });
 
   it("加载旧对照期间重新复算 → 迟到的旧对照不能覆盖新结果", async () => {

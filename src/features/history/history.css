@@ -79,7 +79,8 @@
 .hist-frame-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 8px; align-items: start; }
 .hist-frame-tile { display: flex; flex-direction: column; gap: 4px; min-width: 0; border: 1px solid transparent; border-radius: var(--r-sm); }
 .hist-frame-tile.selected { border-color: var(--primary); }
-.hist-frame-tile:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.hist-frame-tile:focus-visible, .burst-trace-tools:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.hist-frame-trace-return { align-self: flex-start; margin: 4px 4px 0; }
 .hist-frame-tile .wp-gray-image { flex: none; height: auto; max-height: 560px; }
 .hist-frame-tile .wp-image-empty { min-height: 200px; }
 .hist-frame-tile > .hint { margin: 0 6px 4px; }

@@ -1,9 +1,10 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Checkbox, EmptyState, Select, StatusBadge, Table, type TableColumn } from "qing-steel";
 import { Panel } from "../../workspace/components";
 import type { FrameRecord, FrameState, PartDetailBurst } from "../../plan/types";
 import { expectedText, productionSkippedRegion, regionKindLabel } from "../../plan/vis";
 import { verdictLabel, verdictTone } from "../meta";
+import { focusInHistory } from "../focus";
 import type { PartDetail } from "../types";
 import "../../cycle/components/burst.css";
 import MixSummary from "../../plan/MixSummary";
@@ -14,7 +15,8 @@ const recordingLabel = { pending: "正在落盘", off: "录制关闭", notRetain
 
 const frameStateText: Record<FrameState, string> = { measured: "已测", missing: "缺帧", error: "测量失败", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测" };
 const mm = (v: number | null | undefined) => v == null ? "—" : v.toFixed(2);
-const frameKey = ({ camera, seq }: Pick<FrameRecord, "camera" | "seq">) => `${camera}:${seq}`;
+type TraceFrame = Pick<FrameRecord, "camera" | "seq">;
+const frameKey = ({ camera, seq }: TraceFrame) => `${camera}:${seq}`;
 
 function hasFrameIssue({ status, metrics }: FrameRecord) {
   return (status !== "measured" && status !== "notInspected") || !!measurementIssue(metrics?.measurementEvidence)
@@ -28,8 +30,9 @@ function hasFrameIssue({ status, metrics }: FrameRecord) {
 type TraceProps = {
   detail: PartDetail;
   burst: PartDetailBurst;
-  selected: { camera: number; seq: number } | null;
+  selected: TraceFrame | null;
   onSelect: (camera: number, seq: number, revealImage?: boolean) => void;
+  focusFrame?: TraceFrame;
 };
 
 export function BurstPartTrace(props: TraceProps) {
@@ -39,7 +42,7 @@ export function BurstPartTrace(props: TraceProps) {
   return <TraceTable {...props} onSelect={onSelect} />;
 }
 
-const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect }: TraceProps) {
+const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect, focusFrame }: TraceProps) {
   const { summary, recording } = detail;
   const [onlyAbnormal, setOnlyAbnormal] = useState(false);
   const [camera, setCamera] = useState("all");
@@ -56,16 +59,33 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect 
   }, [abnormalFrames, burst.frames, onlyAbnormal, camera]);
   const pages = Math.max(1, Math.ceil(rows.length / pageSize));
   const shownPage = Math.min(page, pages - 1);
+  const traceTools = useRef<HTMLDivElement>(null);
+  const focusedFrame = useRef<TraceFrame | null>(null);
   useEffect(() => {
     const index = selected ? rows.findIndex(frame => frame.camera === selected.camera && frame.seq === selected.seq) : -1;
     setPage(index < 0 ? 0 : Math.floor(index / pageSize));
   }, [selected?.camera, selected?.seq, rows, pageSize]);
+  useLayoutEffect(() => {
+    const tools = traceTools.current;
+    if (!tools || !focusFrame || focusedFrame.current === focusFrame) return;
+    const index = rows.findIndex(frame => frame.camera === focusFrame.camera && frame.seq === focusFrame.seq);
+    if (index >= 0) {
+      const targetPage = Math.floor(index / pageSize);
+      if (shownPage !== targetPage) { setPage(targetPage); return; }
+    }
+    focusedFrame.current = focusFrame;
+    const key = frameKey(focusFrame);
+    const panel = tools.closest(".burst-trace");
+    const image = panel?.querySelector<HTMLButtonElement>(`[data-trace-image="${key}"]`);
+    const row = panel?.querySelector<HTMLButtonElement>(`[data-trace-frame="${key}"]`);
+    focusInHistory(image ?? row ?? tools);
+  }, [focusFrame, rows, shownPage, pageSize]);
   const columns: TableColumn<FrameRecord>[] = [
     {
       key: "frame",
       header: "相机 / 帧组",
       render: frame => <Button size="sm" variant={selected?.camera === frame.camera && selected.seq === frame.seq ? "filled" : "tonal"} aria-label={`追溯 ${burst.cameras[frame.camera] ?? `相机 ${frame.camera + 1}`} 帧组 ${frame.seq}`}
-        aria-pressed={selected?.camera === frame.camera && selected.seq === frame.seq} onClick={() => onSelect(frame.camera, frame.seq)}>{burst.cameras[frame.camera] ?? `相机 ${frame.camera + 1}`} · #{frame.seq}</Button>,
+        data-trace-frame={frameKey(frame)} aria-pressed={selected?.camera === frame.camera && selected.seq === frame.seq} onClick={() => onSelect(frame.camera, frame.seq)}>{burst.cameras[frame.camera] ?? `相机 ${frame.camera + 1}`} · #{frame.seq}</Button>,
     },
     { key: "counter", header: "帧号 / 触发计数", render: frame => `${frame.frameCounter ?? "—"} / ${frame.triggerCounter ?? "—"}` },
     { key: "region", header: "区域", render: frame => frame.region != null && burst.judgement.regions[frame.region] ? regionKindLabel(burst.judgement.regions[frame.region].region.kind) : "—" },
@@ -89,7 +109,7 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect 
       key: "raw",
       header: "原图",
       render: frame => frame.rawFile
-        ? <Button size="sm" aria-label={`查看 ${burst.cameras[frame.camera] ?? `相机 ${frame.camera + 1}`} 帧组 ${frame.seq} 原图`} title={frame.rawFile} variant={selected?.camera === frame.camera && selected.seq === frame.seq ? "filled" : "tonal"} onClick={() => onSelect(frame.camera, frame.seq, true)}>查看</Button>
+        ? <Button size="sm" aria-label={`查看 ${burst.cameras[frame.camera] ?? `相机 ${frame.camera + 1}`} 帧组 ${frame.seq} 原图`} title={frame.rawFile} variant={selected?.camera === frame.camera && selected.seq === frame.seq ? "filled" : "tonal"} data-trace-image={frameKey(frame)} onClick={() => onSelect(frame.camera, frame.seq, true)}>查看</Button>
         : <span className="muted">{frame.status === "missing" ? "缺帧" : "未保留"}</span>,
     },
   ];
@@ -104,7 +124,7 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect 
       <span>原图保留</span><b>{recordingLabel[recording.state]}{recording.available ? " · 已核验落盘" : ""}</b>
     </div>
     {!!recording.errors.length && <Alert tone="warn">{recording.errors.join("；")}</Alert>}
-    <div className="burst-trace-tools">
+    <div className="burst-trace-tools" ref={traceTools} tabIndex={-1} role="group" aria-label="逐帧追溯筛选">
       <Select aria-label="相机筛选" value={camera} onValueChange={setCamera} options={[{ value: "all", label: "全部相机" }, ...burst.cameras.map((name, c) => ({ value: String(c), label: name }))]} />
       <Checkbox label={`只看异常帧（${abnormalFrames.length}）`} checked={onlyAbnormal} onCheckedChange={setOnlyAbnormal} />
       <span className="muted">{rows.length} / {burst.frames.length} 帧</span>
@@ -121,4 +141,4 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect 
       emptyState={<EmptyState title={onlyAbnormal ? "没有异常帧" : "本件没有帧记录"} />}
     />
   </Panel>;
-}, (previous, next) => previous.detail === next.detail && previous.burst === next.burst && previous.selected?.camera === next.selected?.camera && previous.selected?.seq === next.selected?.seq && previous.onSelect === next.onSelect);
+}, (previous, next) => previous.detail === next.detail && previous.burst === next.burst && previous.selected?.camera === next.selected?.camera && previous.selected?.seq === next.selected?.seq && previous.onSelect === next.onSelect && previous.focusFrame === next.focusFrame);
