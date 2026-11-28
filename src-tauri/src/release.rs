@@ -164,7 +164,6 @@ impl ReleaseBundle {
         if recipe != self.recipe {
             return Err("发布配方的版本或实际布局不一致".into());
         }
-        reject_links(&self.root, false)?;
         verify_file_inventory(&self.root, &manifest.files)
     }
 
@@ -198,7 +197,7 @@ impl VerifiedRelease<'_> {
             .corridors
             .iter()
             .map(|c| {
-                read_json::<CorridorResource>(&resource_path(&bundle.root, &c.corridor)?)?;
+                read_json::<CorridorResource>(&join_resource(&bundle.root, &c.corridor)?)?;
                 Ok(CorridorResources {
                     segment: c.segment,
                     image: resource_path(&bundle.root, &c.image)?,
@@ -422,17 +421,14 @@ pub fn peek(
     let root = absolute_path(releases_root)?
         .join(recipe_id)
         .join(bundle_id);
-    reject_links(&root, false)?;
     let manifest = read_manifest(&root, bundle_id)?;
     supported_schema(manifest.schema_version)?;
     if manifest.recipe_id != recipe_id {
         return Err("发布清单的配方身份无效".into());
     }
     for entry in &manifest.files {
-        validate_relative(&entry.path)?;
-        let metadata = fs::symlink_metadata(resource_path(&root, &entry.path)?)
-            .map_err(|e| format!("读取发布资源 {} 失败：{e}", entry.path))?;
-        if !metadata.is_file() || is_link(&metadata) || metadata.len() != entry.bytes {
+        let metadata = checked_file_metadata(&join_resource(&root, &entry.path)?)?;
+        if metadata.len() != entry.bytes {
             return Err(format!("发布资源 {} 的文件类型或大小不符", entry.path));
         }
     }
@@ -454,7 +450,6 @@ fn supported_schema(version: u32) -> Result<(), String> {
 fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<ReleaseBundle, String> {
     safe_id(recipe_id)?;
     valid_bundle_id(bundle_id)?;
-    reject_links(root, false)?;
     let manifest = read_manifest(root, bundle_id)?;
     supported_schema(manifest.schema_version)?;
     if manifest.recipe_id != recipe_id
@@ -651,11 +646,11 @@ impl<'a> ReleaseFiles<'a> {
     }
 
     fn read(&mut self, name: &str) -> Result<Vec<u8>, String> {
-        let expected = self
+        let (declared, expected) = self
             .remaining
-            .remove(name)
+            .remove_entry(name)
             .ok_or_else(|| format!("发布资源 {name} 未声明或被重复引用"))?;
-        let bytes = read_file(&resource_path(self.root, name)?)?;
+        let bytes = read_file(&self.root.join(declared))?;
         if bytes.len() as u64 != expected {
             return Err(format!("发布资源 {name} 的大小不符"));
         }
@@ -790,31 +785,36 @@ fn is_link(metadata: &fs::Metadata) -> bool {
 }
 
 fn reject_links(path: &Path, allow_missing: bool) -> Result<(), String> {
+    checked_path_metadata(path, allow_missing).map(|_| ())
+}
+
+fn checked_path_metadata(path: &Path, allow_missing: bool) -> Result<Option<fs::Metadata>, String> {
     let absolute = absolute_path(path)?;
     let mut cursor = PathBuf::new();
+    let mut leaf = None;
     for component in absolute.components() {
         cursor.push(component.as_os_str());
         if matches!(component, Component::Prefix(_)) {
             continue;
         }
-        match fs::symlink_metadata(&cursor) {
+        leaf = match fs::symlink_metadata(&cursor) {
             Ok(metadata) if is_link(&metadata) => {
                 return Err(format!(
                     "发布资源不允许符号链接或目录重解析点：{}",
                     cursor.display()
                 ))
             }
-            Ok(_) => {}
-            Err(e) if allow_missing && e.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(metadata) => Some(metadata),
+            Err(e) if allow_missing && e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => {
                 return Err(format!(
                     "发布资源不存在或无法读取 {}：{e}",
                     cursor.display()
                 ))
             }
-        }
+        };
     }
-    Ok(())
+    Ok(leaf)
 }
 
 /// 调用方先核对根目录及其上级不是链接；目录项元数据不跟随链接，Windows 上直接取自目录枚举，不逐个打开文件。
@@ -852,6 +852,7 @@ fn inventory(root: &Path, dir: &Path, files: &mut BTreeMap<String, u64>) -> Resu
 }
 
 fn verify_file_inventory(root: &Path, declared: &[FileEntry]) -> Result<(), String> {
+    reject_links(root, false)?;
     let mut actual = BTreeMap::new();
     inventory(root, root, &mut actual)?;
     let listed = actual.remove("manifest.json").is_some();
@@ -868,9 +869,13 @@ fn verify_file_inventory(root: &Path, declared: &[FileEntry]) -> Result<(), Stri
     Ok(())
 }
 
-fn resource_path(root: &Path, name: &str) -> Result<PathBuf, String> {
+fn join_resource(root: &Path, name: &str) -> Result<PathBuf, String> {
     validate_relative(name)?;
-    let path = root.join(name);
+    Ok(root.join(name))
+}
+
+fn resource_path(root: &Path, name: &str) -> Result<PathBuf, String> {
+    let path = join_resource(root, name)?;
     reject_links(&path, true)?;
     Ok(path)
 }
@@ -892,11 +897,14 @@ fn path_exists(path: &Path) -> Result<bool, String> {
     }
 }
 
+fn checked_file_metadata(path: &Path) -> Result<fs::Metadata, String> {
+    checked_path_metadata(path, false)?
+        .filter(fs::Metadata::is_file)
+        .ok_or_else(|| format!("发布资源不是普通文件：{}", path.display()))
+}
+
 fn read_file(path: &Path) -> Result<Vec<u8>, String> {
-    reject_links(path, false)?;
-    if !fs::metadata(path).map_err(|e| e.to_string())?.is_file() {
-        return Err(format!("发布资源不是普通文件：{}", path.display()));
-    }
+    checked_file_metadata(path)?;
     fs::read(path).map_err(|e| format!("读取发布资源 {} 失败：{e}", path.display()))
 }
 
@@ -937,7 +945,7 @@ impl Staging {
     }
 
     fn write_resource(&self, name: String, bytes: Vec<u8>) -> Result<FileEntry, String> {
-        let path = resource_path(&self.path, &name)?;
+        let path = join_resource(&self.path, &name)?;
         ensure_directory(path.parent().ok_or("发布资源没有父目录")?)?;
         write_new(&path, &bytes)?;
         Ok(FileEntry {
@@ -1189,6 +1197,12 @@ mod tests {
         let image_name = &bundle.manifest.cameras[2].corridors[0].image;
         let image_path = bundle.root.join(image_name);
         let image = fs::read(&image_path).unwrap();
+        let read_manifest_only = || peek(&root.0, &bundle.recipe.id, &bundle.id);
+        fs::remove_file(&image_path).unwrap();
+        assert!(reload().is_err() && read_manifest_only().is_err());
+        fs::create_dir(&image_path).unwrap();
+        assert!(reload().is_err() && read_manifest_only().is_err());
+        fs::remove_dir(&image_path).unwrap();
         let mut corrupt = image.clone();
         corrupt[0] = b'!';
         fs::write(&image_path, corrupt).unwrap();
