@@ -104,6 +104,27 @@ fn patched(round: &Value, patch: Value) -> Value {
     round
 }
 
+#[test]
+fn round_list_uses_the_last_format_to_decide_whether_to_validate_the_record() {
+    let root = root();
+    let host = RecipeCaptureHost::open(root.clone(), no_recordings()).unwrap();
+    let round = patched(&complete_round(&root), json!({"plcShotCount": GROUPS}));
+    write_round(&root, &round);
+    assert_eq!(host.list("recipe-a").unwrap().len(), 1);
+    let text = round.to_string();
+    let path = root.join(ROUND).join("round.json");
+
+    std::fs::write(
+        &path,
+        format!(r#"{},"format":1}}"#, &text[..text.len() - 1]),
+    )
+    .unwrap();
+    assert!(host.list("recipe-a").unwrap().is_empty());
+
+    std::fs::write(&path, format!(r#"{{"format":1,{}"#, &text[1..])).unwrap();
+    assert!(host.list("recipe-a").is_err());
+}
+
 /// 应用退出时仍在接收的轮次：重启后判中断，统计按 frames.jsonl 恢复。
 #[test]
 fn round_left_receiving_on_disk_then_reopen_marks_it_interrupted_with_counts_from_frames() {

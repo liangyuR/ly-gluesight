@@ -80,6 +80,34 @@ fn measure_with(w: &Workspace, teach: &CaptureRoundV2, x: f64) -> Result<Workspa
 }
 
 #[test]
+fn damaged_unrelated_round_does_not_hide_the_current_teaching_piece() {
+    let root = tests::ImportTestDir::new();
+    let capture =
+        crate::recipe_capture::RecipeCaptureHost::open(root.0.clone(), Arc::new(|_| Ok(None)))
+            .unwrap();
+    let mut w = burst_workspace(&[Straight, Corner]);
+    let round = capture_round("capture-current", &w.doc, GROUPS, DEVICE, &[]);
+    w.teaching_piece = Some(piece(&round.round_id, 1));
+    for (id, text) in [
+        (
+            round.round_id.as_str(),
+            serde_json::to_string(&round).unwrap(),
+        ),
+        ("capture-damaged", r#"{"format":3}"#.to_owned()),
+    ] {
+        let dir = root.0.join(id);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("round.json"), text).unwrap();
+    }
+
+    let view = super::pieces::plan_pieces_for(&capture, &w);
+    assert_eq!(view.len(), 1);
+    assert_eq!(view[0].round_id, round.round_id);
+    assert_eq!(view[0].group_count, GROUPS);
+    assert!(view[0].images_unavailable.is_some());
+}
+
+#[test]
 fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts() {
     // 防的回归（RB-2、RB-8）：换示教件把走廊与示教帧全部清空，示教要从头重做；或原示教件的边界、其余件的已确认边界、
     // 示教件测量、N_exp / 标定统计 / partCalib / x_ref 还留着（新示教件的帧组与旧边界、旧测量混用）；或把段的数量、类型、

@@ -13,6 +13,13 @@ pub(crate) fn capture_round(bytes: &[u8]) -> serde_json::Result<Value> {
     decode(bytes, Projection::Round)
 }
 
+pub(crate) fn round_format(bytes: &[u8]) -> Option<u64> {
+    decode(bytes, Projection::Format)
+        .ok()?
+        .get("format")?
+        .as_u64()
+}
+
 fn decode(bytes: &[u8], projection: Projection) -> serde_json::Result<Value> {
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     let projected = projection
@@ -29,6 +36,7 @@ struct Key<'a>(#[serde(borrow)] Cow<'a, str>);
 enum Projection {
     Part,
     Round,
+    Format,
     Frames,
     Frame,
     Discard,
@@ -70,7 +78,8 @@ impl<'de> Visitor<'de> for Projection {
                     "camera" | "seq" | "ts" | "available" | "manual" | "file" | "cameraId"
                     | "frameCounter" | "width" | "height" | "session",
                 )
-                | (Self::Round, "origin") => map.next_value()?,
+                | (Self::Round, "origin")
+                | (Self::Format, "format") => map.next_value()?,
                 _ => {
                     map.next_value_seed(Self::Discard)?;
                     continue;

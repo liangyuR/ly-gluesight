@@ -219,14 +219,11 @@ fn resolve_recording(lookup: &RecordingLookup, cycle_id: &str) -> Result<PathBuf
 
 /// round.json 文本是不是段配方轮次（format 2、3 或 4）。
 pub(super) fn is_v2(text: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(text)
-        .ok()
-        .and_then(|v| v.get("format").and_then(serde_json::Value::as_u64))
-        .is_some_and(|format| {
-            [FORMAT, FORMAT_V3, FORMAT_V2]
-                .iter()
-                .any(|&f| u64::from(f) == format)
-        })
+    crate::history_metadata::round_format(text.as_bytes()).is_some_and(|format| {
+        [FORMAT, FORMAT_V3, FORMAT_V2]
+            .iter()
+            .any(|&f| u64::from(f) == format)
+    })
 }
 
 /// 由帧组数与各相机已写盘的 seq 得出的统计。
@@ -496,18 +493,46 @@ impl RecipeCaptureHost {
         round_id: &str,
         deep: bool,
     ) -> Result<(CaptureRoundV2, Option<Vec<FrameLine>>), String> {
+        let (dir, text) = self.read_round_text(round_id)?;
+        Self::load_burst_text(round_id, &dir, &text, deep)
+    }
+
+    pub(crate) fn load_supported_burst(
+        &self,
+        round_id: &str,
+        deep: bool,
+    ) -> Result<CaptureRoundV2, String> {
+        let (dir, text) = self.read_round_text(round_id)?;
+        if !is_v2(&text) {
+            return Err(format!(
+                "采集轮次 {round_id} 是旧拍照点配方的采集记录，已停用"
+            ));
+        }
+        Self::load_burst_text(round_id, &dir, &text, deep).map(|(round, _)| round)
+    }
+
+    fn read_round_text(&self, round_id: &str) -> Result<(PathBuf, String), String> {
         let dir = self.safe_round_path(round_id)?;
         let path = std::fs::canonicalize(dir.join("round.json")).map_err(|e| e.to_string())?;
         if !path.starts_with(&dir) {
             return Err("采集记录路径越出本轮目录".into());
         }
+        let text = crate::fsio::read_text(&path).map_err(|e| e.to_string())?;
+        Ok((dir, text))
+    }
+
+    fn load_burst_text(
+        round_id: &str,
+        dir: &Path,
+        text: &str,
+        deep: bool,
+    ) -> Result<(CaptureRoundV2, Option<Vec<FrameLine>>), String> {
         let round: CaptureRoundV2 =
-            serde_json::from_str(&crate::fsio::read_text(&path).map_err(|e| e.to_string())?)
-                .map_err(|e| format!("采集记录无法读取：{e}"))?;
+            serde_json::from_str(text).map_err(|e| format!("采集记录无法读取：{e}"))?;
         let lines = if deep {
             let path = std::fs::canonicalize(dir.join(FRAMES_FILE))
                 .map_err(|e| format!("采集帧记录不存在：{e}"))?;
-            if !path.starts_with(&dir) {
+            if !path.starts_with(dir) {
                 return Err("采集帧记录路径越出本轮目录".into());
             }
             let text = crate::fsio::read_text(&path).map_err(|e| e.to_string())?;

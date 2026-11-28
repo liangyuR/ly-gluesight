@@ -216,13 +216,8 @@ impl RecipeCaptureHost {
 
     /// 按轮次 ID 读一轮，经记录核对；旧拍照点配方的采集轮次已停用，按无效记录报错。
     pub fn get_any(&self, round_id: &str) -> Result<AnyRound, String> {
-        let dir = self.safe_round_path(round_id)?;
-        if crate::fsio::read_text(&dir.join("round.json")).is_ok_and(|text| !burst::is_v2(&text)) {
-            return Err(format!(
-                "采集轮次 {round_id} 是旧拍照点配方的采集记录，已停用"
-            ));
-        }
-        self.get_burst(round_id).map(AnyRound::Burst)
+        self.load_supported_burst(round_id, true)
+            .map(AnyRound::Burst)
     }
 
     /// 段配方轮次的 ID（round.json 为 format 2 或 3 的目录）。
