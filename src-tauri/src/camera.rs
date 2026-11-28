@@ -559,8 +559,6 @@ struct RigShared {
     capture: AtomicBool,
     recipe_capture: Arc<crate::recipe_capture::RecipeCaptureHost>,
     imaging: Mutex<BTreeMap<String, CameraImaging>>,
-    /// 各相机轮询到的 Line0 门控状态（`watch_gate`），收尾用
-    gate: Arc<crate::gate::Gate>,
 }
 
 /// 单台相机的交付通道，取图回调与模拟 / 样本集共用。
@@ -568,6 +566,8 @@ struct Shared {
     cam: u8,
     camera_id: String,
     rig: Arc<RigShared>,
+    gate: Arc<crate::gate::Gate>,
+    retired: AtomicBool,
     /// 取图回调的整帧缓冲，按 IMAGE_BUDGET_PER_CAMERA 封顶在途字节：灰度图、彩色帧的原始马赛克，
     /// 以及由马赛克按需生成的 RGB 与缩略图
     pool: FramePool,
@@ -614,6 +614,10 @@ struct CameraFrameEvent<'a> {
 }
 
 impl Shared {
+    fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::Acquire)
+    }
+
     fn capture(&self) -> bool {
         self.rig.capture.load(Ordering::Relaxed)
     }
@@ -742,6 +746,9 @@ impl Shared {
     }
 
     fn deliver(&self, mut frame: Frame) {
+        if self.is_retired() {
+            return;
+        }
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
         delivery::observe(&self.identity, &self.manual, &mut frame, current_session);
         if (frame.bayer.is_some() || !frame.images.is_empty()) && current_session {
@@ -751,12 +758,16 @@ impl Shared {
             *self.last_full.lock().unwrap() = Some(CapturedFrame::from_frame(&frame));
             self.full_seq.fetch_add(1, Ordering::SeqCst);
         }
-        self.count_arrival(&frame);
-        let _ = delivery::offer(&self.rig.tx, &self.dropped, frame);
+        if self.count_arrival(&frame) {
+            let _ = delivery::offer(&self.rig.tx, &self.dropped, frame);
+        }
     }
 
     /// 图像内存预算满、没拷图的帧：台账照记、计入帧数，但不交付（节拍按缺帧处理），不中断回调。
     fn discard_over_budget(&self, mut frame: Frame) {
+        if self.is_retired() {
+            return;
+        }
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
         delivery::discard_over_budget(
             &self.identity,
@@ -769,7 +780,7 @@ impl Shared {
     }
 
     /// 帧数、丢包、帧率与界面事件：交付与否都算相机出了这一帧。
-    fn count_arrival(&self, frame: &Frame) {
+    fn count_arrival(&self, frame: &Frame) -> bool {
         self.frames.fetch_add(1, Ordering::Relaxed);
         self.lost_packets
             .fetch_add(frame.lost_packets as u64, Ordering::Relaxed);
@@ -784,6 +795,9 @@ impl Shared {
                 recent.pop_front();
             }
         }
+        if self.is_retired() {
+            return false;
+        }
         if frame.session == self.session.load(Ordering::SeqCst) {
             let _ = self.rig.app.emit(
                 "camera://frame",
@@ -793,6 +807,7 @@ impl Shared {
                 },
             );
         }
+        true
     }
 
     fn fps(&self) -> f32 {
@@ -973,6 +988,9 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             return;
         }
         let shared = unsafe { &*(user as *const Shared) };
+        if shared.is_retired() {
+            return;
+        }
         let info = unsafe { &*info };
         let frame_counter = u64::from(info.frame_num);
         let trigger_counter = frame_counter;
@@ -1094,7 +1112,12 @@ impl Drop for CameraSlot {
 }
 
 impl CameraSlot {
-    fn new(rig: &Arc<RigShared>, cam: u8, config: CameraConfig) -> Self {
+    fn new(
+        rig: &Arc<RigShared>,
+        gate: &Arc<crate::gate::Gate>,
+        cam: u8,
+        config: CameraConfig,
+    ) -> Self {
         let slot = Self {
             device: Mutex::new(None),
             simulator: Mutex::new(None),
@@ -1103,6 +1126,8 @@ impl CameraSlot {
                 cam,
                 camera_id: config.id.clone(),
                 rig: rig.clone(),
+                gate: Arc::clone(gate),
+                retired: AtomicBool::new(false),
                 pool: FramePool::with_budget(POOL_KEEP_PER_CAMERA, IMAGE_BUDGET_PER_CAMERA),
                 frames: AtomicU64::new(0),
                 lost_packets: AtomicU64::new(0),
@@ -1147,6 +1172,10 @@ impl CameraSlot {
             slot.new_session();
         }
         slot
+    }
+
+    pub(crate) fn matches_session(&self, session: u64) -> bool {
+        !self.shared.is_retired() && self.shared.session.load(Ordering::SeqCst) == session
     }
 
     pub fn config(&self) -> CameraConfig {
@@ -2016,15 +2045,33 @@ fn apply(
     Ok((warnings, max_fps, configured_frame_rate, format, chunks))
 }
 
+#[derive(Default)]
+struct CameraGeneration {
+    gate: Arc<crate::gate::Gate>,
+    number: u64,
+}
+
+impl CameraGeneration {
+    fn next(&self) -> Self {
+        Self {
+            gate: Arc::default(),
+            number: self.number.wrapping_add(1),
+        }
+    }
+}
+
+struct CameraGroup {
+    slots: Vec<Arc<CameraSlot>>,
+    generation: CameraGeneration,
+}
+
 pub struct CameraRig {
     rig: Arc<RigShared>,
-    slots: RwLock<Vec<Arc<CameraSlot>>>,
+    group: RwLock<CameraGroup>,
     path: PathBuf,
     next_id: Mutex<u32>,
     /// 写 cameras.json 一次一个：连上相机固定序列号的后台保存会和界面的保存同时来
     save_lock: Mutex<()>,
-    /// 增删相机（相机组序号重排）一次 +1：按序号记下的相机就作废了
-    generation: AtomicU64,
     /// 启动时读配置遇到的问题，节拍启动后写进日志
     pub notes: Vec<String>,
 }
@@ -2075,21 +2122,20 @@ impl CameraRig {
                 },
             )?,
             imaging: Mutex::new(std::mem::take(&mut file.imaging)),
-            gate: Arc::default(),
         });
+        let generation = CameraGeneration::default();
         let slots = file
             .cameras
             .into_iter()
             .enumerate()
-            .map(|(i, c)| Arc::new(CameraSlot::new(&rig, i as u8, c)))
+            .map(|(i, c)| Arc::new(CameraSlot::new(&rig, &generation.gate, i as u8, c)))
             .collect();
         let mut this = Self {
             rig,
-            slots: RwLock::new(slots),
+            group: RwLock::new(CameraGroup { slots, generation }),
             path,
             next_id: Mutex::new(file.next_id),
             save_lock: Mutex::new(()),
-            generation: AtomicU64::new(0),
             notes,
         };
         if assigned {
@@ -2156,20 +2202,20 @@ impl CameraRig {
     }
 
     pub fn generation(&self) -> u64 {
-        self.generation.load(Ordering::SeqCst)
+        self.group.read().unwrap().generation.number
     }
 
     pub fn slots(&self) -> Vec<Arc<CameraSlot>> {
-        self.slots.read().unwrap().clone()
+        self.group.read().unwrap().slots.clone()
     }
 
     /// Line0 门控状态（D-SB-54），收尾按它提前结束。
     pub fn gate(&self) -> Arc<crate::gate::Gate> {
-        self.rig.gate.clone()
+        self.group.read().unwrap().generation.gate.clone()
     }
 
     pub fn slot(&self, cam: usize) -> Option<Arc<CameraSlot>> {
-        self.slots.read().unwrap().get(cam).cloned()
+        self.group.read().unwrap().slots.get(cam).cloned()
     }
 
     pub(crate) fn target_slot(
@@ -2305,19 +2351,31 @@ impl CameraRig {
             .filter(|s| s.released.load(Ordering::SeqCst))
             .map(|s| s.config().id)
             .collect();
+        let generation = self.group.read().unwrap().generation.next();
         let slots: Vec<Arc<CameraSlot>> = configs
             .into_iter()
             .enumerate()
             .map(|(i, c)| {
                 let keep = c.source == CameraSource::Mvs && released.contains(&c.id);
-                let slot = CameraSlot::new(&self.rig, i as u8, c);
+                let slot = CameraSlot::new(&self.rig, &generation.gate, i as u8, c);
                 slot.released.store(keep, Ordering::SeqCst);
                 Arc::new(slot)
             })
             .collect();
         // 旧相机在锁外释放：关海康相机要一会儿，别让别的线程卡在读相机组上
-        let old = std::mem::replace(&mut *self.slots.write().unwrap(), slots.clone());
-        self.generation.fetch_add(1, Ordering::SeqCst);
+        let old = {
+            let mut group = self.group.write().unwrap();
+            for slot in &group.slots {
+                slot.shared.retired.store(true, Ordering::Release);
+            }
+            std::mem::replace(
+                &mut *group,
+                CameraGroup {
+                    slots: slots.clone(),
+                    generation,
+                },
+            )
+        };
         drop(old);
         for s in &slots {
             supervise(app, s);
@@ -2344,7 +2402,10 @@ fn watch_gate(slot: std::sync::Weak<CameraSlot>) {
         let mut was: Option<bool> = None;
         loop {
             let Some(s) = slot.upgrade() else { break };
-            let (gate, cam) = (s.shared.rig.gate.clone(), s.shared.cam);
+            if s.shared.is_retired() {
+                break;
+            }
+            let (gate, cam) = (&s.shared.gate, s.shared.cam);
             let config = s.config();
             if config.source == CameraSource::Simulator {
                 drop(s);
@@ -2416,6 +2477,9 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
         let mut next_retry = Instant::now();
         loop {
             let Some(s) = slot.upgrade() else { break };
+            if s.shared.is_retired() {
+                break;
+            }
             let config = s.config();
             if matches!(config.source, CameraSource::Mvs | CameraSource::Simulator)
                 && Instant::now() >= next_retry
@@ -2433,6 +2497,9 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
                     };
                     let attempt = match gate {
                         Some(_gate) => {
+                            if s.shared.is_retired() {
+                                break;
+                            }
                             let config = s.config();
                             let lost = s.shared.disconnected.load(Ordering::SeqCst);
                             let opened = if config.source == CameraSource::Simulator {
@@ -2833,7 +2900,7 @@ pub fn camera_preview(
     let session = slot.shared.session.load(Ordering::SeqCst);
     let bytes = slot.shared.preview_bytes(usize::from(index));
     if !bytes.is_empty()
-        && (session != slot.shared.session.load(Ordering::SeqCst)
+        && (!slot.matches_session(session)
             || !cycle
                 .camera
                 .slot(cam)
@@ -2990,6 +3057,36 @@ async fn camera_reconnect_inner(app: AppHandle, cam: usize, id: &str) -> Result<
     let _ = cycle.tx.send(cycle::Input::Refresh);
     let _ = app.emit("camera://changed", ());
     opened
+}
+
+#[cfg(test)]
+#[test]
+fn retired_camera_group_cannot_change_the_new_groups_gate_evidence() {
+    let previous = CameraGeneration::default();
+    let old_worker = Arc::clone(&previous.gate);
+    let now = Instant::now();
+    old_worker.edge(0, true, 10, now);
+    old_worker.observe(0, false, now);
+    assert_eq!(old_worker.closed_since(&[0], now), Some(now));
+
+    let new = previous.next();
+    assert_eq!(new.gate.open_count(), 0);
+    assert!(new.gate.closed_since(&[0], now).is_none());
+
+    new.gate.edge(0, true, 20, now);
+    new.gate.observe(0, true, now);
+    old_worker.edge(0, true, 1000, now);
+    old_worker.edge(0, false, 2000, now);
+    old_worker.observe(0, false, now);
+    old_worker.forget(0);
+    assert_eq!(new.gate.open_count(), 1);
+    assert_eq!(new.gate.latest_open(0, now, |_| true), Some((20, 0)));
+    assert!(new.gate.close_clock(0).is_none());
+    assert!(new.gate.closed_since(&[0], now).is_none());
+
+    let closed = now + Duration::from_millis(1);
+    new.gate.observe(0, false, closed);
+    assert_eq!(new.gate.closed_since(&[0], closed), Some(closed));
 }
 
 #[cfg(test)]

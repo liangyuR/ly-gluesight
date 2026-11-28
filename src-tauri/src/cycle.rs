@@ -1959,17 +1959,21 @@ impl Machine {
     }
 
     fn on_frame(&mut self, f: Frame) {
+        let Some(slot) = host(&self.app).camera.slot(f.cam as usize) else {
+            return;
+        };
+        if !slot.matches_session(f.session) {
+            return;
+        }
         let meta = FrameMeta::from(&f);
         self.ledgers.observe(&meta);
         let accepting = matches!(self.phase, Phase::Acquire | Phase::Drain);
-        let slot = host(&self.app).camera.slot(f.cam as usize);
         if f.manual {
             if accepting {
                 if let Some(part) = self.part.as_mut() {
-                    let current = slot.as_ref().is_some_and(|slot| {
-                        slot.routing_state()
-                            .is_ok_and(|state| state.0.session == f.session)
-                    });
+                    let current = slot
+                        .routing_state()
+                        .is_ok_and(|state| state.0.session == f.session);
                     let burst = &mut part.burst;
                     // 接件后的手动帧丢弃并告警，不判 ERR（它占了这台相机一个帧号，此后的帧组可能错开一格）
                     if let Some(camera) = burst
@@ -2005,7 +2009,7 @@ impl Machine {
             self.stray_times.push_back(now);
             self.stray_times
                 .retain(|t| now.duration_since(*t) < Duration::from_secs(60));
-            let camera = slot.map_or_else(|| format!("#{}", f.cam + 1), |s| s.config().id);
+            let camera = slot.config().id;
             let msg = format!(
                 "空闲时收到相机 {camera} 的帧（帧计数 {}），已记入设备计数账",
                 f.frame_counter
