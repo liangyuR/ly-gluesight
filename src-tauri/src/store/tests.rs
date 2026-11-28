@@ -1543,6 +1543,96 @@ fn rejudge_reader_reads_during_uncommitted_write_and_refreshes_after_commit() {
 }
 
 #[test]
+fn history_subset_exports_read_committed_data_without_waiting_for_the_writer() {
+    use std::sync::mpsc::channel;
+    use std::thread;
+
+    const WAIT: Duration = Duration::from_secs(5);
+    const NEW_COUNTER: u64 = 24680;
+    let db = TestDb::new();
+    let source = db.0.join("历史 源 # %41.sqlite");
+    let parts_path = db.0.join("parts-export.sqlite");
+    let project_path = db.0.join("project-export.sqlite");
+    let store = Store::open_for(&source, "line-a").unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let record = burst_part(&recipe, "history-export-writer", &judgement, &burst);
+    let id = store.insert(&record).unwrap();
+    let before = store.detail(id).unwrap().burst.unwrap().frames;
+
+    let (finished, wait_for_exports) = channel();
+    let exports = thread::scope(|threads| {
+        let mut writer = store.conn.lock().unwrap();
+        let write = writer
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        write
+            .execute("UPDATE parts SET sn = 'SN-COMMITTED' WHERE id = ?1", [id])
+            .unwrap();
+        write
+            .execute(
+                "UPDATE part_frames SET frame_counter = ?2 WHERE part_id = ?1 AND camera = 0 AND seq = 1",
+                params![id, NEW_COUNTER.to_string()],
+            )
+            .unwrap();
+        write
+            .execute(
+                "UPDATE recipe_snapshots SET json = json_set(json, '$.name', '已提交配方')
+                 WHERE project_id = ?1 AND revision_id = ?2",
+                params![store.project(), recipe.revision_id],
+            )
+            .unwrap();
+
+        let (store, parts_path, project_path) = (&store, &parts_path, &project_path);
+        let exporter = threads.spawn(move || {
+            let result = store.export_parts(&[id], parts_path).and_then(|()| {
+                store.export_project(store.project(), project_path, &BTreeSet::new())
+            });
+            let _ = finished.send(result);
+        });
+        let result = wait_for_exports.recv_timeout(WAIT);
+        if result.is_ok() {
+            write.commit().unwrap();
+        } else {
+            write.rollback().unwrap();
+        }
+        drop(writer);
+        exporter.join().unwrap();
+        result
+    });
+    let (parts, linked) = exports.expect("两种导出均须在源写事务结束前完成").unwrap();
+    assert_eq!(parts, 1);
+    assert!(linked.is_empty());
+    for path in [&parts_path, &project_path] {
+        let exported = Store::open_for(path, store.project()).unwrap();
+        assert_eq!(
+            exported
+                .latest_history_ids(&HistoryQuery::default(), 2)
+                .unwrap(),
+            [id]
+        );
+        let detail = exported.detail(id).unwrap();
+        assert_eq!(detail.summary.sn, record.sn);
+        assert_eq!(detail.burst.unwrap().frames, before);
+        let snapshot = exported.record_recipe(&detail.summary).unwrap().unwrap();
+        assert_eq!(snapshot.name, recipe.name);
+    }
+
+    let after = store.detail(id).unwrap();
+    assert_eq!(after.summary.sn, "SN-COMMITTED");
+    let mut expected_frames = before;
+    expected_frames
+        .iter_mut()
+        .find(|frame| frame.camera == 0 && frame.seq == 1)
+        .unwrap()
+        .frame_counter = Some(NEW_COUNTER);
+    assert_eq!(after.burst.unwrap().frames, expected_frames);
+    let snapshot = store.record_recipe(&after.summary).unwrap().unwrap();
+    assert_eq!(snapshot.name, "已提交配方");
+}
+
+#[test]
 fn large_history_frame_table_rejects_malformed_metrics_in_the_last_frame() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
