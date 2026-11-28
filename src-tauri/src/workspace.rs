@@ -266,6 +266,13 @@ impl Workspace {
         self.flow != pieces::FLOW
     }
 
+    fn identity(&self) -> CandidateRevision {
+        CandidateRevision {
+            instance_id: self.instance_id,
+            revision: self.revision,
+        }
+    }
+
     fn expect_instance(&self, instance_id: u64) -> Result<(), String> {
         if self.instance_id != instance_id {
             return Err("候选已删除或重建，请重新加载后操作".into());
@@ -764,9 +771,9 @@ pub(crate) fn reset_for_project_import(path: &Path) -> Result<(), String> {
     )
 }
 
-#[derive(Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CandidateDeletionTarget {
+struct CandidateRevision {
     instance_id: u64,
     revision: u64,
 }
@@ -774,7 +781,7 @@ struct CandidateDeletionTarget {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecipeDeletionTarget {
-    candidate: Option<CandidateDeletionTarget>,
+    candidate: Option<CandidateRevision>,
     production_revision_id: Option<String>,
 }
 
@@ -790,11 +797,7 @@ pub fn workspace_delete(
     let workspace = items.get(&id);
     let cycle = app.state::<CycleHost>();
     let production = cycle.recipe(&id);
-    if target.candidate
-        != workspace.map(|w| CandidateDeletionTarget {
-            instance_id: w.instance_id,
-            revision: w.revision,
-        })
+    if target.candidate != workspace.map(Workspace::identity)
         || target.production_revision_id.as_deref()
             != production
                 .as_ref()

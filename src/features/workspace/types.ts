@@ -95,12 +95,17 @@ export interface TeachingPiece {
 
 /** 工件配方（回传包：候选与示教件轮次记录，不带示教件原图）的导出结果、导入预览与导入结果 */
 export interface PackageExported { path: string; bytes: number; files: number }
+export interface PackageImportTarget {
+  manifestSha256: string;
+  candidate: Pick<Workspace, "instanceId" | "revision"> | null;
+}
 export interface PackagePreview {
   path: string; bytes: number; recipeId: string; name: string; productCode: number; sourceProjectName: string;
   exportedAt: number; appVersion: string; teachingPiece: TeachingPiece | null;
   /** 包里带示教件原图（以前导出的包） */
   teachingImages: boolean;
   productionVersion: number | null; candidate: { revision: number; updatedAt: number; pending: boolean } | null;
+  target: PackageImportTarget;
   /** 不拦导入的提示（如相机设备配置与示教件采集时不一致） */
   warnings: string[];
   blocker: string | null;

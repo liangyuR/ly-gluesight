@@ -515,6 +515,14 @@ pub(crate) fn manifest_value<R: Read + Seek>(
     zip: &mut ZipArchive<R>,
     label: &str,
 ) -> Result<Value, String> {
+    serde_json::from_str(&manifest_text(zip, label)?)
+        .map_err(|e| format!("{label}清单格式无效：{e}"))
+}
+
+pub(crate) fn manifest_text<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    label: &str,
+) -> Result<String, String> {
     let mut entry = zip
         .by_name(MANIFEST)
         .map_err(|_| format!("不是{label}：缺少 manifest.json"))?;
@@ -527,7 +535,7 @@ pub(crate) fn manifest_value<R: Read + Seek>(
         .take(MANIFEST_MAX_BYTES + 1)
         .read_to_string(&mut text)
         .map_err(|e| format!("{label}清单无法读取：{e}"))?;
-    serde_json::from_str(&text).map_err(|e| format!("{label}清单格式无效：{e}"))
+    Ok(text)
 }
 
 /// 清单里的文件条目：不重复（不区分大小写）、校验和格式有效、路径都通过 `allowed`。

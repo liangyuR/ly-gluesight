@@ -5,7 +5,7 @@ import type { NavigationMapData } from "./navigation/types";
 import type { RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PassSkipSuggestView, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidatePage, HistoryCandidateQuery, PackageExported, PackageImported, PackagePreview, PassLink, SegmentSaveImpact, Workspace, WorkspaceDeleteTarget, WorkspaceView } from "./types";
+import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidatePage, HistoryCandidateQuery, PackageExported, PackageImported, PackageImportTarget, PackagePreview, PassLink, SegmentSaveImpact, Workspace, WorkspaceDeleteTarget, WorkspaceView } from "./types";
 
 let liveSeq = 0;
 
@@ -51,7 +51,7 @@ export const workspaceApi = {
   packageExport: (id: string, path: string, taskId: string) =>
     desktopCall<PackageExported>("workspace_package_export", { id, path, taskId }),
   packagePick: () => desktopCall<PackagePreview | null>("workspace_package_pick"),
-  packageImport: (path: string, taskId: string) => desktopCall<PackageImported>("workspace_package_import", { path, taskId }),
+  packageImport: (path: string, target: PackageImportTarget, taskId: string) => desktopCall<PackageImported>("workspace_package_import", { path, target, taskId }),
   /** 导入件一台相机指定范围的缩略图，startSeq 从 1 起，count 不超过 32。 */
   captureRoundThumbs: (roundId: string, cameraId: string, startSeq: number, count: number) => desktopCall<ArrayBuffer>("recipe_capture_round_thumbs", { roundId, cameraId, startSeq, count }).then(decodeThumbStrip),
   /** 工作台一次保存：段列表 + 示教件边界（确认） */

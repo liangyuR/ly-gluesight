@@ -277,7 +277,8 @@ seq = a + min(N - 1, floor(t * N))
 ### 实现与验证
 
 - 后端：
-  - `workspace/package.rs`：`export_candidate`、`stage`、`rebase`、`install`、`camera_notes`，以及命令 `workspace_package_target`、`workspace_package_export`、`workspace_package_pick`、`workspace_package_import`；
+  - `workspace/package.rs`：`export_candidate`、`stage`、`rebase`、`install`、`camera_notes`，以及命令 `workspace_package_target`、`workspace_package_export`、`workspace_package_pick`、`workspace_package_preview`、`workspace_package_import`；
+  - 选择包或按 `path` 预览时，返回确认目标 `target`。它包含 `manifest.json` 原文的 `manifestSha256` 和本机候选的实例及修订，尚无候选时为 `null`。导入时提交 `path` 与原 `target`，解包前核对清单，覆盖前在工作台锁内核对候选。任一项变化时重新选择配方包并确认。逐文件的校验和仍在解包时核对。
   - `project/transfer.rs` 的 ZIP 读写与清单校验，与项目导出包共用。
 - 前端：`LibraryPage`（候选卡片“导出工件配方”、页头“导入工件配方”）、`PackageDialogs`（导出进度、导入预览与结果）。
 - 默认测试：`workspace::package::tests` 覆盖以下几点：

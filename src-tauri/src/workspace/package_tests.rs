@@ -135,7 +135,7 @@ fn exported(dirs: &Dirs) -> Workspace {
 }
 
 fn staged(dirs: &Dirs) -> Workspace {
-    let (manifest, mut w) = stage(&dirs.package, &dirs.staging, &quiet()).unwrap();
+    let (manifest, mut w) = stage(&dirs.package, &dirs.staging, &quiet(), None).unwrap();
     let local = Local {
         has_production: true,
         next_version: 4,
@@ -148,6 +148,34 @@ fn staged(dirs: &Dirs) -> Workspace {
     )
     .unwrap();
     w
+}
+
+#[test]
+fn package_replaced_after_preview_requires_a_new_confirmation() {
+    let dirs = Dirs::new("changed-after-preview");
+    let mut candidate = exported(&dirs);
+    let (_, confirmed, _) = inspect_rounds(&dirs.package).unwrap();
+    candidate.doc.name = "另一份有效配方包".into();
+    write(
+        &dirs
+            .source
+            .join("workspaces")
+            .join(&candidate.doc.id)
+            .join("workspace.json"),
+        &serde_json::to_string(&candidate).unwrap(),
+    );
+    let replacement = dirs.base.join("replacement.zip");
+    let meta = ProjectMeta::new("dev", "开发", "", None);
+    export_candidate(&dirs.source, &meta, &candidate, &replacement, &quiet()).unwrap();
+    std::fs::copy(replacement, &dirs.package).unwrap();
+
+    let rejected = stage(&dirs.package, &dirs.staging, &quiet(), Some(&confirmed));
+    assert!(rejected.is_err());
+    assert!(std::fs::read_dir(&dirs.staging).unwrap().next().is_none());
+
+    let (_, confirmed, _) = inspect_rounds(&dirs.package).unwrap();
+    let (_, accepted) = stage(&dirs.package, &dirs.staging, &quiet(), Some(&confirmed)).unwrap();
+    assert_eq!(accepted.doc.name, candidate.doc.name);
 }
 
 /// 回传包只带候选与示教件轮次记录（原图、旧示教帧、旧轮次测量、发布快照都不带）；导入后版本号按本机配方库、
@@ -295,7 +323,7 @@ fn format_one_package_imports_without_images_and_rejects_smuggled_frames() {
 
     let old = dirs.base.join("old.zip");
     rewrite_as_format_one(&dirs, &old, None);
-    let (manifest, w) = stage(&old, &dirs.staging, &quiet()).unwrap();
+    let (manifest, w) = stage(&old, &dirs.staging, &quiet(), None).unwrap();
     assert!(!manifest.teaching_images);
     assert_eq!(w.doc.id, source.doc.id);
 
