@@ -1,5 +1,5 @@
-import { Fragment, useState } from "react";
-import { Alert, Button, Dialog, List, ListItem, NumberField, SegmentedControl, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
+import { Fragment, useState, type ReactNode } from "react";
+import { Alert, Button, Dialog, List, ListItem, NumberField, Pagination, SegmentedControl, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
 import type { Verdict } from "../../cycle/types";
 import { OperationStatus, type OperationLabels } from "../../workspace/operation";
 import { formatTime, verdictGroups, verdictLabel, verdictTone } from "../meta";
@@ -7,6 +7,7 @@ import { useRejudgeTask, type RejudgeOptions, type RejudgeScope } from "../rejud
 import type { KindOverride, Overrides } from "../types";
 
 const order: Verdict[] = verdictGroups.flatMap((g) => g.verdicts);
+const DETAILS_PAGE_SIZE = 25;
 const kindFields: [keyof KindOverride, string][] = [
   ["tolUpper", "上公差"],
   ["tolLower", "下公差"],
@@ -26,6 +27,24 @@ const rejudgeLabels: OperationLabels = {
 const isNg = (v: Verdict) => v.startsWith("NG");
 const isOk = (v: Verdict) => v.startsWith("OK");
 const orDefault = (value: number | "") => (value === "" ? undefined : value);
+
+function RejudgeDetails<T>({ label, rows, total, renderRow }: {
+  label: string;
+  rows: T[];
+  total: number;
+  renderRow: (row: T) => ReactNode;
+}) {
+  const [page, setPage] = useState(1);
+  const start = (page - 1) * DETAILS_PAGE_SIZE;
+  return <Stack direction="column" align="stretch" gap={6}>
+    <Text variant="label">{label}{rows.length < total && ` · 显示最近 ${rows.length} 件，共 ${total} 件`}</Text>
+    <List key={page} className="rj-changes" aria-label={label}>
+      {rows.slice(start, start + DETAILS_PAGE_SIZE).map(renderRow)}
+    </List>
+    {rows.length > DETAILS_PAGE_SIZE && <Pagination label={`${label}分页`} total={rows.length}
+      page={page} pageSize={DETAILS_PAGE_SIZE} showPageSize={false} onPageChange={setPage} />}
+  </Stack>;
+}
 
 /** 用存储的测量表批量重判：可选当前配方与试算参数，输出判定变化矩阵。 */
 export default function RejudgeDialog({ scope, originalScope, onUseCurrentScope, onOpenRecord, onClose }: {
@@ -68,6 +87,7 @@ export default function RejudgeDialog({ scope, originalScope, onUseCurrentScope,
 
   const cell = (from: Verdict, to: Verdict) => result?.matrix.find((m) => m.from === from && m.to === to)?.count ?? 0;
   const released = result ? result.matrix.filter((m) => isNg(m.from) && isOk(m.to)).reduce((a, m) => a + m.count, 0) : 0;
+  const changed = result?.matrix.reduce((total, m) => total + (m.from === m.to ? 0 : m.count), 0) ?? 0;
   const matrixColumns: TableColumn<Verdict>[] = [
     { key: "from", header: "原结果 ＼ 新结果", render: (from) => <StatusBadge tone={verdictTone(from)}>{verdictLabel[from]}</StatusBadge> },
     ...order.map((to): TableColumn<Verdict> => ({
@@ -123,18 +143,18 @@ export default function RejudgeDialog({ scope, originalScope, onUseCurrentScope,
         {error && <Alert tone="ng">{error}</Alert>}
 
         {result && (
-          <>
+          <Fragment key={operation.snapshot()?.progress.taskId}>
             <Stack gap={14}>
               <span>重判 <b>{result.total}</b> 件，跳过 <b>{result.skipped}</b> 件{result.limitHit && "（超过 5000 件，只取最近 5000 件）"}</span>
               {released > 0 && <StatusBadge tone="ng">NG→OK {released} 件：放宽后可能放过真实缺陷，请逐件复核</StatusBadge>}
             </Stack>
-            {!!result.skipReasons.length && <List className="rj-changes" aria-label="跳过原因">
-              {result.skipReasons.map(item => <ListItem key={item.id} title={<span className="sn">SN {item.sn}</span>} description={item.reason} onClick={() => onOpenRecord(item.id)} />)}
-            </List>}
+            {result.skipReasons.length > 0 && <RejudgeDetails label="跳过原因" rows={result.skipReasons} total={result.skipped}
+              renderRow={item => <ListItem key={item.id} title={<span className="sn">SN {item.sn}</span>} description={item.reason} onClick={() => onOpenRecord(item.id)} />}
+            />}
             <Table<Verdict> caption="判定变化矩阵" rows={order} columns={matrixColumns} rowKey={(v) => v} />
             {result.changes.length > 0 && (
-              <List className="rj-changes" aria-label="判定变化记录">
-                {result.changes.map((c) => (
+              <RejudgeDetails label="判定变化记录" rows={result.changes} total={changed}
+                renderRow={c => (
                   <ListItem
                     key={c.id}
                     leading={<span className="mono">{formatTime(c.ts)}</span>}
@@ -145,10 +165,10 @@ export default function RejudgeDialog({ scope, originalScope, onUseCurrentScope,
                     description={c.reason}
                     onClick={() => onOpenRecord(c.id)}
                   />
-                ))}
-              </List>
+                )}
+              />
             )}
-          </>
+          </Fragment>
         )}
       </Stack>
     </Dialog>

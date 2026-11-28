@@ -35,21 +35,24 @@ const emitRejudgeProgress = (payload: OperationProgress) => {
 function mockTextFilteredHistory(rejudge?: () => Promise<RejudgeResult>, operation?: {
   cancel: (taskId: string) => Promise<boolean>;
   status: (taskId: string) => OperationProgress | null;
-}) {
-  const records = [burstPartSummary(1), { ...burstPartSummary(2), tags: ["待复核"] }];
+}, records = [burstPartSummary(1), { ...burstPartSummary(2), tags: ["待复核"] }]) {
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "recipe_list") return { recipes: [], errors: [] };
     if (command === "project_current") return projects[0].meta;
     if (command === "project_list") return projects;
     if (command === "history_query") {
-      const { sn, tag } = (args as { query: HistoryQuery }).query;
-      return page(records.filter(item => (!sn || item.sn.includes(sn)) && (!tag || item.tags?.includes(tag))));
+      const { sn, tag, offset = 0, limit = 50 } = (args as { query: HistoryQuery }).query;
+      const filtered = records.filter(item => (!sn || item.sn.includes(sn)) && (!tag || item.tags?.includes(tag)));
+      return { ...page(filtered), items: filtered.slice(offset, offset + limit) };
     }
     if (rejudge) {
       if (command === "history_rejudge") return rejudge();
       if (command === "operation_status") return operation?.status((args as { taskId: string }).taskId) ?? null;
       if (command === "operation_cancel" && operation) return operation.cancel((args as { taskId: string }).taskId);
-      if (command === "history_overview") return { ...burstPartDetail(), summary: records[0], burst: null };
+      if (command === "history_overview") {
+        const { id } = args as { id: number };
+        return { ...burstPartDetail(), summary: records.find(item => item.id === id) ?? records[0], burst: null };
+      }
       if (command === "history_neighbors") return { older: null, newer: null };
     }
     throw new Error(`Unexpected command: ${command}`);
@@ -116,6 +119,58 @@ it("收起重判后离开页面并换筛选 → 重开同一任务，结果按�
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("history_neighbors", {
     id: 1, query: expect.objectContaining({ sn: "SN-101" }),
   }));
+});
+
+it("批量重判的两组长结果独立分页 → 末页可用键盘按原筛选打开正确工件", async () => {
+  const records = Array.from({ length: 700 }, (_, index) => burstPartSummary(700 - index));
+  const reason = "当前候选允许断胶长度变化，复核各相机的对应区域和截断测站。".repeat(6);
+  const result: RejudgeResult = {
+    total: 360, skipped: 340, limitHit: false,
+    matrix: [{ from: "NG_GAP", to: "OK", count: 360 }],
+    skipReasons: records.slice(0, 300).map(({ id, sn, ts }) => ({ id, sn, ts, kind: "noTable", reason: "缺少测量表" })),
+    changes: records.slice(340, 640).map(({ id, sn, ts }) => ({ id, sn, ts, from: "NG_GAP", to: "OK", reason, flags: null })),
+  };
+  mockTextFilteredHistory(async () => result, undefined, records);
+  const user = userEvent.setup();
+  render(<MemoryRouter initialEntries={["/history"]}><Routes>
+    <Route path="/history" element={<HistoryPage />} />
+    <Route path="/history/:id" element={<HistoryDetailPage />} />
+  </Routes></MemoryRouter>);
+  await row(700);
+  await user.type(screen.getByLabelText("历史 SN"), "SN-{Enter}");
+  const open = screen.getByRole("button", { name: "批量重判" });
+  await waitFor(() => expect(open).toBeEnabled());
+  await user.click(open);
+  const dialog = within(screen.getByRole("dialog", { name: "批量重判" }));
+  await user.click(dialog.getByRole("button", { name: "重判当前筛选（700 件）" }));
+  const skippedList = await dialog.findByRole("list", { name: "跳过原因" });
+  const changedList = () => dialog.getByRole("list", { name: "判定变化记录" });
+  const skipped = within(skippedList);
+  const changed = () => within(changedList());
+  expect(skipped.getAllByRole("button")).toHaveLength(25);
+  expect(changed().getAllByRole("button")).toHaveLength(25);
+  expect(dialog.getByText("跳过原因 · 显示最近 300 件，共 340 件")).toBeVisible();
+  expect(dialog.getByText("判定变化记录 · 显示最近 300 件，共 360 件")).toBeVisible();
+  skippedList.scrollTop = 80;
+  changedList().scrollTop = 120;
+  expect(within(dialog.getByRole("navigation", { name: "跳过原因分页" })).getByRole("button", { name: "上一页" })).toBeDisabled();
+
+  const changedPages = within(dialog.getByRole("navigation", { name: "判定变化记录分页" }));
+  await user.click(changedPages.getByRole("button", { name: "第 12 页" }));
+  expect(skipped.getByText(`SN ${result.skipReasons[0].sn}`)).toBeVisible();
+  expect(skippedList.scrollTop).toBe(80);
+  expect(changedList().scrollTop).toBe(0);
+  expect(changed().queryByText(`SN ${result.changes[0].sn}`)).not.toBeInTheDocument();
+  expect(changed().getAllByRole("button")).toHaveLength(25);
+  const target = result.changes.at(-1)!;
+  const opener = changed().getByRole("button", { name: new RegExp(`SN ${target.sn}`) });
+  expect(opener).toHaveTextContent(reason);
+  opener.focus();
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("history_overview", { id: target.id }));
+  expect(invoke).toHaveBeenCalledWith("history_neighbors", {
+    id: target.id, query: expect.objectContaining({ sn: "SN-" }),
+  });
 });
 
 it("第二次重判开始即清除旧矩阵，失败后显示错误并可重试", async () => {
