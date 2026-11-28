@@ -438,43 +438,31 @@ pub(crate) fn write_zip_with<M: Serialize>(
         for (name, path) in entries {
             check()?;
             // 空闲压缩过的录制原图还原成原始 PGM 字节写进包，包里没有 .gsr
-            let restored = compressed(&path)
-                .then(|| crate::image_file::read_original(&path))
-                .transpose()?;
-            let file =
-                File::open(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
-            let length = match &restored {
-                Some(bytes) => bytes.len() as u64,
-                None => file.metadata().map_err(|e| e.to_string())?.len(),
-            };
             let level = if name.ends_with(".pgm") || name.ends_with(".png") {
                 1
             } else {
                 6
             };
-            let options = SimpleFileOptions::default()
-                .compression_method(CompressionMethod::Deflated)
-                .compression_level(Some(level))
-                .large_file(length >= u32::MAX as u64);
-            zip.start_file(name.as_str(), options)
-                .map_err(|e| e.to_string())?;
-            let io_error = |e| format!("写入 {name} 失败：{e}");
-            let (bytes, sha256) = match &restored {
-                Some(bytes) => copy_hashed_with(
-                    bytes.as_slice(),
-                    &mut zip,
-                    &mut buffer,
-                    &mut check,
-                    io_error,
-                ),
-                None => copy_hashed_with(
-                    BufReader::new(file),
-                    &mut zip,
-                    &mut buffer,
-                    &mut check,
-                    io_error,
-                ),
-            }?;
+            let mut write_entry = |source: &mut dyn Read, length: u64, check: &mut _| {
+                let options = SimpleFileOptions::default()
+                    .compression_method(CompressionMethod::Deflated)
+                    .compression_level(Some(level))
+                    .large_file(length >= u32::MAX as u64);
+                zip.start_file(name.as_str(), options)
+                    .map_err(|e| e.to_string())?;
+                copy_hashed_with(source, &mut zip, &mut buffer, check, |e| {
+                    format!("写入 {name} 失败：{e}")
+                })
+            };
+            let (bytes, sha256) = if compressed(&path) {
+                let restored = crate::image_file::read_original_checked(&path, &mut check)?;
+                write_entry(&mut restored.as_slice(), restored.len() as u64, &mut check)?
+            } else {
+                let file =
+                    File::open(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+                let length = file.metadata().map_err(|e| e.to_string())?.len();
+                write_entry(&mut BufReader::new(file), length, &mut check)?
+            };
             files.push(PackageFile {
                 path: name,
                 bytes,

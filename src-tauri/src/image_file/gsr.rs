@@ -30,6 +30,7 @@ const ZSTD_CHECKSUM_FLAG: u8 = 0x04;
 const ZSTD_SINGLE_SEGMENT_FLAG: u8 = 0x20;
 const BAYER_STREAM_WINDOW_LOG: u32 = 21;
 const BAYER_STREAM_MIN_PIXELS: usize = 4 << 20;
+const RESTORE_BLOCK_BYTES: usize = 1 << 20;
 const LEVEL: i32 = 1;
 
 const NONE: u8 = 0;
@@ -105,12 +106,21 @@ fn row_delta(pixels: &[u8], row: usize, stride: usize) -> Vec<u8> {
     out
 }
 
-fn row_restore(pixels: &mut [u8], row: usize, stride: usize) {
+fn row_restore(
+    pixels: &mut [u8],
+    row: usize,
+    stride: usize,
+    check: &mut impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     for line in pixels.chunks_exact_mut(row) {
-        for i in stride..row {
-            line[i] = line[i].wrapping_add(line[i - stride]);
+        for start in (stride..row).step_by(RESTORE_BLOCK_BYTES) {
+            check()?;
+            for i in start..(start + RESTORE_BLOCK_BYTES).min(row) {
+                line[i] = line[i].wrapping_add(line[i - stride]);
+            }
         }
     }
+    Ok(())
 }
 
 /// 四个同色平面依次为马赛克的 (0,0)、(0,1)、(1,0)、(1,1) 相位，每个平面按行对左邻取差。
@@ -134,22 +144,38 @@ fn restore_plane_pixels(
     pixels: &mut [u8],
     deltas: &mut std::slice::Iter<'_, u8>,
     mut previous: u8,
-) -> u8 {
-    for value in pixels.iter_mut().step_by(2) {
-        previous = previous.wrapping_add(*deltas.next().unwrap_or(&0));
-        *value = previous;
+    check: &mut impl FnMut() -> Result<(), String>,
+) -> Result<u8, String> {
+    for block in pixels.chunks_mut(RESTORE_BLOCK_BYTES) {
+        check()?;
+        for value in block.iter_mut().step_by(2) {
+            previous = previous.wrapping_add(*deltas.next().unwrap_or(&0));
+            *value = previous;
+        }
     }
-    previous
+    Ok(previous)
 }
 
-fn planes_restore(planes: &[u8], out: &mut [u8], width: usize, height: usize) {
+fn planes_restore(
+    planes: &[u8],
+    out: &mut [u8],
+    width: usize,
+    height: usize,
+    check: &mut impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     let mut source = planes.iter();
     for phase in 0..4 {
         let (dy, dx) = (phase / 2, phase % 2);
         for y in (dy..height).step_by(2) {
-            restore_plane_pixels(&mut out[y * width + dx..(y + 1) * width], &mut source, 0);
+            restore_plane_pixels(
+                &mut out[y * width + dx..(y + 1) * width],
+                &mut source,
+                0,
+                check,
+            )?;
         }
     }
+    Ok(())
 }
 
 fn planes_restore_stream(
@@ -157,6 +183,7 @@ fn planes_restore_stream(
     out: &mut [u8],
     width: usize,
     height: usize,
+    check: &mut impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     let decompression_error = |error| format!("压缩原图解压失败：{error}");
     let bad_length = "压缩原图解压后的长度与文件头不符";
@@ -166,18 +193,21 @@ fn planes_restore_stream(
             let mut line = &mut out[y * width + dx..(y + 1) * width];
             let mut previous = 0u8;
             while !line.is_empty() {
+                check()?;
                 let buffer = source.fill_buf().map_err(decompression_error)?;
                 let count = line.len().div_ceil(2).min(buffer.len());
                 if count == 0 {
                     return Err(bad_length.into());
                 }
                 let (pixels, rest) = line.split_at_mut((2 * count).min(line.len()));
-                previous = restore_plane_pixels(pixels, &mut buffer[..count].iter(), previous);
+                previous =
+                    restore_plane_pixels(pixels, &mut buffer[..count].iter(), previous, check)?;
                 line = rest;
                 source.consume(count);
             }
         }
     }
+    check()?;
     if !source.fill_buf().map_err(decompression_error)?.is_empty() {
         return Err(bad_length.into());
     }
@@ -244,6 +274,14 @@ pub fn encode(original: &[u8]) -> Option<Vec<u8>> {
 /// 还原出原始 PNM 文件的全部字节。负载必须正好是一个带校验和的 Zstandard 帧、解压后正好是头里记的像素字节数，
 /// 整个文件的 CRC-32 也要对上；任何一项不符都报错，不返回像素。
 pub fn decode(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    decode_checked(bytes, || Ok(()))
+}
+
+pub(super) fn decode_checked(
+    bytes: &[u8],
+    mut check: impl FnMut() -> Result<(), String>,
+) -> Result<Vec<u8>, String> {
+    check()?;
     let Container {
         transform,
         info,
@@ -262,6 +300,7 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<u8>, String> {
     if zstd::zstd_safe::find_frame_compressed_size(payload) != Ok(payload.len()) {
         return Err("压缩原图被截断或带有多余数据".into());
     }
+    check()?;
     let (width, height) = (info.width as usize, info.height as usize);
     let mut out = Vec::with_capacity(header.len() + pixels);
     out.extend_from_slice(header);
@@ -270,14 +309,16 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<u8>, String> {
             let mut destination = Cursor::new(out);
             destination.set_position(header.len() as u64);
             decompress_exact(payload, &mut destination, pixels)?;
+            check()?;
             out = destination.into_inner();
             if transform == DELTA {
                 let stride = usize::from(info.file_channels);
-                row_restore(&mut out[header.len()..], width * stride, stride);
+                row_restore(&mut out[header.len()..], width * stride, stride, &mut check)?;
             }
         }
         _ => {
             out.resize(header.len() + pixels, 0);
+            check()?;
             let original = &mut out[header.len()..];
             if can_stream_bayer(payload, pixels) {
                 let mut decoder = zstd::stream::read::Decoder::with_buffer(payload)
@@ -291,15 +332,23 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<u8>, String> {
                     original,
                     width,
                     height,
+                    &mut check,
                 )?;
             } else {
                 let mut planes = Vec::with_capacity(pixels);
                 decompress_exact(payload, &mut planes, pixels)?;
-                planes_restore(&planes, original, width, height);
+                check()?;
+                planes_restore(&planes, original, width, height, &mut check)?;
             }
         }
     }
-    if crc32fast::hash(&out) != crc {
+    let mut hasher = crc32fast::Hasher::new();
+    for block in out.chunks(RESTORE_BLOCK_BYTES) {
+        check()?;
+        hasher.update(block);
+    }
+    check()?;
+    if hasher.finalize() != crc {
         return Err("压缩原图校验和不符".into());
     }
     Ok(out)
@@ -396,6 +445,32 @@ mod tests {
         let mut damaged = encoded;
         *damaged.last_mut().unwrap() ^= 1;
         assert!(decode(&damaged).is_err());
+    }
+
+    #[test]
+    fn cancelling_during_gsr_pixel_restore_returns_no_partial_image() {
+        for (header, wide_window) in [
+            ("P5\n2048 2048\n255\n", false),
+            ("P5\n# bayer RG\n2048 2048\n255\n", false),
+            ("P5\n# bayer RG\n2048 2048\n255\n", true),
+        ] {
+            let original = raw(header, 2048 * 2048);
+            let mut encoded = encode(&original).unwrap();
+            if wide_window {
+                let descriptor = FIXED + header.len() + 4;
+                assert_eq!(encoded[descriptor] & ZSTD_SINGLE_SEGMENT_FLAG, 0);
+                encoded[descriptor + 1] = (23 - 10) << 3;
+            }
+            let mut remaining = 32;
+            let result = decode_checked(&encoded, || {
+                if remaining == 0 {
+                    return Err("cancel restore".into());
+                }
+                remaining -= 1;
+                Ok(())
+            });
+            assert_eq!(result.err().as_deref(), Some("cancel restore"));
+        }
     }
 
     #[test]

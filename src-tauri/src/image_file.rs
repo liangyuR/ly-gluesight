@@ -204,14 +204,24 @@ impl StoredOriginal {
     }
 }
 
-pub(crate) fn read_stored_original(path: &Path) -> Result<StoredOriginal, String> {
-    use std::io::Read;
+fn read_stored_with(
+    path: &Path,
+    read: impl FnOnce(&mut std::fs::File) -> Result<Vec<u8>, String>,
+) -> Result<StoredOriginal, String> {
     crate::raw_compress::activity().touch();
     let (mut file, compressed) = open_stored(path, true)?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+    let bytes = read(&mut file)?;
     Ok(StoredOriginal { compressed, bytes })
+}
+
+pub(crate) fn read_stored_original(path: &Path) -> Result<StoredOriginal, String> {
+    use std::io::Read;
+    read_stored_with(path, |file| {
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+        Ok(bytes)
+    })
 }
 
 /// 原图文件的原始字节（未压缩时的全部字节）：`path` 是 `.pgm` 而文件已压缩成同名 `.gsr`，或 `path` 本身就是 `.gsr` 时
@@ -220,6 +230,47 @@ pub fn read_original(path: &Path) -> Result<Vec<u8>, String> {
     let stored = read_stored_original(path)?;
     if stored.compressed {
         stored.expand(path)
+    } else {
+        Ok(stored.bytes)
+    }
+}
+
+pub(crate) fn read_original_checked(
+    path: &Path,
+    mut check: impl FnMut() -> Result<(), String>,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    const READ_BLOCK_BYTES: u64 = 1 << 20;
+
+    check()?;
+    let stored = read_stored_with(path, |file| {
+        let mut bytes = Vec::new();
+        if let Some(length) = file
+            .metadata()
+            .ok()
+            .and_then(|m| usize::try_from(m.len()).ok())
+        {
+            bytes
+                .try_reserve_exact(length)
+                .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+        }
+        loop {
+            check()?;
+            let read = file
+                .by_ref()
+                .take(READ_BLOCK_BYTES)
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+            if (read as u64) < READ_BLOCK_BYTES {
+                break;
+            }
+        }
+        Ok(bytes)
+    })?;
+    check()?;
+    if stored.compressed {
+        gsr::decode_checked(&stored.bytes, check)
+            .map_err(|e| format!("读取 {} 失败：{e}", path.display()))
     } else {
         Ok(stored.bytes)
     }
