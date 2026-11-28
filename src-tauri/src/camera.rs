@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{c_uint, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use ly_plc::now_ms;
@@ -400,21 +400,64 @@ struct Preview {
 /// 一台相机的缩略图：现成的，或海康彩色帧留着原始马赛克、读预览时才生成。
 #[derive(Default)]
 struct Previews {
+    revision: u64,
     ready: Vec<Preview>,
     /// 最近一帧彩色马赛克，还没生成缩略图
     pending: Option<BayerMosaic>,
+    lazy: Option<Arc<LazyPreview>>,
+}
+
+struct LazyPreview {
+    image: Arc<FrameImage>,
+    thumbnail: OnceLock<Preview>,
+}
+
+impl LazyPreview {
+    fn bytes(&self) -> Vec<u8> {
+        let image = &self.image;
+        self.thumbnail
+            .get_or_init(|| {
+                make_preview(
+                    &image.pixels,
+                    image.width as usize,
+                    image.height as usize,
+                    image.channels,
+                )
+            })
+            .bytes()
+    }
 }
 
 impl Previews {
     fn set(&mut self, ready: Vec<Preview>) {
         *self = Self {
+            revision: self.revision.wrapping_add(1),
             ready,
-            pending: None,
+            ..Self::default()
         };
+    }
+
+    fn defer_image(&mut self, image: Arc<FrameImage>) {
+        self.set(Vec::new());
+        if image.consistent() {
+            self.lazy = Some(Arc::new(LazyPreview {
+                image,
+                thumbnail: OnceLock::new(),
+            }));
+        }
+    }
+
+    fn defer_bayer(&mut self, mosaic: BayerMosaic) {
+        self.revision = self.revision.wrapping_add(1);
+        self.lazy = None;
+        self.pending = Some(mosaic);
     }
 
     /// 最近一帧的原图尺寸。
     fn full_size(&self) -> Option<(u32, u32)> {
+        if let Some(preview) = &self.lazy {
+            return Some((preview.image.width, preview.image.height));
+        }
         match &self.pending {
             Some(mosaic) => Some((mosaic.image.width, mosaic.image.height)),
             None => self.ready.first().map(|p| (p.full_width, p.full_height)),
@@ -697,7 +740,13 @@ impl Shared {
         self.rig.capture.load(Ordering::Relaxed)
     }
 
-    /// 每帧都做缩略图：触发采集的帧少，示教裁模板用的就是显示的那帧。
+    fn update_preview(&self, session: u64, update: impl FnOnce(&mut Previews)) {
+        let mut previews = self.preview.lock().unwrap();
+        if !self.is_retired() && session == self.session.load(Ordering::SeqCst) {
+            update(&mut previews);
+        }
+    }
+
     fn set_previews(&self, session: u64, images: &[Arc<FrameImage>]) {
         if session != self.session.load(Ordering::SeqCst) {
             return;
@@ -714,14 +763,25 @@ impl Shared {
                 )
             })
             .collect();
-        self.preview.lock().unwrap().set(previews);
+        self.update_preview(session, |cache| cache.set(previews));
     }
 
     /// 预览命令的字节（见 `Preview::bytes`）：彩色帧的缩略图在这里（读预览的线程）由共享的 RGB 生成，
     /// 两次读之间到的帧不生成；记在相机池的预算上。
     fn preview_bytes(&self, index: usize) -> Vec<u8> {
-        let session = self.session.load(Ordering::SeqCst);
-        let pending = self.preview.lock().unwrap().pending.take();
+        let (session, revision, pending) = {
+            let mut previews = self.preview.lock().unwrap();
+            if let Some(lazy) = &previews.lazy {
+                let lazy = Arc::clone(lazy);
+                drop(previews);
+                return if index == 0 { lazy.bytes() } else { Vec::new() };
+            }
+            (
+                self.session.load(Ordering::SeqCst),
+                previews.revision,
+                previews.pending.take(),
+            )
+        };
         let made = pending.and_then(|mosaic| {
             let rgb = mosaic.rgb().ok()?;
             let mut preview = make_preview(
@@ -734,9 +794,15 @@ impl Shared {
             Some(preview)
         });
         let mut previews = self.preview.lock().unwrap();
+        if self.is_retired() || session != self.session.load(Ordering::SeqCst) {
+            return Vec::new();
+        }
         if let Some(preview) = made {
-            if session == self.session.load(Ordering::SeqCst) {
+            if revision == previews.revision {
                 previews.ready = vec![preview];
+            } else if index == 0 {
+                drop(previews);
+                return preview.bytes();
             }
         }
         previews
@@ -751,6 +817,7 @@ impl Shared {
     /// 要留整帧而图像内存预算已满时返回 Err，这一帧按缺帧处理；不留整帧时预算满只是没有缩略图。
     fn frame_image(
         &self,
+        session: u64,
         kind: PixelKind,
         w: u32,
         h: u32,
@@ -760,7 +827,7 @@ impl Shared {
         if self.color.load(Ordering::Relaxed) {
             return match color_mosaic(&self.pool, kind, w, h, data) {
                 Ok(mosaic) => {
-                    self.preview.lock().unwrap().pending = Some(mosaic.clone());
+                    self.update_preview(session, |previews| previews.defer_bayer(mosaic.clone()));
                     Ok((None, keep.then_some(mosaic)))
                 }
                 Err(GrayError::Invalid(e)) => {
@@ -781,13 +848,19 @@ impl Shared {
                 return if keep { Err(full) } else { Ok((None, None)) }
             }
         };
-        let preview = make_preview(image.pixels(), w as usize, h as usize, 1);
-        self.preview.lock().unwrap().set(vec![preview]);
         if !keep {
+            let preview = make_preview(image.pixels(), w as usize, h as usize, 1);
+            self.update_preview(session, |previews| previews.set(vec![preview]));
             return Ok((None, None));
         }
-        let image = Arc::new(image.into_image(&self.pool, w, h)?);
-        Ok((Some(image), None))
+        match image.into_image(&self.pool, w, h) {
+            Ok(image) => Ok((Some(Arc::new(image)), None)),
+            Err(error) => {
+                let preview = make_preview(data, w as usize, h as usize, 1);
+                self.update_preview(session, |previews| previews.set(vec![preview]));
+                Err(error)
+            }
+        }
     }
 
     /// 图像内存预算满被丢弃的帧给状态栏的说明。
@@ -827,7 +900,11 @@ impl Shared {
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
         delivery::observe(&self.identity, &self.manual, &mut frame, current_session);
         if (frame.bayer.is_some() || !frame.images.is_empty()) && current_session {
-            if frame.counter == CounterSource::Synthetic || frame.images.len() == 3 {
+            if let [image] = frame.images.as_slice() {
+                self.update_preview(frame.session, |previews| {
+                    previews.defer_image(Arc::clone(image))
+                });
+            } else if frame.counter == CounterSource::Synthetic || frame.images.len() == 3 {
                 self.set_previews(frame.session, &frame.images);
             }
             *self.last_full.lock().unwrap() = Some(CapturedFrame::from_frame(&frame));
@@ -1132,7 +1209,7 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             Ok(_) if data.is_null() => (None, None),
             Ok((kind, len)) => {
                 let data = unsafe { std::slice::from_raw_parts(data, len) };
-                match shared.frame_image(kind, w, h, data) {
+                match shared.frame_image(session, kind, w, h, data) {
                     Ok(captured) => captured,
                     // 图像内存预算满（D-SB-32）：这一帧不拷图、不交付，台账照记
                     Err(_) => return shared.discard_over_budget(frame(Vec::new(), None)),
@@ -1144,6 +1221,7 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             (Some(image), Some(layout)) => match layout.split(image) {
                 Ok(images) => (images, None),
                 Err(error) => {
+                    shared.set_previews(session, std::slice::from_ref(image));
                     shared.unusable(error);
                     (Vec::new(), None)
                 }
@@ -1548,10 +1626,13 @@ impl CameraSlot {
             session,
             ..Reorder::default()
         };
-        self.shared.session.store(session, Ordering::SeqCst);
+        {
+            let mut preview = self.shared.preview.lock().unwrap();
+            self.shared.session.store(session, Ordering::SeqCst);
+            preview.set(Vec::new());
+        }
         self.shared.manual.store(0, Ordering::SeqCst);
         self.shared.grab.store(false, Ordering::SeqCst);
-        self.shared.preview.lock().unwrap().set(Vec::new());
         self.shared.last_full.lock().unwrap().take();
         *self.shared.identity.lock().unwrap() = crate::shot_router::Ledgers::default();
     }
@@ -3182,6 +3263,43 @@ async fn camera_reconnect_inner(app: AppHandle, cam: usize, id: &str) -> Result<
     let _ = cycle.tx.send(cycle::Input::Refresh);
     let _ = app.emit("camera://changed", ());
     opened
+}
+
+#[cfg(test)]
+#[test]
+fn lazy_preview_keeps_eager_bytes_without_overwriting_the_next_frame() {
+    let gray = Arc::new(FrameImage::new(
+        961,
+        3,
+        (0..961 * 3).map(|i| (i % 251) as u8).collect(),
+    ));
+    let rgb = Arc::new(FrameImage::rgb(
+        965,
+        4,
+        (0..965 * 4 * 3).map(|i| (i % 239) as u8).collect(),
+    ));
+    let eager = |image: &FrameImage| {
+        make_preview(
+            &image.pixels,
+            image.width as usize,
+            image.height as usize,
+            image.channels,
+        )
+        .bytes()
+    };
+    let mut previews = Previews::default();
+    previews.defer_image(Arc::clone(&gray));
+    let old = Arc::clone(previews.lazy.as_ref().unwrap());
+    assert_eq!(previews.full_size(), Some((961, 3)));
+    assert!(old.thumbnail.get().is_none());
+
+    previews.defer_image(Arc::clone(&rgb));
+    let current = previews.lazy.as_ref().unwrap();
+    assert_eq!(previews.full_size(), Some((965, 4)));
+    assert_eq!(old.bytes(), eager(&gray));
+    assert!(current.thumbnail.get().is_none());
+    assert_eq!(current.bytes(), eager(&rgb));
+    assert_eq!(current.bytes(), eager(&rgb));
 }
 
 #[cfg(test)]

@@ -224,7 +224,6 @@ fn receive(
                     image.channels = count as u8;
                     let image: Arc<FrameImage> = Arc::new(image);
                     delivered.images.push(image);
-                    shared.set_previews(session, &delivered.images);
                     shared.deliver(delivered);
                 }
                 Err(_) => shared.discard_over_budget(delivered),
