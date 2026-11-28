@@ -1764,8 +1764,16 @@ fn overview_keeps_verdicts_and_single_frame_loads_only_selected_metrics() {
         ..Default::default()
     });
     let (judgement, burst) = burst_fixture::record(&recipe, frames, None, Some(0));
+    let cycle = "overview-part";
     let id = store
-        .insert(&burst_part(&recipe, "overview-part", &judgement, &burst))
+        .insert(&PartRecord {
+            delivery: &PlcDelivery {
+                state: PlcDeliveryState::Pending,
+                updated_at: 1,
+                message: None,
+            },
+            ..burst_part(&recipe, cycle, &judgement, &burst)
+        })
         .unwrap();
     let detail = store.detail(id).unwrap();
     assert_eq!(
@@ -1773,7 +1781,7 @@ fn overview_keeps_verdicts_and_single_frame_loads_only_selected_metrics() {
         serde_json::to_value((&detail.summary, &detail.recording)).unwrap(),
     );
     let full = detail.burst.unwrap();
-    let overview = store.detail_overview(id).unwrap().burst.unwrap();
+    let mut overview = store.detail_overview(id).unwrap().burst.unwrap();
     let full_evidence = full.frames[0]
         .metrics
         .as_ref()
@@ -1793,33 +1801,134 @@ fn overview_keeps_verdicts_and_single_frame_loads_only_selected_metrics() {
     let mut expected_summary = full_evidence.clone();
     expected_summary.stations.clear();
     assert_eq!(summary_evidence, &expected_summary);
-    assert_eq!(
-        serde_json::to_value(&overview.frame_verdicts).unwrap(),
-        serde_json::to_value(&full.frame_verdicts).unwrap()
-    );
+    assert_eq!(overview.frame_verdicts, full.frame_verdicts);
     assert!(overview
         .frames
         .iter()
         .all(|frame| frame.metrics.as_ref().unwrap().widths.is_empty()));
+
+    let delivery = PlcDelivery {
+        state: PlcDeliveryState::Submitted,
+        updated_at: 2,
+        message: None,
+    };
+    assert!(store.update_delivery(cycle, &delivery).unwrap());
+    let tags = vec!["待复核".into()];
+    store.set_history_tags(&[id], &tags).unwrap();
+    let raw_file = "cam1/2.pgm".to_owned();
+    let files = BTreeMap::from([(FrameKey { camera: 0, seq: 2 }, raw_file.clone())]);
+    assert!(store.update_frame_raw_files(cycle, &files).unwrap());
+    let recording = RecordingEvidence {
+        state: RecordingState::Complete,
+        available: true,
+        directory: Some(cycle.into()),
+        errors: Vec::new(),
+    };
+    assert!(store.update_recording(cycle, &recording).unwrap());
+
+    let refreshed = store.detail_overview(id).unwrap();
+    assert_eq!(refreshed.summary.delivery, delivery);
+    assert_eq!(refreshed.summary.tags, tags);
+    assert_eq!(refreshed.recording, recording);
+    let refreshed = refreshed.burst.unwrap();
+    overview
+        .frames
+        .iter_mut()
+        .find(|frame| frame.camera == 0 && frame.seq == 2)
+        .unwrap()
+        .raw_file = Some(raw_file);
+    assert_eq!(refreshed.frames, overview.frames);
+    assert_eq!(refreshed.judgement, full.judgement);
+    assert_eq!(refreshed.frame_verdicts, full.frame_verdicts);
+
     let expected = full
         .frames
         .iter()
         .find(|frame| frame.camera == 0 && frame.seq == 1)
         .unwrap();
     assert!(!expected.metrics.as_ref().unwrap().widths.is_empty());
-    rusqlite::Connection::open(db.path())
-        .unwrap()
-        .execute(
-            "UPDATE part_frames SET metrics='broken' WHERE part_id=?1 AND camera=1 AND seq=2",
+    let external = Connection::open(db.path()).unwrap();
+    let previous: String = external
+        .query_row(
+            "SELECT metrics FROM part_frames WHERE part_id=?1 AND camera=1 AND seq=2",
             [id],
+            |row| row.get(0),
         )
         .unwrap();
+    let damaged = format!("{{}}{}", " ".repeat(previous.len() - 2));
+    external
+        .execute(
+            "UPDATE part_frames SET metrics=?1 WHERE part_id=?2 AND camera=1 AND seq=2",
+            params![damaged, id],
+        )
+        .unwrap();
+    assert!(store.detail_overview(id).is_err());
     let selected = store.detail_frame(id, 0, 1).unwrap().burst.unwrap();
     assert_eq!(selected.frames, vec![expected.clone()]);
     assert!(selected.frame_verdicts.is_empty());
     assert!(store.detail_frame(id, 0, 100).is_err());
     assert!(store.detail(id).is_err());
     assert!(store.history_import_record(id).is_err());
+}
+
+#[test]
+fn overview_recomputes_frame_verdicts_when_the_region_or_recipe_changes() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let frames = burst_fixture::frames(4, &[]);
+    let (judgement, burst) = burst_fixture::record(&recipe, frames.clone(), None, Some(4));
+    let id = store
+        .insert(&burst_part(&recipe, "overview-region", &judgement, &burst))
+        .unwrap();
+    let original = store.detail_overview(id).unwrap().burst.unwrap();
+    assert!(original.frame_verdicts.iter().any(|frame| frame.seq == 1));
+
+    let mut region = original.judgement.regions[0].region.clone();
+    region.first_seq = 2;
+    let (_, corrected) = burst_fixture::record(&recipe, frames, Some(vec![region]), Some(4));
+    let external = Connection::open(db.path()).unwrap();
+    external
+        .execute(
+            "UPDATE parts SET burst_judgement=?1 WHERE id=?2",
+            params![serde_json::to_string(&corrected.judgement).unwrap(), id],
+        )
+        .unwrap();
+
+    let refreshed = store.detail_overview(id).unwrap().burst.unwrap();
+    let expected: Vec<_> = original
+        .frame_verdicts
+        .into_iter()
+        .filter(|frame| frame.seq >= 2)
+        .collect();
+    assert!(!expected.is_empty());
+    assert_eq!(refreshed.frame_verdicts, expected);
+
+    let mut corrected_recipe = recipe;
+    let width = &mut corrected_recipe.path_segments[0].checks.width;
+    width.enabled = true;
+    width.nominal_mm = 10.0;
+    width.tol_lower = 1.0;
+    width.max_excursion_mm = 0.0;
+    external
+        .execute(
+            "UPDATE recipe_snapshots SET json=?1 WHERE project_id=?2 AND revision_id=?3",
+            params![
+                serde_json::to_string(&corrected_recipe).unwrap(),
+                store.project(),
+                corrected_recipe.revision_id,
+            ],
+        )
+        .unwrap();
+    let refreshed = store.detail_overview(id).unwrap().burst.unwrap();
+    let expected: Vec<_> = expected
+        .into_iter()
+        .map(|frame| FrameVerdict {
+            verdict: Verdict::NgWidth,
+            ..frame
+        })
+        .collect();
+    assert_eq!(refreshed.frame_verdicts, expected);
 }
 
 #[test]

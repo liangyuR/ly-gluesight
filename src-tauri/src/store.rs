@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use rusqlite::types::Value as SqlValue;
@@ -10,11 +10,12 @@ use rusqlite::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::burst_judge::{BurstJudgement, Flags, FrameMetrics, FrameState};
+use crate::burst_judge::{BurstJudgement, Flags, FrameMetrics, FrameState, FrameVerdict};
 use crate::cycle::{FrameStatus, FrameView};
 use crate::judge::{Judgement, PointState, Verdict};
 use crate::plan::PathSegment;
 use crate::recipe::Recipe;
+use crate::segmentation::Region;
 
 /// 一件工件的完整结果，入库一行。
 ///
@@ -455,6 +456,70 @@ const HISTORY_FRAME_METRICS_CACHE_BYTES: usize = 16 * 1024 * 1024;
 struct CheckedHistoryFrameMetrics {
     part_id: i64,
     texts: Vec<Option<String>>,
+    overview: Option<HistoryFrameOverview>,
+}
+
+struct HistoryFrameOverview {
+    recipe: Weak<Recipe>,
+    regions: Vec<Region>,
+    metrics: Vec<Option<Arc<FrameMetrics>>>,
+    verdicts: Vec<FrameVerdict>,
+}
+
+impl HistoryFrameOverview {
+    fn capture(
+        input: HistoryFrameVerdictInput<'_>,
+        frames: &[FrameRecord],
+        verdicts: &[FrameVerdict],
+        remaining_bytes: usize,
+    ) -> Option<Self> {
+        let metrics_bytes = frames
+            .iter()
+            .filter_map(|frame| frame.metrics.as_deref())
+            .map(|metrics| {
+                std::mem::size_of::<FrameMetrics>()
+                    + 2 * std::mem::size_of::<usize>()
+                    + metrics
+                        .error
+                        .iter()
+                        .chain(&metrics.fallback_reason)
+                        .map(String::capacity)
+                        .sum::<usize>()
+                    + metrics
+                        .mix_evidence
+                        .as_ref()
+                        .map_or(0, |mix| mix.summary_heap_bytes())
+            })
+            .sum::<usize>();
+        let bytes = frames.len() * std::mem::size_of::<Option<Arc<FrameMetrics>>>()
+            + std::mem::size_of_val(input.regions)
+            + std::mem::size_of_val(verdicts)
+            + metrics_bytes;
+        (bytes <= remaining_bytes).then(|| Self {
+            recipe: Arc::downgrade(input.recipe),
+            regions: input.regions.to_vec(),
+            metrics: frames.iter().map(|frame| frame.metrics.clone()).collect(),
+            verdicts: verdicts.to_vec(),
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HistoryFrameVerdictInput<'a> {
+    recipe: &'a Arc<Recipe>,
+    regions: &'a [Region],
+    cameras: &'a [String],
+}
+
+impl HistoryFrameVerdictInput<'_> {
+    fn calculate(self, frames: &[FrameRecord]) -> Vec<FrameVerdict> {
+        crate::burst_judge::frame_verdicts(
+            &self.recipe.path_segments,
+            self.regions,
+            frames.iter().filter_map(|frame| frame.metrics.as_deref()),
+            self.cameras,
+        )
+    }
 }
 
 struct CheckedRecipeSnapshot {
@@ -2068,22 +2133,8 @@ impl Store {
     }
 
     pub fn detail_overview(&self, id: i64) -> Result<PartDetail, String> {
-        let (mut detail, _) = self.read_detail(id, DetailScope::Overview)?;
-        if let Some(burst) = detail.burst.as_mut() {
-            for frame in &mut burst.frames {
-                if let Some(metrics) = frame.metrics.as_mut() {
-                    let metrics = Arc::make_mut(metrics);
-                    metrics.widths.clear();
-                    if let Some(evidence) = &mut metrics.measurement_evidence {
-                        evidence.stations.clear();
-                    }
-                    if let Some(evidence) = &mut metrics.mix_evidence {
-                        evidence.omit_observation();
-                    }
-                }
-            }
-        }
-        Ok(detail)
+        self.read_detail(id, DetailScope::Overview)
+            .map(|(detail, _)| detail)
     }
 
     fn read_detail(
@@ -2193,26 +2244,33 @@ impl Store {
                 {
                     return Err(format!("记录 {id} 的区域判定损坏：帧组起止序号颠倒"));
                 }
-                let frames = match scope {
-                    DetailScope::ComparisonOptions
-                    | DetailScope::ComparisonInput(HistoryCompareInput::RawImages)
-                    | DetailScope::Overview => {
-                        self.history_frames_with_metric_cache(id, raw_frames, with_verdicts)?
-                    }
-                    _ => decode_frame_rows(raw_frames)?,
-                };
                 let cameras = recipe.plan_cameras();
-                let frame_verdicts = if with_verdicts {
-                    let regions: Vec<_> =
-                        judgement.regions.iter().map(|r| r.region.clone()).collect();
-                    crate::burst_judge::frame_verdicts(
-                        &recipe.path_segments,
-                        &regions,
-                        frames.iter().filter_map(|frame| frame.metrics.as_deref()),
-                        &cameras,
-                    )
-                } else {
-                    Vec::new()
+                let regions = with_verdicts.then(|| {
+                    judgement
+                        .regions
+                        .iter()
+                        .map(|r| r.region.clone())
+                        .collect::<Vec<_>>()
+                });
+                let verdict_input = regions.as_deref().map(|regions| HistoryFrameVerdictInput {
+                    recipe: &recipe,
+                    regions,
+                    cameras: &cameras,
+                });
+                let (frames, frame_verdicts) = match scope {
+                    DetailScope::ComparisonOptions
+                    | DetailScope::ComparisonInput(HistoryCompareInput::RawImages) => {
+                        self.history_frames_with_metric_cache(id, raw_frames, None)?
+                    }
+                    DetailScope::Overview => {
+                        self.history_frames_with_metric_cache(id, raw_frames, verdict_input)?
+                    }
+                    _ => {
+                        let frames = decode_frame_rows(raw_frames)?;
+                        let verdicts =
+                            verdict_input.map_or_else(Vec::new, |input| input.calculate(&frames));
+                        (frames, verdicts)
+                    }
                 };
                 let burst = PartDetailBurst {
                     segments: recipe.path_segments.clone(),
@@ -2273,18 +2331,39 @@ impl Store {
         &self,
         id: i64,
         raw_frames: Vec<RawFrameRow>,
-        with_metrics: bool,
-    ) -> Result<Vec<FrameRecord>, String> {
-        if !with_metrics {
-            let cached = self.checked_history_frame_metrics.lock().unwrap().clone();
-            if cached.is_some_and(|cached| {
-                cached.part_id == id
-                    && cached
-                        .texts
-                        .iter()
-                        .eq(raw_frames.iter().map(|(_, text)| text))
-            }) {
-                return Ok(raw_frames.into_iter().map(|(frame, _)| frame).collect());
+        overview: Option<HistoryFrameVerdictInput<'_>>,
+    ) -> Result<(Vec<FrameRecord>, Vec<FrameVerdict>), String> {
+        let cached = self.checked_history_frame_metrics.lock().unwrap().clone();
+        if let Some(cached) = cached.filter(|cached| {
+            cached.part_id == id
+                && cached
+                    .texts
+                    .iter()
+                    .eq(raw_frames.iter().map(|(_, text)| text))
+        }) {
+            match overview {
+                None => {
+                    return Ok((
+                        raw_frames.into_iter().map(|(frame, _)| frame).collect(),
+                        Vec::new(),
+                    ));
+                }
+                Some(input) => {
+                    if let Some(projected) = cached.overview.as_ref().filter(|projected| {
+                        projected.recipe.ptr_eq(&Arc::downgrade(input.recipe))
+                            && projected.regions == input.regions
+                    }) {
+                        let frames = raw_frames
+                            .into_iter()
+                            .zip(&projected.metrics)
+                            .map(|((mut frame, _), metrics)| {
+                                frame.metrics = metrics.clone();
+                                frame
+                            })
+                            .collect();
+                        return Ok((frames, projected.verdicts.clone()));
+                    }
+                }
             }
         }
         let bytes = raw_frames.len() * std::mem::size_of::<Option<String>>()
@@ -2295,11 +2374,11 @@ impl Store {
                 .sum::<usize>();
         let mut checked = (bytes <= HISTORY_FRAME_METRICS_CACHE_BYTES)
             .then(|| Vec::with_capacity(raw_frames.len()));
-        let frames = raw_frames
+        let mut frames: Vec<FrameRecord> = raw_frames
             .into_iter()
             .map(|(mut frame, text)| {
                 let metrics = decode_frame_metrics(text.as_deref())?;
-                if with_metrics {
+                if overview.is_some() {
                     frame.metrics = metrics;
                 }
                 if let Some(checked) = checked.as_mut() {
@@ -2308,13 +2387,42 @@ impl Store {
                 Ok(frame)
             })
             .collect::<Result<_, String>>()?;
-        let next = checked.map(|texts| Arc::new(CheckedHistoryFrameMetrics { part_id: id, texts }));
+        let verdicts = overview.map_or_else(Vec::new, |input| input.calculate(&frames));
+        if overview.is_some() {
+            for frame in &mut frames {
+                if let Some(metrics) = frame.metrics.as_mut() {
+                    let metrics = Arc::make_mut(metrics);
+                    metrics.widths = Vec::new();
+                    if let Some(evidence) = &mut metrics.measurement_evidence {
+                        evidence.stations = Vec::new();
+                    }
+                    if let Some(evidence) = &mut metrics.mix_evidence {
+                        evidence.omit_observation();
+                    }
+                }
+            }
+        }
+        let next = checked.map(|texts| {
+            let projected = overview.and_then(|input| {
+                HistoryFrameOverview::capture(
+                    input,
+                    &frames,
+                    &verdicts,
+                    HISTORY_FRAME_METRICS_CACHE_BYTES - bytes,
+                )
+            });
+            Arc::new(CheckedHistoryFrameMetrics {
+                part_id: id,
+                texts,
+                overview: projected,
+            })
+        });
         let previous = std::mem::replace(
             &mut *self.checked_history_frame_metrics.lock().unwrap(),
             next,
         );
         drop(previous);
-        Ok(frames)
+        Ok((frames, verdicts))
     }
 
     fn history_recipe(
