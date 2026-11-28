@@ -11,10 +11,11 @@ import { cycleApi, recipeApi, useCycle, useLayout } from "../src/features/cycle/
 import { burstImageApi } from "../src/features/workspace/burstImages";
 import { historyApi } from "../src/features/history/api";
 import { plcApi } from "../src/features/plc/api";
-import { burstJudgement, burstPartDetail, burstRecipe, burstSummary, burstWorkspaceView, frameMetrics, readiness, snapshot } from "./fixtures";
+import { burstJudgement, burstPartDetail, burstRecipe, burstSummary, burstWorkspaceView, deferred, frameMetrics, readiness, snapshot } from "./fixtures";
 import { burstPartView, burstResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
 import type { Readiness, Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
+import type { CalibrationFrameView } from "../src/features/plan/types";
 import type { PointValue } from "../src/features/plc/types";
 
 vi.mock("../src/features/cycle/api", () => ({
@@ -250,6 +251,55 @@ describe("在线检测段配方", () => {
     await waitFor(() => expect(burstImageApi.live).toHaveBeenCalledTimes(3));
     expect(live()).toEqual([[0, 12], [1, 12], [2, 12]]);
     expect(screen.queryByRole("button", { name: "返回当前帧组" })).not.toBeInTheDocument();
+  });
+
+  it("一台相机的叠图尚未返回时连续翻帧 → 只补查末帧且其他相机继续显示量测证据", async () => {
+    const old = deferred<CalibrationFrameView>();
+    const latest = deferred<CalibrationFrameView>();
+    const evidence = (camera: number, seq: number, width: number): CalibrationFrameView => ({
+      segment: 1, corridor: [], searchHalfPx: null, edges: [], partEdges: [],
+      metrics: frameMetrics(camera, seq, {
+        measurementEvidence: {
+          version: 1, stations: [], exactStations: 0, clippedStations: 1, absentStations: 0,
+          unknownStations: 0, maxWidthLowerBoundMm: width, presentRatio: 1,
+        },
+      }),
+    });
+    vi.mocked(burstImageApi.liveView).mockImplementation(async (_, _revision, camera, seq) => {
+      if (camera === 1 && seq === 12) return old.promise;
+      if (camera === 1 && seq === 4) return latest.promise;
+      return camera === 0 && seq === 4 ? evidence(camera, seq, 16) : null;
+    });
+    vi.mocked(burstImageApi.live).mockImplementation(async (_, _revision, camera, seq) => {
+      if (camera === 1 && seq === 4) throw new Error("本帧原图未保留");
+      return { url: "data:,", width: 100, height: 60 };
+    });
+    const cam2Reads = () => vi.mocked(burstImageApi.liveView).mock.calls.filter(([, , camera]) => camera === 1).map(([, , , seq]) => seq);
+    const user = userEvent.setup();
+    try {
+      render(<MemoryRouter><InspectPage /></MemoryRouter>);
+      await waitFor(() => expect(cam2Reads()).toEqual([12]));
+      await user.click(screen.getByRole("button", { name: "帧组 3" }));
+      await user.click(screen.getByRole("button", { name: "帧组 4" }));
+
+      const cam1 = within(screen.getByRole("region", { name: "CAM-1 帧组 4" }));
+      expect(await cam1.findByLabelText("量测证据")).toHaveTextContent("最大可靠下界 ≥ 16.00 mm");
+      const cam2 = within(screen.getByRole("region", { name: "CAM-2 帧组 4" }));
+      expect(await cam2.findByText("本帧原图未保留")).toBeVisible();
+      expect(cam2Reads()).toEqual([12]);
+
+      await act(async () => old.resolve(evidence(1, 12, 30)));
+      await waitFor(() => expect(cam2Reads()).toEqual([12, 4]));
+      expect(cam2.queryByLabelText("量测证据")).not.toBeInTheDocument();
+      await act(async () => latest.resolve(evidence(1, 4, 8)));
+      expect(await cam2.findByLabelText("量测证据")).toHaveTextContent("最大可靠下界 ≥ 8.00 mm");
+      expect(cam2.queryByText(/30\.00 mm/)).not.toBeInTheDocument();
+    } finally {
+      await act(async () => {
+        old.resolve(evidence(1, 12, 30));
+        latest.resolve(evidence(1, 4, 8));
+      });
+    }
   });
 
   it("从完整性明细定位后换件 → 在线跟随新件并保留可清除的历史回查位置", async () => {

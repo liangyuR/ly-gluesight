@@ -1,4 +1,5 @@
 import { errorText } from "../../lib/errors";
+import { createFrameReadQueue } from "../../lib/frameReadQueue";
 import { useEffect, useRef, useState } from "react";
 import { Chip } from "qing-steel";
 import { verdictLabel } from "../history/meta";
@@ -51,19 +52,31 @@ function useLiveImage<R extends LiveJob>(request:R|null,load:(job:R)=>Promise<Fr
 interface BurstLiveRequest extends LiveJob { cycleId:string; revisionId:string; camera:number; seq:number }
 const loadBurstFrame=(job:BurstLiveRequest)=>burstImageApi.live(job.cycleId,job.revisionId,job.camera,job.seq);
 const burstStateTone:Partial<Record<GroupCellState,string>>={ ok:"ok", ng:"ng", error:"fault" };
+const liveViewQueues = new Map<number, ReturnType<typeof createFrameReadQueue>>();
+
+function liveViewQueue(camera: number) {
+  let queue = liveViewQueues.get(camera);
+  if (!queue) {
+    queue = createFrameReadQueue(1);
+    liveViewQueues.set(camera, queue);
+  }
+  return queue;
+}
 
 /** 一帧测到的叠图：测完（含走出走廊）才读，同一帧收尾补测换了走廊或结论变了重读；还没测完或没测成时不画。 */
-function useLiveView(part:PartView,camera:number,seq:number,cell:FrameGroupView["cells"][number]|undefined) {
-  const measured=cell?.status==="measured"||cell?.status==="outOfCorridor";
-  const key=JSON.stringify([part.cycleId,part.recipeRevision,camera,seq,cell?.status,cell?.verdict,cell?.segment]);
-  const [state,setState]=useState<{key:string;view:CalibrationFrameView|null}>({key:"",view:null});
-  useEffect(()=>{
-    if(!measured)return;
-    let alive=true;
-    burstImageApi.liveView(part.cycleId,part.recipeRevision,camera,seq).then(view=>{if(alive)setState({key,view});},()=>{});
-    return()=>{alive=false;};
-  },[key]);
-  return state.key===key?state.view:null;
+function useLiveView(part: PartView, camera: number, seq: number, cell: FrameGroupView["cells"][number] | undefined) {
+  const { cycleId, bundleId, recipeRevision } = part;
+  const measured = cell?.status === "measured" || cell?.status === "outOfCorridor";
+  const key = JSON.stringify([cycleId, bundleId, recipeRevision, camera, seq, cell?.status, cell?.verdict, cell?.segment]);
+  const [state, setState] = useState<{ key: string; view: CalibrationFrameView | null }>({ key: "", view: null });
+  useEffect(() => {
+    if (!measured) return;
+    const request = new AbortController();
+    void liveViewQueue(camera)(() => burstImageApi.liveView(cycleId, recipeRevision, camera, seq), request.signal)
+      .then(view => { if (!request.signal.aborted) setState({ key, view }); }, () => {});
+    return () => request.abort();
+  }, [key, measured, cycleId, recipeRevision, camera, seq]);
+  return state.key === key ? state.view : null;
 }
 
 /** 一台相机在选中帧组里的那一帧：到达（含测量中、出错）才读图，缺帧的相机不读图，只写明本组按其余相机判。 */
