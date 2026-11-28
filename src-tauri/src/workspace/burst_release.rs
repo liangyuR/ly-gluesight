@@ -584,11 +584,13 @@ pub fn workspace_publish_checks(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
 ) -> Result<Vec<Check>, String> {
     let w = {
         let host = app.state::<WorkspaceHost>();
         let items = host.items.lock().unwrap();
         let w = items.get(&id).ok_or("候选配置不存在")?;
+        w.expect_instance(instance_id)?;
         w.expect(revision)?;
         w.clone()
     };

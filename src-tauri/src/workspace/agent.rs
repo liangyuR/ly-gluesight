@@ -464,9 +464,11 @@ async fn status(
         })
         .collect();
     let blockers = {
-        let (app, id, revision) = (app.clone(), id.clone(), w.revision);
-        match blocking(move || super::burst_release::workspace_publish_checks(app, id, revision))
-            .await
+        let (app, id, revision, instance_id) = (app.clone(), id.clone(), w.revision, w.instance_id);
+        match blocking(move || {
+            super::burst_release::workspace_publish_checks(app, id, revision, instance_id)
+        })
+        .await
         {
             Ok(checks) => json!(checks
                 .iter()

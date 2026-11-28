@@ -112,12 +112,14 @@ it("发布检查定位失败位置 → 打开指定相机的示教帧并可返�
 
   await user.click(screen.getByRole("button", { name: "返回发布前检查" }));
   expect(await screen.findByRole("link", { name: "去示教 CAM-1 · 第 3 段" })).toBeVisible();
-  expect(calls("workspace_publish_checks")).toEqual([{ id: "A", revision: 3 }, { id: "A", revision: 3 }]);
+  const check = { id: "A", revision: 3, instanceId: candidate.workspace.instanceId };
+  expect(calls("workspace_publish_checks")).toEqual([check, check]);
 });
 
 it("示教保存期间返回发布页 → 等保存完成后只检查最终修订", async () => {
   stubSvgPointer({ pointerEvent: true });
   const candidate = corridorCandidate();
+  const firstCheck = { id: "A", revision: 3, instanceId: candidate.workspace.instanceId };
   const counts = [6, 3, 3];
   candidate.plan.segments.forEach((segment, index) => { segment.expectedFrames = counts[index]; });
   const saving = deferred<void>();
@@ -143,18 +145,18 @@ it("示教保存期间返回发布页 → 等保存完成后只检查最终修�
 
   await user.click(screen.getByRole("button", { name: "返回发布前检查" }));
   const publish = await screen.findByRole("button", { name: "发布生产配方" });
-  expect(calls("workspace_publish_checks")).toEqual([{ id: "A", revision: 3 }]);
+  expect(calls("workspace_publish_checks")).toEqual([firstCheck]);
   expect(publish).toBeDisabled();
   expect(screen.getByRole("note")).toHaveTextContent("保存后");
 
   await act(async () => saving.resolve(undefined));
-  expect(calls("workspace_publish_checks")).toEqual([{ id: "A", revision: 3 }]);
+  expect(calls("workspace_publish_checks")).toEqual([firstCheck]);
   expect(publish).toBeDisabled();
   expect(screen.getByRole("note")).toHaveTextContent("保存后");
 
   await act(() => vi.advanceTimersByTimeAsync(900));
   await waitFor(() => expect(publish).toBeEnabled());
-  expect(calls("workspace_publish_checks")).toEqual([{ id: "A", revision: 3 }, { id: "A", revision: 5 }]);
+  expect(calls("workspace_publish_checks")).toEqual([firstCheck, { ...firstCheck, revision: 5 }]);
   await user.click(publish);
   const dialog = within(screen.getByRole("dialog", { name: "发布生产配方" }));
   expect(dialog.getByRole("button", { name: /确认发布/ })).toBeEnabled();

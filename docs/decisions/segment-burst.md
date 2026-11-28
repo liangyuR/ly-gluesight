@@ -743,7 +743,7 @@
 
 ### 5.4 新命令
 
-工作区修改类命令沿用现有约定：参数带 `id` 与 `revision`（乐观并发），返回 `Result<WorkspaceView, String>`。
+工作区修改类命令沿用现有约定：参数带 `id` 与 `revision`（乐观并发），返回 `Result<WorkspaceView, String>`。发布相关命令还要求同一次读取的 `instanceId`，请求必须匹配当前候选的实例与修订。导入或重建同编号的候选后，需重新读取再发布。
 
 | 命令 | 参数 | 返回 |
 | --- | --- | --- |
@@ -756,7 +756,10 @@
 | `workspace_pass_carry_accept` | `id, revision, segment, accepted` | WorkspaceView（确认或撤销沿用某一沿用段，RB-11） |
 | `workspace_measure_teaching` | `id, revision` | WorkspaceView（示教件分段已确认、走廊示教完成时，按示教件分段用已示教的走廊测量每一帧，替换原有测量，写单段配方的 x_ref；有在途件时拒绝，测量期间候选被改过时不写入） |
 | `workspace_capture_review_exclude` | `id, revision, round, start, end, excluded, reason` | WorkspaceView（屏蔽或恢复示教件的帧组：只影响测量取样，不改已确认的分段；屏蔽后测量失效，需重新测量） |
-| `workspace_publish_checks` | `id, revision` | `Check[]`（发布前检查，当场核对，只读，D-SB-46；`advisory` 为真的项只提醒、不拦发布，D-SB-59） |
+| `workspace_publish_checks` | `id, revision, instanceId` | `Check[]`（发布前检查，当场核对，只读，D-SB-46；`advisory` 为真的项只提醒、不拦发布，D-SB-59） |
+| `workspace_collect_checks` | `id, revision, instanceId` | `Check[]`（采集版发布前检查，只读） |
+| `workspace_publish`、`workspace_publish_collect` | `id, revision, instanceId` | WorkspaceView（提交正式版或采集版，在工件边界生效） |
+| `workspace_retry_publish`、`workspace_abandon_publish` | `id, revision, instanceId` | WorkspaceView（重试切换或放弃生效失败的版本） |
 | `workspace_calibration_round_features` | `id, round` | `FrameMetrics[]`（测量示教件时写下的每帧特征，按当前计划相机编下标，只读） |
 | `workspace_calibration_frame` | `id, round, camera, seq` | `CalibrationFrameView`（`{segment, corridor, searchHalfPx, edges, metrics}`：按已确认分段用当前段走廊重测这一帧，只读；有在途件时拒绝） |
 | `workspace_calibration_skip_suggest` | `id` | `SkipSuggestView[]`（第 1 段起涂、末段收尾的跳过帧建议，由示教件测量的每帧特征算出，只读，D-SB-50） |

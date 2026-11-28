@@ -69,10 +69,12 @@ pub fn workspace_collect_checks(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
 ) -> Result<Vec<Check>, String> {
     let host = app.state::<WorkspaceHost>();
     let items = host.items.lock().unwrap();
     let w = items.get(&id).ok_or("候选配置不存在")?;
+    w.expect_instance(instance_id)?;
     if w.revision != revision {
         return Err("候选配置已更新，请重新加载后操作".into());
     }
@@ -85,10 +87,12 @@ pub fn workspace_publish_collect(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
 ) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     let w = items.get_mut(&id).ok_or("候选配置不存在")?;
+    w.expect_instance(instance_id)?;
     w.expect(revision)?;
     let checks = current_checks(&app, w);
     if let Some(failed) = checks.iter().find(|c| !c.passed) {

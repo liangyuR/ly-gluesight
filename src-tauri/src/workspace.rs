@@ -266,6 +266,13 @@ impl Workspace {
         self.flow != pieces::FLOW
     }
 
+    fn expect_instance(&self, instance_id: u64) -> Result<(), String> {
+        if self.instance_id != instance_id {
+            return Err("候选已删除或重建，请重新加载后操作".into());
+        }
+        Ok(())
+    }
+
     fn expect(&self, revision: u64) -> Result<(), String> {
         if self.legacy() {
             return Err(pieces::LEGACY.into());
@@ -286,7 +293,8 @@ impl Workspace {
         self.updated_at = ly_plc::now_ms();
     }
 
-    fn retry_publish(&mut self, revision: u64) -> Result<(), String> {
+    fn retry_publish(&mut self, revision: u64, instance_id: u64) -> Result<(), String> {
+        self.expect_instance(instance_id)?;
         if self.revision != revision
             || self.pending.is_none()
             || !matches!(
@@ -301,7 +309,8 @@ impl Workspace {
     }
 
     /// 生效失败时放弃冻结的待生效版本，候选回到草稿；生产版本不受影响。状态不确定时须先核实，不能放弃。
-    fn abandon_publish(&mut self, revision: u64) -> Result<(), String> {
+    fn abandon_publish(&mut self, revision: u64, instance_id: u64) -> Result<(), String> {
+        self.expect_instance(instance_id)?;
         if self.revision != revision
             || self.pending.is_none()
             || !matches!(self.publish, PublishState::Failed { .. })
@@ -971,10 +980,12 @@ pub fn workspace_publish(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
 ) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     let w = items.get_mut(&id).ok_or("候选配置不存在")?;
+    w.expect_instance(instance_id)?;
     w.expect(revision)?;
     if w.pending.is_some() {
         return Err("已有待生效版本，请等待工件结束".into());

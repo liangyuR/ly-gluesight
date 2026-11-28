@@ -81,10 +81,13 @@ export function client(page) {
 }
 
 export function workspaceCalls(call, id) {
-  const current = async () => (await call("workspace_get", { id })).workspace.revision;
+  const get = () => call("workspace_get", { id });
   return {
-    get: () => call("workspace_get", { id }),
-    edit: async (command, args) => call(command, { id, revision: await current(), ...args }),
+    get,
+    edit: async (command, args) => {
+      const { revision, instanceId } = (await get()).workspace;
+      return call(command, { id, revision, instanceId, ...args });
+    },
   };
 }
 

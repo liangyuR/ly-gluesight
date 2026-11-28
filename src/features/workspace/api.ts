@@ -31,8 +31,8 @@ export const workspaceApi = {
   remove: (id: string) => desktopCall<void>("workspace_delete", { id }),
   saveDoc: (id: string, revision: number, doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_save_doc", { id, revision, doc }),
   image: (id: string, imageId: string) => desktopCall<ArrayBuffer>("workspace_image", { id, imageId }).then(decodeFrameImage),
-  retryPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision }),
-  abandonPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision }),
+  retryPublish: (id: string, revision: number, instanceId: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision, instanceId }),
+  abandonPublish: (id: string, revision: number, instanceId: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision, instanceId }),
   /** 导入件（轮次）里某台相机第 seq 帧（帧组序号，从 1 起）的原图；缺帧时后端报错。 */
   captureFrameImage: (roundId: string, cameraId: string, seq: number, signal?: AbortSignal) => loadPreview(JSON.stringify(["capture", roundId, cameraId, seq]), () => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeFrameImage), signal),
   /** 历史件选择器与试测：按筛选条件分页列出真机录制件、能否选用与是否已被本候选使用（只读）；ownRecipe 只看当前项目本配方的 */
@@ -60,13 +60,13 @@ export const workspaceApi = {
   /** 工作台保存前预演（只读）：会清掉哪些走廊、保存后哪些段缺走廊 */
   segmentTemplatePreview: (id: string, revision: number, segments: PathSegment[], cuts: number[]) =>
     desktopCall<SegmentSaveImpact>("workspace_segment_template_preview", { id, revision, segments, cuts }),
-  publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
+  publish: (id: string, revision: number, instanceId: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision, instanceId }),
   /** 采集版检查：计划相机、相机组、曝光与增益、PLC 型号、段、生产版本；不改候选 */
-  collectChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_collect_checks", { id, revision }),
+  collectChecks: (id: string, revision: number, instanceId: number) => desktopCall<Check[]>("workspace_collect_checks", { id, revision, instanceId }),
   /** 发布生产配方前检查（设备、走廊示教、段标定、标定采集参数、x_ref、生产版本），当场核对，不改候选（D-SB-46） */
-  publishChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_publish_checks", { id, revision }),
+  publishChecks: (id: string, revision: number, instanceId: number) => desktopCall<Check[]>("workspace_publish_checks", { id, revision, instanceId }),
   /** 发布采集版（只供维护模式采图，不判定），在工件边界生效 */
-  publishCollect: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish_collect", { id, revision }),
+  publishCollect: (id: string, revision: number, instanceId: number) => desktopCall<WorkspaceView>("workspace_publish_collect", { id, revision, instanceId }),
   compare: (id: string, revision: number, historyId: number, raw: boolean, taskId?: string) =>
     desktopCall<Comparison>("workspace_compare", { id, revision, historyId, raw, taskId }),
   compareOriginal: (historyId: number, taskId?: string) => desktopCall<Comparison>("workspace_compare_original", { historyId, taskId }),
