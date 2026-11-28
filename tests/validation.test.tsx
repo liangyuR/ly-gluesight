@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import ValidationPage from "../src/features/workspace/ValidationPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
-import type { Check, Validation } from "../src/features/workspace/types";
+import type { Check, Validation, WorkspaceView } from "../src/features/workspace/types";
+import { errorText } from "../src/lib/errors";
 import { burstRecipe, burstWorkspaceView, deferred, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn(), collectChecks: vi.fn(), publishCollect: vi.fn(), publishChecks: vi.fn() } }));
@@ -136,6 +137,41 @@ describe("发布页面", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
     expect(await screen.findByRole("dialog")).toHaveTextContent("第 2 段相机 cam1：runs：n_map（bad_param）");
+  });
+
+  it("正式发布生成包失败 → 弹窗先显示生成状态，再说明失败并可重试", async () => {
+    const submission = deferred<WorkspaceView>();
+    const reason = "写入发布包失败，磁盘空间不足";
+    ws.act = vi.fn(async request => {
+      try {
+        return await request();
+      } catch (error) {
+        ws.error = errorText(error);
+        return null;
+      }
+    });
+    vi.mocked(workspaceApi.publish).mockReturnValueOnce(submission.promise);
+    const user = userEvent.setup();
+    show();
+    const publish = screen.getByRole("button", { name: "发布生产配方" });
+    await waitFor(() => expect(publish).toBeEnabled());
+    await user.click(publish);
+    const dialog = within(screen.getByRole("dialog", { name: "发布生产配方" }));
+    const submit = dialog.getByRole("button", { name: /确认发布/ });
+    await user.dblClick(submit);
+
+    expect(screen.getByRole("dialog", { name: "发布生产配方" })).toHaveTextContent("正在生成发布包");
+    expect(dialog.getByRole("button", { name: "取消" })).toBeDisabled();
+    expect(workspaceApi.publish).toHaveBeenCalledExactlyOnceWith("A", 7);
+    await act(async () => submission.reject(new Error(reason)));
+
+    expect(dialog.getByRole("alert")).toHaveTextContent(reason);
+    expect(screen.getByRole("dialog", { name: "发布生产配方" })).not.toHaveTextContent("正在生成发布包");
+    const retry = dialog.getByRole("button", { name: /确认发布|重试发布/ });
+    expect(retry).toBeEnabled();
+    await user.click(retry);
+    expect(workspaceApi.publish).toHaveBeenCalledTimes(2);
+    expect(workspaceApi.publish).toHaveBeenLastCalledWith("A", 7);
   });
 
   it("确认期间候选修订变更必须重新核对发布前检查和确认",async()=>{
