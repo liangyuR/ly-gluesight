@@ -14,7 +14,7 @@
 //! | 16 + H | 到文件尾 | 一个 Zstandard 帧（level 1，带内容校验和），解压后是变换过的 N 字节像素 |
 
 use super::{pnm_info, PnmInfo};
-use std::io::Cursor;
+use std::io::{BufRead, BufReader, Cursor};
 
 pub const EXTENSION: &str = "gsr";
 
@@ -27,6 +27,9 @@ const MAX_HEADER: usize = 512;
 const MAX_PIXELS: usize = 256 << 20;
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 const ZSTD_CHECKSUM_FLAG: u8 = 0x04;
+const ZSTD_SINGLE_SEGMENT_FLAG: u8 = 0x20;
+const BAYER_STREAM_WINDOW_LOG: u32 = 21;
+const BAYER_STREAM_MIN_PIXELS: usize = 4 << 20;
 const LEVEL: i32 = 1;
 
 const NONE: u8 = 0;
@@ -127,19 +130,66 @@ fn planes_delta(pixels: &[u8], width: usize, height: usize) -> Vec<u8> {
     out
 }
 
+fn restore_plane_pixels(
+    pixels: &mut [u8],
+    deltas: &mut std::slice::Iter<'_, u8>,
+    mut previous: u8,
+) -> u8 {
+    for value in pixels.iter_mut().step_by(2) {
+        previous = previous.wrapping_add(*deltas.next().unwrap_or(&0));
+        *value = previous;
+    }
+    previous
+}
+
 fn planes_restore(planes: &[u8], out: &mut [u8], width: usize, height: usize) {
     let mut source = planes.iter();
     for phase in 0..4 {
         let (dy, dx) = (phase / 2, phase % 2);
         for y in (dy..height).step_by(2) {
-            let line = &mut out[y * width..(y + 1) * width];
+            restore_plane_pixels(&mut out[y * width + dx..(y + 1) * width], &mut source, 0);
+        }
+    }
+}
+
+fn planes_restore_stream(
+    mut source: impl BufRead,
+    out: &mut [u8],
+    width: usize,
+    height: usize,
+) -> Result<(), String> {
+    let decompression_error = |error| format!("压缩原图解压失败：{error}");
+    let bad_length = "压缩原图解压后的长度与文件头不符";
+    for phase in 0..4 {
+        let (dy, dx) = (phase / 2, phase % 2);
+        for y in (dy..height).step_by(2) {
+            let mut line = &mut out[y * width + dx..(y + 1) * width];
             let mut previous = 0u8;
-            for value in line[dx..].iter_mut().step_by(2) {
-                previous = previous.wrapping_add(*source.next().unwrap_or(&0));
-                *value = previous;
+            while !line.is_empty() {
+                let buffer = source.fill_buf().map_err(decompression_error)?;
+                let count = line.len().div_ceil(2).min(buffer.len());
+                if count == 0 {
+                    return Err(bad_length.into());
+                }
+                let (pixels, rest) = line.split_at_mut((2 * count).min(line.len()));
+                previous = restore_plane_pixels(pixels, &mut buffer[..count].iter(), previous);
+                line = rest;
+                source.consume(count);
             }
         }
     }
+    if !source.fill_buf().map_err(decompression_error)?.is_empty() {
+        return Err(bad_length.into());
+    }
+    Ok(())
+}
+
+fn can_stream_bayer(payload: &[u8], pixels: usize) -> bool {
+    // RFC 8878：窗口描述字节按窗口大小单调递增，低三位为零时表示 2 的整数次幂。
+    let window_limit = ((BAYER_STREAM_WINDOW_LOG - 10) << 3) as u8;
+    pixels >= BAYER_STREAM_MIN_PIXELS
+        && payload[4] & ZSTD_SINGLE_SEGMENT_FLAG == 0
+        && payload.get(5).is_some_and(|&window| window <= window_limit)
 }
 
 fn decompress_exact(
@@ -227,10 +277,26 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<u8>, String> {
             }
         }
         _ => {
-            let mut planes = Vec::with_capacity(pixels);
-            decompress_exact(payload, &mut planes, pixels)?;
             out.resize(header.len() + pixels, 0);
-            planes_restore(&planes, &mut out[header.len()..], width, height);
+            let original = &mut out[header.len()..];
+            if can_stream_bayer(payload, pixels) {
+                let mut decoder = zstd::stream::read::Decoder::with_buffer(payload)
+                    .map_err(|error| format!("压缩原图解压失败：{error}"))?
+                    .single_frame();
+                decoder
+                    .window_log_max(BAYER_STREAM_WINDOW_LOG)
+                    .map_err(|error| format!("压缩原图解压失败：{error}"))?;
+                planes_restore_stream(
+                    BufReader::with_capacity(128 << 10, decoder),
+                    original,
+                    width,
+                    height,
+                )?;
+            } else {
+                let mut planes = Vec::with_capacity(pixels);
+                decompress_exact(payload, &mut planes, pixels)?;
+                planes_restore(&planes, original, width, height);
+            }
         }
     }
     if crc32fast::hash(&out) != crc {
@@ -312,6 +378,24 @@ mod tests {
             "28b52ffd2430810100005ee6e642e65ee684e6e65e2fe65ee671e6e65e3b5ee6e65de6e65e275ee6e669e65ee6145ee6e656e65ee698e6e65e34e7b1a9"
         ));
         assert_eq!(decode(&stored).unwrap(), original);
+    }
+
+    #[test]
+    fn large_bayer_restores_across_blocks_and_accepts_wider_legacy_windows() {
+        let header = "P5\n# bayer RG\n2050 2048\n255\n";
+        let original = raw(header, 2050 * 2048);
+        let encoded = encode(&original).unwrap();
+        assert_eq!(decode(&encoded).unwrap(), original);
+
+        let descriptor = FIXED + header.len() + 4;
+        assert_eq!(encoded[descriptor] & ZSTD_SINGLE_SEGMENT_FLAG, 0);
+        let mut wider_window = encoded.clone();
+        wider_window[descriptor + 1] = (23 - 10) << 3;
+        assert_eq!(decode(&wider_window).unwrap(), original);
+
+        let mut damaged = encoded;
+        *damaged.last_mut().unwrap() ^= 1;
+        assert!(decode(&damaged).is_err());
     }
 
     #[test]
