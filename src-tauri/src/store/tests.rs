@@ -233,6 +233,114 @@ fn pending_recording_index_upgrade_recovers_only_interrupted_recordings() {
 }
 
 #[test]
+fn pending_path_upgrade_preserves_directory_and_frame_protection_across_disks() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let other = Store::open_for(&db.path(), "other-project").unwrap();
+    let roots = [db.0.join("disk-a/records"), db.0.join("disk-b/records")];
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let absolute = roots[0].join("_PeNdInG/directory-only");
+    for (project, cycle, directory) in [
+        (&store, "absolute-directory", absolute),
+        (&other, "other-directory", roots[1].join("_pending/other")),
+    ] {
+        project
+            .insert(&burst_part(&recipe, cycle, &judgement, &burst))
+            .unwrap();
+        assert!(project
+            .update_recording(
+                cycle,
+                &RecordingEvidence {
+                    state: RecordingState::Incomplete,
+                    directory: Some(directory.to_string_lossy().into_owned()),
+                    ..Default::default()
+                }
+            )
+            .unwrap());
+    }
+    for (project, cycle, file) in [
+        (&store, "relative-frame", "_PENDING/frame-only/cam1.pgm"),
+        (&other, "other-frame", "_pending/other-frame/cam1.pgm"),
+    ] {
+        project
+            .insert(&burst_part(&recipe, cycle, &judgement, &burst))
+            .unwrap();
+        assert!(project
+            .update_frame_raw_files(
+                cycle,
+                &BTreeMap::from([(FrameKey { camera: 0, seq: 1 }, file.into())])
+            )
+            .unwrap());
+    }
+    store
+        .conn
+        .lock()
+        .unwrap()
+        .execute_batch("DROP INDEX parts_pending_path; DROP INDEX part_frames_pending_path;")
+        .unwrap();
+    let project = store.project().to_owned();
+    drop(other);
+    drop(store);
+
+    let upgraded = Store::open_deferred_recovery(&db.path(), &project).unwrap();
+    assert!(upgraded.backup_path().is_none());
+    let mut protection = vec![
+        roots[0].join("_pending/directory-only"),
+        roots[0].join("_pending/frame-only"),
+        roots[1].join("_pending/frame-only"),
+    ];
+    protection.sort();
+    assert_eq!(
+        upgraded
+            .pending_recording_directories(&roots, HistoryScope::Real)
+            .unwrap(),
+        protection
+    );
+}
+
+#[test]
+fn legacy_pending_paths_with_invalid_locations_block_cleanup() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let root = db.0.join("records");
+    let outside = db.0.join("other/_pending/outside");
+    let outside = outside.to_string_lossy();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let id = store
+        .insert(&burst_part(
+            &recipe,
+            "malformed-reference",
+            &judgement,
+            &burst,
+        ))
+        .unwrap();
+    for (directory, frame) in [
+        (Some(outside.as_ref()), None),
+        (None, Some("legacy/_pending/../outside.pgm")),
+    ] {
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE parts SET recording_directory=?2 WHERE id=?1",
+            params![id, directory],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE part_frames SET raw_file=?2 WHERE part_id=?1 AND camera=0 AND seq=1",
+            params![id, frame],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(store
+            .pending_recording_directories(std::slice::from_ref(&root), HistoryScope::Real)
+            .is_err());
+    }
+}
+
+#[test]
 fn appending_a_recipe_revision_accepts_legacy_fields_and_rechecks_changed_snapshots() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

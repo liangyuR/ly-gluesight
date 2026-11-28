@@ -1044,6 +1044,8 @@ impl Store {
              CREATE INDEX IF NOT EXISTS parts_recording_directory ON parts(recording_directory);
              CREATE INDEX IF NOT EXISTS parts_pending_recording
                  ON parts(id) WHERE recording_state = 'pending';
+             CREATE INDEX IF NOT EXISTS parts_pending_path ON parts(project_id, source)
+                 WHERE recording_directory IS NOT NULL AND instr(lower(recording_directory),'_pending')>0;
              CREATE INDEX IF NOT EXISTS parts_maintenance
                  ON parts(project_id, source, mode, recipe_id, recipe_version DESC, verdict)
                  WHERE mode = 'maintenanceCollect' OR mode = 'maintenanceShadow';
@@ -1092,6 +1094,8 @@ impl Store {
                  raw_file TEXT,
                  PRIMARY KEY (part_id, camera, seq)
              );
+             CREATE INDEX IF NOT EXISTS part_frames_pending_path ON part_frames(part_id)
+                 WHERE raw_file IS NOT NULL AND instr(lower(raw_file),'_pending')>0;
              PRAGMA user_version = 11;
              COMMIT;",
         )
@@ -1691,7 +1695,13 @@ impl Store {
             .conn
             .lock()
             .map_err(|_| "数据库锁异常，暂停孤立录制清理".to_string())?;
-        let mut stmt = conn.prepare(&format!("SELECT recording_directory FROM parts WHERE project_id=?1 AND instr(lower(recording_directory),'_pending')>0 AND {}", scope.clause(""))).map_err(db_err)?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT recording_directory FROM parts WHERE project_id=?1 AND recording_directory IS NOT NULL \
+                 AND instr(lower(recording_directory),'_pending')>0 AND {}",
+                scope.clause("")
+            ))
+            .map_err(db_err)?;
         for row in stmt
             .query_map([&self.project], |row| row.get::<_, String>(0))
             .map_err(db_err)?
@@ -1700,8 +1710,9 @@ impl Store {
         }
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT f.raw_file FROM part_frames f JOIN parts p ON p.id=f.part_id \
-            WHERE p.project_id=?1 AND instr(lower(f.raw_file),'_pending')>0 AND {}",
+                "SELECT f.raw_file FROM part_frames f CROSS JOIN parts p ON p.id=f.part_id \
+                 WHERE f.raw_file IS NOT NULL AND instr(lower(f.raw_file),'_pending')>0 \
+                 AND p.project_id=?1 AND {}",
                 scope.clause("p.")
             ))
             .map_err(db_err)?;
