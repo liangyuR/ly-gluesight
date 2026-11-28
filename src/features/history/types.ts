@@ -20,8 +20,10 @@ export interface RecordingEvidence {
 export type RecordSource = "real";
 export type HistoryScope = "real";
 
-/** 历史详情的地址状态：前后件筛选、列表视图、其他返回目标及详情滚动位置。 */
-export type HistoryDetailState = { query?: HistoryQuery; listView?: HistoryListView; listRecordId?: number; returnTo?: { path: string; label: string; state?: object }; scrollTop?: number };
+type HistoryListSelection = { query: HistoryQuery; keys: string[] };
+
+/** 历史详情的地址状态：前后件筛选、列表视图和选择、其他返回目标及详情滚动位置。 */
+export type HistoryDetailState = { query?: HistoryQuery; listView?: HistoryListView; listRecordId?: number; listSelection?: HistoryListSelection; returnTo?: { path: string; label: string; state?: object }; scrollTop?: number };
 
 export interface HistoryListView {
   range: string;
@@ -38,6 +40,7 @@ export interface HistoryListState {
   filter?: HistoryFilter;
   view?: HistoryListView;
   focusRecordId?: number;
+  selection?: HistoryListSelection;
   historyNotice?: { message: string; warnings: string[] };
 }
 

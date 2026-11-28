@@ -91,6 +91,7 @@ export default function HistoryPage() {
   const mutationBusy = useRef(false);
   const resultsBody = useRef<HTMLDivElement>(null);
   const restoreRecord = useRef(initial?.focusRecordId);
+  const restoreSelection = useRef(restored ? initial?.selection : undefined);
   const visibleFocusedRecord = useRef<HTMLButtonElement | null>(null);
   const textTimer = useRef<number | undefined>(undefined);
   const composingText = useRef(false);
@@ -171,9 +172,13 @@ export default function HistoryPage() {
     setDraft(empty); applyText(empty);
     setRange(DEFAULT_RANGE); setGroups([]); setMode("all"); setRecipeId(""); setProject("");
   };
-  const openRecord = (id: number, source: Pick<RejudgeScope, "query" | "view"> = result ?? scope) => go(`/history/${id}`, {
-    state: { query: source.query, listView: source.view, listRecordId: id } satisfies HistoryDetailState,
-  });
+  const openRecord = (id: number, rejudgeSource?: Pick<RejudgeScope, "query" | "view">) => {
+    const source = rejudgeSource ?? result ?? scope;
+    const listSelection = !rejudgeSource && !stale && selected.length ? { query, keys: selected } : undefined;
+    go(`/history/${id}`, {
+      state: { query: source.query, listView: source.view, listRecordId: id, listSelection } satisfies HistoryDetailState,
+    });
+  };
 
   useLayoutEffect(() => { currentScope.current = scope; }, [scope]);
   useLayoutEffect(() => {
@@ -182,7 +187,10 @@ export default function HistoryPage() {
     if (focused && focused === document.activeElement) {
       focused.scrollIntoView?.({ block: "nearest", inline: "nearest" });
     }
-    if (view !== entryView.current || draftPending) restoreRecord.current = undefined;
+    if (view !== entryView.current || draftPending) {
+      restoreRecord.current = undefined;
+      restoreSelection.current = undefined;
+    }
     const id = restoreRecord.current;
     if (id == null || !page || stale) return;
     restoreRecord.current = undefined;
@@ -270,8 +278,11 @@ export default function HistoryPage() {
           visibleFocusedRecord.current = focused;
         }
       }
+      const returning = restoreSelection.current;
+      restoreSelection.current = undefined;
+      const returnedKeys = returning && JSON.stringify(returning.query) === JSON.stringify(query) ? returning.keys : undefined;
       setResult({ page: p, query, view });
-      setSelected(previous => previous.filter(key => p.items.some(item => String(item.id) === key)));
+      setSelected(previous => (returnedKeys ?? previous).filter(key => p.items.some(item => String(item.id) === key)));
     } catch (e) {
       if (alive.current && currentScope.current === scope && !request.pending) setError(errorText(e));
     } finally {

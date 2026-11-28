@@ -484,8 +484,18 @@ it("后续页刷新期间先收到越界结果 → 最新查询仍有记录时�
   expect(queries().slice(before).map(query => query.offset)).toEqual([50, 50]);
 });
 
-it("从筛选后的第二页打开工件再返回 → 恢复筛选、页码和原工件焦点", async () => {
+it.each([
+  { changedDay: false, expected: "恢复仍在本页的勾选" },
+  { changedDay: true, expected: "日期范围已变时清空旧勾选" },
+])("从筛选后的第二页打开工件再返回 → $expected", async ({ changedDay }) => {
+  let now = new Date(2026, 10, 28, 12).getTime();
+  vi.spyOn(Date, "now").mockImplementation(() => now);
   const part = { ...burstPartSummary(1), projectId: "line-b", tags: ["待复核"] };
+  let secondPage = [part, { ...burstPartSummary(2), projectId: "line-b", tags: ["待复核"] }];
+  const returned = deferred<ReturnType<typeof page>>();
+  const refreshed = deferred<ReturnType<typeof page>>();
+  let returning = false;
+  let returnQueries = 0;
   const filteredPage = { project: "line-b", tag: "待复核", offset: 50 };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "recipe_list") return { recipes: [], errors: [] };
@@ -494,7 +504,8 @@ it("从筛选后的第二页打开工件再返回 → 恢复筛选、页码和�
     if (command === "history_query") {
       const { offset, project, tag } = (args as { query: HistoryQuery }).query;
       const matching = offset === 50 && project === filteredPage.project && tag === filteredPage.tag;
-      return { ...page([matching ? part : burstPartSummary(51)]), total: 51 };
+      if (matching && returning) return ++returnQueries === 1 ? returned.promise : refreshed.promise;
+      return { ...page(matching ? secondPage : [burstPartSummary(51)]), total: 50 + secondPage.length };
     }
     if (command === "history_overview") return { ...burstPartDetail(), summary: part, burst: null };
     if (command === "history_neighbors") return { older: null, newer: null };
@@ -515,17 +526,34 @@ it("从筛选后的第二页打开工件再返回 → 恢复筛选、页码和�
   const next = screen.getByRole("button", { name: "下一页" });
   await waitFor(() => expect(next).toBeEnabled());
   await user.click(next);
-  await user.click(await row(1));
+  const opener = await row(1);
+  await user.click(screen.getByRole("checkbox", { name: /SN-101/ }));
+  await user.click(screen.getByRole("checkbox", { name: /SN-102/ }));
+  expect(screen.getByRole("button", { name: "编辑 Tag（2）" })).toBeEnabled();
+  await user.click(opener);
 
   const back = await screen.findByRole("button", { name: "返回历史列表" });
   const beforeReturn = queries().length;
+  secondPage = [part];
+  returning = true;
+  if (changedDay) now = new Date(2026, 10, 29, 12).getTime();
   await user.click(back);
+  await waitFor(() => expect(returnQueries).toBe(1));
+  emitHistory("history://changed", [1]);
+  const newPage = { ...page(secondPage), total: 51 };
+  await act(async () => returned.resolve(newPage));
   const returnedRow = await row(1);
   expect(returnedRow).toBeVisible();
   await waitFor(() => expect(returnedRow).toHaveFocus());
   expect(project()).toHaveValue("line-b");
   expect(tag()).toHaveValue("待复核");
   expect(queries()[beforeReturn]).toMatchObject(filteredPage);
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: /SN-101/ }).checked).toBe(!changedDay);
+  expect(screen.queryByRole("checkbox", { name: /SN-102/ })).not.toBeInTheDocument();
+  const edit = () => screen.getByRole("button", { name: `编辑 Tag（${changedDay ? 0 : 1}）` });
+  expect(edit()).toBeDisabled();
+  await act(async () => refreshed.resolve(newPage));
+  expect(edit()).toHaveProperty("disabled", changedDay);
 });
 
 // 防的回归：历史页默认只看当前项目（看不到其他项目的记录），或选“当前项目”后查询没带项目编号、仍混入其他项目的记录
