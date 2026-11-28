@@ -14,6 +14,7 @@
 //! | 16 + H | 到文件尾 | 一个 Zstandard 帧（level 1，带内容校验和），解压后是变换过的 N 字节像素 |
 
 use super::{pnm_info, PnmInfo};
+use std::io::Cursor;
 
 pub const EXTENSION: &str = "gsr";
 
@@ -126,8 +127,7 @@ fn planes_delta(pixels: &[u8], width: usize, height: usize) -> Vec<u8> {
     out
 }
 
-fn planes_restore(planes: &[u8], width: usize, height: usize) -> Vec<u8> {
-    let mut out = vec![0u8; planes.len()];
+fn planes_restore(planes: &[u8], out: &mut [u8], width: usize, height: usize) {
     let mut source = planes.iter();
     for phase in 0..4 {
         let (dy, dx) = (phase / 2, phase % 2);
@@ -140,7 +140,20 @@ fn planes_restore(planes: &[u8], width: usize, height: usize) -> Vec<u8> {
             }
         }
     }
-    out
+}
+
+fn decompress_exact(
+    payload: &[u8],
+    destination: &mut impl zstd::zstd_safe::WriteBuf,
+    pixels: usize,
+) -> Result<(), String> {
+    let length = zstd::bulk::Decompressor::new()
+        .and_then(|mut decoder| decoder.decompress_to_buffer(payload, destination))
+        .map_err(|error| format!("压缩原图解压失败：{error}"))?;
+    if length != pixels {
+        return Err("压缩原图解压后的长度与文件头不符".into());
+    }
+    Ok(())
 }
 
 /// 把一张 8 位 P5 / P6 原图的全部字节编码成 `.gsr`；不是这两种格式、文件头过长或长度与头不符（有多余字节）时为 None，
@@ -199,23 +212,27 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<u8>, String> {
     if zstd::zstd_safe::find_frame_compressed_size(payload) != Ok(payload.len()) {
         return Err("压缩原图被截断或带有多余数据".into());
     }
-    let mut data = zstd::bulk::decompress(payload, pixels)
-        .map_err(|error| format!("压缩原图解压失败：{error}"))?;
-    if data.len() != pixels {
-        return Err("压缩原图解压后的长度与文件头不符".into());
-    }
     let (width, height) = (info.width as usize, info.height as usize);
-    match transform {
-        NONE => {}
-        DELTA => {
-            let stride = usize::from(info.file_channels);
-            row_restore(&mut data, width * stride, stride);
-        }
-        _ => data = planes_restore(&data, width, height),
-    }
-    let mut out = Vec::with_capacity(header.len() + data.len());
+    let mut out = Vec::with_capacity(header.len() + pixels);
     out.extend_from_slice(header);
-    out.extend_from_slice(&data);
+    match transform {
+        NONE | DELTA => {
+            let mut destination = Cursor::new(out);
+            destination.set_position(header.len() as u64);
+            decompress_exact(payload, &mut destination, pixels)?;
+            out = destination.into_inner();
+            if transform == DELTA {
+                let stride = usize::from(info.file_channels);
+                row_restore(&mut out[header.len()..], width * stride, stride);
+            }
+        }
+        _ => {
+            let mut planes = Vec::with_capacity(pixels);
+            decompress_exact(payload, &mut planes, pixels)?;
+            out.resize(header.len() + pixels, 0);
+            planes_restore(&planes, &mut out[header.len()..], width, height);
+        }
+    }
     if crc32fast::hash(&out) != crc {
         return Err("压缩原图校验和不符".into());
     }
@@ -262,6 +279,17 @@ mod tests {
             assert_eq!(encoded[5], transform, "{name}");
             assert_eq!(decode(&encoded).unwrap(), original, "{name}");
         }
+        let header = "P5\n# legacy\n7 5\n255\n";
+        let original = raw(header, 35);
+        let mut encoded = encode(&original).unwrap();
+        encoded[5] = NONE;
+        encoded.truncate(FIXED + header.len());
+        let mut compressor = zstd::bulk::Compressor::new(LEVEL).unwrap();
+        compressor
+            .set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(true))
+            .unwrap();
+        encoded.extend(compressor.compress(&original[header.len()..]).unwrap());
+        assert_eq!(decode(&encoded).unwrap(), original);
     }
 
     #[test]
