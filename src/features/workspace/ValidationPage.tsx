@@ -19,7 +19,8 @@ import { returnState } from "./returnNavigation";
 
 export default function ValidationPage() {
   const location = useLocation();
-  const {data,doc,dirty,frameDirty,navigationDirty,segmentDirty,busy,act,setError} = useWorkspace();
+  const {data,doc,dirty,frameDirty,navigationDirty,segmentDirty,saving,unsavable,busy,act,setError} = useWorkspace();
+  const waitingForSave = dirty || frameDirty || navigationDirty || segmentDirty || saving;
   const candidate = data ? JSON.stringify([data.workspace.doc.id,data.workspace.instanceId,data.workspace.doc.version]) : null;
   const pendingRelease = data?.workspace.pending;
   const [confirmation, setConfirmation] = useState<{key: string; error: string} | null>(null);
@@ -30,14 +31,14 @@ export default function ValidationPage() {
   const [publishChecks,setPublishChecks] = useState<{key:string;checks:Check[]|null;error:string}>({key:"",checks:null,error:""});
   const [operating,setOperating] = useState(false);
   const pending = useRef<{scope:string;sequence:number}|null>(null);
-  const scope = `${candidate??""}:${data?.workspace.revision??""}:${!!pendingRelease}`;
+  const scope = `${candidate??""}:${data?.workspace.revision??""}:${!!pendingRelease}:${waitingForSave}`;
   const current = useRef({scope,alive:true,sequence:0});
   if(current.current.scope!==scope){current.current.scope=scope;current.current.sequence++;}
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;};},[]);
   useEffect(()=>{pending.current=null;setOperating(false);setAbandoning(false);setCollect(null);},[scope]);
   const checksKey=JSON.stringify([scope,current.current.sequence,checkAttempt]);
   useEffect(()=>{
-    if(!data||!data.plan||pendingRelease)return;
+    if(!data||!data.plan||pendingRelease||waitingForSave)return;
     let alive=true;
     workspaceApi.publishChecks(data.workspace.doc.id,data.workspace.revision)
       .then(checks=>alive&&setPublishChecks({key:checksKey,checks,error:""}))
@@ -47,12 +48,12 @@ export default function ValidationPage() {
   if(!data||!doc)return <WorkspaceEmpty/>;
   const plan=data.plan;
   const locked=busy||operating;
-  const ready=!dirty&&!frameDirty&&!navigationDirty&&!segmentDirty&&!locked;
+  const ready=!waitingForSave&&!locked;
   // 没有整件 ΣN_exp（多段时各段 N_exp）时不能发布
   const planBlocked=planPublishBlocker(plan);
-  const checking = !pendingRelease && publishChecks.key !== checksKey;
+  const checking = !pendingRelease && !waitingForSave && publishChecks.key !== checksKey;
   const liveChecks = pendingRelease ? { checks: pendingRelease.validation.checks, error: "" }
-    : checking ? { checks: null, error: "" } : publishChecks;
+    : waitingForSave || checking ? { checks: null, error: "" } : publishChecks;
   const failedLive=liveChecks.checks?.find(c=>!c.passed&&!c.advisory);
   const advisories=liveChecks.checks?.filter(c=>!c.passed&&c.advisory)??[];
   const canPublish=ready&&!!liveChecks.checks&&!failedLive&&!data.workspace.pending&&!planBlocked;
@@ -62,7 +63,9 @@ export default function ValidationPage() {
   const stepChecks=(["capture","segments"] as const).flatMap(id=>{const step=stepOfV2(plan.progress,id);return step?[stepCheck(step)]:[];});
   // 整件示教帧数 ΣN_exp 是否已得出：由 DTO 得出，不依赖后端步骤文案
   const planCheck=[{name:"示教总帧数 ΣN_exp",passed:!planBlocked,detail:planBlocked||(plan.calibrated?`${expectedText(plan.expectedTotal)} 帧`:"")}];
-  const liveRows=liveChecks.checks??(liveChecks.error?[{name:"发布前检查",passed:false,detail:liveChecks.error}]:[{name:"发布前检查",passed:false,detail:"正在核对设备、走廊示教与示教件基准…"}]);
+  const liveRows = liveChecks.checks ?? (waitingForSave ? [] : [{
+    name: "发布前检查", passed: false, detail: liveChecks.error || "正在核对设备、走廊示教与示教件基准…",
+  }]);
   const checks:Check[]=[...stepChecks,...liveRows,...planCheck];
   const failedChecks=checks.filter(c=>!c.passed&&!c.advisory),passedChecks=checks.filter(c=>c.passed);
   const checkRow = (c: Check) => {
@@ -81,7 +84,9 @@ export default function ValidationPage() {
       </div>
     </div>;
   };
-  const publishBlocked=data.workspace.pending?"":planBlocked?planBlocked:liveChecks.error?liveChecks.error:!liveChecks.checks?"正在核对发布前检查":failedLive?`${failedLive.name}：${failedLive.detail}`:dirty||frameDirty||navigationDirty||segmentDirty?"候选配置有未保存修改，保存后再发布":"";
+  const saveBlocker = unsavable ? "走廊长度不足三站，回示教页修正或撤销后自动检查" : "候选修改尚未保存，保存后自动检查";
+  const publishBlocked = pendingRelease ? "" : waitingForSave ? saveBlocker
+    : planBlocked || liveChecks.error || (!liveChecks.checks ? "正在核对发布前检查" : failedLive ? `${failedLive.name}：${failedLive.detail}` : "");
   const action=async(request:()=>ReturnType<typeof workspaceApi.publish>,message:string)=>{
     if(pending.current||!ready)return null;
     const operation={scope,sequence:current.current.sequence};
@@ -119,12 +124,12 @@ export default function ValidationPage() {
     catch(error){if(valid())setError(errorText(error));}
     finally{if(valid()){pending.current=null;setOperating(false);}}
   };
-  const checkStatus = pendingRelease ? "已冻结" : checking ? "检查中"
+  const checkStatus = pendingRelease ? "已冻结" : waitingForSave ? "待保存后检查" : checking ? "检查中"
     : failedChecks.length ? `${failedChecks.length} 项未满足` : advisories.length ? `${advisories.length} 项提醒` : `${checks.length} 项全部满足`;
-  const checkTone = pendingRelease || checking ? "info" : failedChecks.length || advisories.length ? "warn" : "ok";
+  const checkTone = pendingRelease || waitingForSave || checking ? "info" : failedChecks.length || advisories.length ? "warn" : "ok";
   return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack"><Panel title="发布前检查" help="设备、走廊示教与示教件基准满足即可发布；检测结果在历史页用候选重算历史记录核对" actions={<div className="wp-actions">
     <Badge tone={checkTone}>{checkStatus}</Badge>
-    {!pendingRelease && <Button size="sm" disabled={locked || checking} onClick={() => setCheckAttempt(attempt => attempt + 1)}>重新检查</Button>}
+    {!pendingRelease && <Button size="sm" disabled={locked || waitingForSave || checking} onClick={() => setCheckAttempt(attempt => attempt + 1)}>重新检查</Button>}
   </div>}>
     <div className="wp-checklist">{failedChecks.map(checkRow)}{advisories.map(checkRow)}{passedChecks.length>0&&<Accordion collapsible items={[{ value: "passed", title: <span>已满足 {passedChecks.length} 项：{passedChecks.map(c=>c.name).join("、")}</span>, content: <div className="wp-checklist">{passedChecks.map(checkRow)}</div> }]} />}</div>
     </Panel></div>

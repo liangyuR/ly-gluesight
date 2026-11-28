@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { PointerEventsCheckLevel } from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { createElement } from "react";
@@ -113,6 +113,51 @@ it("发布检查定位失败位置 → 打开指定相机的示教帧并可返�
   await user.click(screen.getByRole("button", { name: "返回发布前检查" }));
   expect(await screen.findByRole("link", { name: "去示教 CAM-1 · 第 3 段" })).toBeVisible();
   expect(calls("workspace_publish_checks")).toEqual([{ id: "A", revision: 3 }, { id: "A", revision: 3 }]);
+});
+
+it("示教保存期间返回发布页 → 等保存完成后只检查最终修订", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate();
+  const counts = [6, 3, 3];
+  candidate.plan.segments.forEach((segment, index) => { segment.expectedFrames = counts[index]; });
+  const saving = deferred<void>();
+  mockSite(candidate, {
+    workspace_publish_checks: ({ revision }) => revision === 3 ? [{
+      name: "走廊示教", passed: false, detail: "第 1 段相机 CAM-2 待画走廊",
+      teachingTargets: [{ camera: "CAM-2", segment: 1 }],
+    }] : [{ name: "走廊示教", passed: true, detail: "走廊已完成" }],
+    workspace_save_doc: savingDoc(candidate, saving.promise),
+  });
+  const user = renderWorkspace("/recipe/A/validation");
+  await user.click(await screen.findByRole("link", { name: "去示教 CAM-2 · 第 1 段" }));
+  const image = await screen.findByRole("img", { name: CAM2 });
+  await user.click(screen.getByRole("button", { name: "编辑点" }));
+  for (const [clientX, clientY] of [[10, 10], [40, 40]]) {
+    fireEvent.pointerDown(image, { clientX, clientY });
+    fireEvent.pointerUp(image);
+  }
+  await act(() => vi.advanceTimersByTimeAsync(900));
+  expect(screen.getByText("保存中")).toBeVisible();
+  fireEvent.pointerDown(image, { clientX: 60, clientY: 50 });
+  fireEvent.pointerUp(image);
+
+  await user.click(screen.getByRole("button", { name: "返回发布前检查" }));
+  const publish = await screen.findByRole("button", { name: "发布生产配方" });
+  expect(calls("workspace_publish_checks")).toEqual([{ id: "A", revision: 3 }]);
+  expect(publish).toBeDisabled();
+  expect(screen.getByRole("note")).toHaveTextContent("保存后");
+
+  await act(async () => saving.resolve(undefined));
+  expect(calls("workspace_publish_checks")).toEqual([{ id: "A", revision: 3 }]);
+  expect(publish).toBeDisabled();
+  expect(screen.getByRole("note")).toHaveTextContent("保存后");
+
+  await act(() => vi.advanceTimersByTimeAsync(900));
+  await waitFor(() => expect(publish).toBeEnabled());
+  expect(calls("workspace_publish_checks")).toEqual([{ id: "A", revision: 3 }, { id: "A", revision: 5 }]);
+  await user.click(publish);
+  const dialog = within(screen.getByRole("dialog", { name: "发布生产配方" }));
+  expect(dialog.getByRole("button", { name: /确认发布/ })).toBeEnabled();
 });
 
 it("保存期间继续加点 → 不锁编辑、缩放与走廊不重置，保存回来后新点保留并按新修订再保存一次", async () => {
