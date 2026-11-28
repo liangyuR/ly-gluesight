@@ -30,13 +30,13 @@ impl Drop for TestDb {
 }
 
 #[test]
-fn source_index_upgrade_keeps_existing_history_counts_and_tie_order() {
+fn covering_index_upgrade_preserves_scoped_and_cross_project_history() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
     let recipe = burst_fixture::recipe();
     let (judgement, burst) =
         burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
-    let insert = |cycle, ts| {
+    let insert = |store: &Store, cycle, ts| {
         store
             .insert(&PartRecord {
                 ts,
@@ -44,16 +44,21 @@ fn source_index_upgrade_keeps_existing_history_counts_and_tie_order() {
             })
             .unwrap()
     };
-    let earlier = insert("index-upgrade-earlier", 90);
-    let tied = insert("index-upgrade-tied", 100);
-    insert("index-upgrade-newer", 100);
+    let earlier = insert(&store, "index-upgrade-earlier", 90);
+    let tied = insert(&store, "index-upgrade-tied", 100);
+    let newer = insert(&store, "index-upgrade-newer", 100);
+    let other = Store::open_for(&db.path(), "other-project").unwrap();
+    insert(&other, "index-upgrade-other", 100);
+    drop(other);
     store
         .conn
         .lock()
         .unwrap()
         .execute_batch(
             "DROP INDEX parts_source_ts_id_verdict;
+         DROP INDEX parts_project_source_ts_id_verdict;
          CREATE INDEX parts_source_ts ON parts(source, ts);
+         CREATE INDEX parts_project_ts ON parts(project_id, ts);
          PRAGMA user_version = 11;",
         )
         .unwrap();
@@ -63,32 +68,45 @@ fn source_index_upgrade_keeps_existing_history_counts_and_tie_order() {
         limit: 2,
         ..Default::default()
     };
-    let before = store.query(&query).unwrap();
+    let scoped = HistoryQuery {
+        project: Some(store.project().into()),
+        ..query.clone()
+    };
+    let cases = [(query, [newer, tied]), (scoped, [tied, earlier])].map(|(query, ids)| {
+        let before = store.query(&query).unwrap();
+        (query, ids, serde_json::to_value(before).unwrap())
+    });
     drop(store);
 
     let upgraded = Store::open(&db.path()).unwrap();
     assert!(upgraded.backup_path().is_none());
-    let after = upgraded.query(&query).unwrap();
-    assert_eq!(
-        after.items.iter().map(|part| part.id).collect::<Vec<_>>(),
-        [tied, earlier]
-    );
-    assert_eq!(
-        serde_json::to_value(after).unwrap(),
-        serde_json::to_value(before).unwrap()
-    );
+    for (query, ids, before) in cases {
+        let after = upgraded.query(&query).unwrap();
+        assert_eq!(
+            after.items.iter().map(|part| part.id).collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(serde_json::to_value(after).unwrap(), before);
+    }
     let index: String = upgraded
         .conn
         .lock()
         .unwrap()
         .query_row(
-            "SELECT group_concat(name) FROM sqlite_schema
-         WHERE type='index' AND name IN ('parts_source_ts', 'parts_source_ts_id_verdict')",
+            "SELECT group_concat(name) FROM (
+                 SELECT name FROM sqlite_schema WHERE type='index'
+                 AND name IN ('parts_source_ts', 'parts_source_ts_id_verdict',
+                              'parts_project_ts', 'parts_project_source_ts_id_verdict')
+                 ORDER BY name
+             )",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(index, "parts_source_ts_id_verdict");
+    assert_eq!(
+        index,
+        "parts_project_source_ts_id_verdict,parts_source_ts_id_verdict"
+    );
 }
 
 #[test]
