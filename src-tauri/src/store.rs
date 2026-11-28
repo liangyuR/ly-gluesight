@@ -1042,6 +1042,8 @@ impl Store {
                  ON parts(sn, project_id, ts) WHERE sn <> '';
              CREATE INDEX IF NOT EXISTS parts_retest ON parts(retest_of) WHERE retest_of IS NOT NULL;
              CREATE INDEX IF NOT EXISTS parts_recording_directory ON parts(recording_directory);
+             CREATE INDEX IF NOT EXISTS parts_pending_recording
+                 ON parts(id) WHERE recording_state = 'pending';
              CREATE INDEX IF NOT EXISTS parts_maintenance
                  ON parts(project_id, source, mode, recipe_id, recipe_version DESC, verdict)
                  WHERE mode = 'maintenanceCollect' OR mode = 'maintenanceShadow';

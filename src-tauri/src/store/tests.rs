@@ -167,6 +167,72 @@ fn sn_index_upgrade_preserves_exact_retest_links_within_the_current_project() {
 }
 
 #[test]
+fn pending_recording_index_upgrade_recovers_only_interrupted_recordings() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let insert = |cycle| {
+        store
+            .insert(&burst_part(&recipe, cycle, &judgement, &burst))
+            .unwrap()
+    };
+    let pending = insert("recovery-index-pending");
+    let another = insert("recovery-index-other-pending");
+    let finalized = insert("recovery-index-finalized");
+    let finalized_recording = RecordingEvidence {
+        state: RecordingState::Incomplete,
+        directory: Some("saved-recording".into()),
+        errors: vec!["录制已有缺帧".into()],
+        ..Default::default()
+    };
+    let project = store.project().to_owned();
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE parts SET recording_errors=?2 WHERE id=?1",
+            params![pending, r#"["先前的录制错误"]"#],
+        )
+        .unwrap();
+        conn.execute("DROP INDEX IF EXISTS parts_pending_recording", [])
+            .unwrap();
+    }
+    drop(store);
+
+    let upgraded = Store::open_deferred_recovery(&db.path(), &project).unwrap();
+    assert!(upgraded.backup_path().is_none());
+    assert_eq!(
+        upgraded.detail(pending).unwrap().recording.state,
+        RecordingState::Pending
+    );
+    upgraded
+        .update_recording("recovery-index-finalized", &finalized_recording)
+        .unwrap();
+    assert_eq!(upgraded.finish_interrupted_recordings().unwrap(), 2);
+    let recovered = upgraded.detail(pending).unwrap().recording;
+    assert_eq!(recovered.state, RecordingState::Failed);
+    assert!(!recovered.available);
+    assert_eq!(recovered.errors[0], "先前的录制错误");
+    assert_eq!(recovered.errors.len(), 2);
+    assert_eq!(
+        upgraded.detail(another).unwrap().recording.state,
+        RecordingState::Failed
+    );
+    assert_eq!(
+        upgraded.detail(finalized).unwrap().recording,
+        finalized_recording
+    );
+    assert_eq!(upgraded.finish_interrupted_recordings().unwrap(), 0);
+    assert_eq!(upgraded.detail(pending).unwrap().recording, recovered);
+    let has_index: bool = upgraded.conn.lock().unwrap().query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type='index' AND name='parts_pending_recording')",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert!(has_index);
+}
+
+#[test]
 fn appending_a_recipe_revision_accepts_legacy_fields_and_rechecks_changed_snapshots() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
