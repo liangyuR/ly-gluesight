@@ -1,5 +1,7 @@
 use super::burst::CameraTeaching;
-use super::burst_release::{burst_checks, graph_and_trial_checks, publish_blocker};
+use super::burst_release::{
+    burst_checks, graph_and_trial_checks, publish_blocker, teaching_image_checks, TeachTrial,
+};
 use super::burst_tests::{burst_workspace, DEVICE};
 use super::*;
 use crate::plan::{
@@ -148,7 +150,7 @@ fn publish_checks_report_graph_errors_for_each_affected_camera_before_measuring(
     let mut w = taught(&[Straight, Corner], DEVICE);
     calibrate(&mut w, 30);
     let valid = burst_checks(&w, Ok(()), || {
-        graph_and_trial_checks(&w, &w.doc.build().unwrap(), |_| None)
+        graph_and_trial_checks(&w, &w.doc.build().unwrap(), |_, _| Vec::new())
     });
     assert!(check(&valid, "测量图").passed);
 
@@ -168,7 +170,7 @@ fn publish_checks_report_graph_errors_for_each_affected_camera_before_measuring(
     });
     w.doc.inspect[2].segments[0].measure = Some(crate::recipe::MeasureMode::Color);
     let checks = burst_checks(&w, Ok(()), || {
-        graph_and_trial_checks(&w, &w.doc.build().unwrap(), |_| {
+        graph_and_trial_checks(&w, &w.doc.build().unwrap(), |_, _| {
             panic!("建图失败时不应进行试测")
         })
     });
@@ -214,4 +216,97 @@ fn archived_release_without_teaching_targets_remains_readable() {
     assert_eq!(release.bundle_id, "original-bundle");
     let corridor = check(&release.validation.checks, "走廊示教");
     assert!(corridor.passed && corridor.teaching_targets.is_empty());
+}
+
+#[test]
+fn publish_preflight_rechecks_current_teaching_files_after_a_successful_result() {
+    let root = super::tests::ImportTestDir::new();
+    let mut w = taught(&[Straight, Corner], DEVICE);
+    calibrate(&mut w, 30);
+    let recipe = w.doc.build().unwrap();
+    let pgm = |width, height| {
+        let mut bytes = crate::image_file::pnm_header(width, height, 1, None).into_bytes();
+        bytes.resize(bytes.len() + (width * height) as usize, 0x19);
+        bytes
+    };
+    let original = pgm(1000, 700);
+    let path_of = |frame: &CameraTeaching| root.0.join(format!("{}.pgm", frame.frame.id));
+    for frame in &w.camera_teaching {
+        std::fs::write(path_of(frame), &original).unwrap();
+    }
+    let target = w
+        .camera_teaching
+        .iter()
+        .find(|frame| frame.camera == "cam2" && frame.segment == Some(2))
+        .unwrap();
+    let path = path_of(target);
+    let expected = [TeachingTarget {
+        camera: "cam2".into(),
+        segment: Some(2),
+    }];
+    let mut cache = HashMap::new();
+    let mut preflight = || {
+        burst_checks(&w, Ok(()), || {
+            graph_and_trial_checks(&w, &recipe, |_, frames| {
+                teaching_image_checks(
+                    &recipe,
+                    &frames,
+                    &mut cache,
+                    |frame| crate::release::read_resource_file(&path_of(frame)),
+                    |(_, segment), frame, image| {
+                        Some(TeachTrial {
+                            segment,
+                            camera: frame.camera.clone(),
+                            incomplete: false,
+                            outcome: if image.pixels.last() == Some(&0x19) {
+                                Ok(())
+                            } else {
+                                Err("试测读取了替换后的图像".into())
+                            },
+                        })
+                    },
+                )
+            })
+        })
+    };
+    let valid = preflight();
+    assert!(publish_blocker(&valid).is_none());
+    assert!(check(&valid, "示教帧试测").passed);
+
+    for (contents, reason) in [
+        (None, None),
+        (Some(b"P5\n1000 700\n255\n".to_vec()), Some("像素数据不足")),
+        (Some(pgm(999, 700)), Some("与冻结时")),
+    ] {
+        if let Some(bytes) = contents {
+            std::fs::write(&path, bytes).unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let checks = preflight();
+        let blocker = publish_blocker(&checks).unwrap();
+        assert_eq!(blocker.name, "示教图像");
+        assert_eq!(blocker.teaching_targets, expected);
+        if let Some(reason) = reason {
+            assert!(blocker.detail.contains(reason), "{blocker:?}");
+        }
+    }
+
+    std::fs::write(&path, &original).unwrap();
+    assert!(publish_blocker(&preflight()).is_none());
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let mut changed = original;
+    *changed.last_mut().unwrap() = 0x31;
+    std::fs::write(&path, &changed).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let checks = preflight();
+    assert!(check(&checks, "示教图像").passed);
+    assert!(check(&checks, "示教帧试测")
+        .detail
+        .contains("试测读取了替换后的图像"));
 }

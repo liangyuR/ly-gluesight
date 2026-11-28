@@ -49,6 +49,7 @@ pub struct CorridorInput {
     pub segment: u32,
     pub image: ResourceSource,
     pub image_id: String,
+    pub expected_size: Option<[u32; 2]>,
 }
 
 /// 段配方的发布输入（schema 5）。`graph` 是 `production::burst_graphs` 的结果，生产加载时按配方重算比对。
@@ -345,11 +346,14 @@ pub fn publish_burst(
                 ));
             }
             let bytes = source_bytes(source.image)?;
-            let (frame, extension) = image_details(&bytes, &label)?;
+            let (image, extension) =
+                decode_teaching_image(&bytes, inspect, segment, source.expected_size)
+                    .map_err(|error| format!("{label} 第 {segment} 段：{error}"))?;
+            let frame = [image.width, image.height];
+            drop(image);
             if *size.get_or_insert(frame) != frame {
                 return Err(format!("{label} 各段示教帧尺寸不同"));
             }
-            check_corridor(inspect, segment, frame)?;
             let dir = corridor_prefix(index, segment);
             let image = format!("{dir}/image.{extension}");
             add_file(&mut files, image.clone(), bytes)?;
@@ -613,6 +617,14 @@ fn camera_resources(
 
 /// 原图尺寸与扩展名（按 `image_file::decode` 解码核对）。`label` 是报错主语（如“相机 camA”）。
 fn image_details(bytes: &[u8], label: &str) -> Result<([u32; 2], &'static str), String> {
+    let (image, extension) = decode_release_image(bytes, label)?;
+    Ok(([image.width, image.height], extension))
+}
+
+fn decode_release_image(
+    bytes: &[u8],
+    label: &str,
+) -> Result<(crate::frame::FrameImage, &'static str), String> {
     let format = image::guess_format(bytes).map_err(|e| format!("{label} 原图格式无效：{e}"))?;
     let extension = match format {
         image::ImageFormat::Pnm => "pgm",
@@ -627,7 +639,25 @@ fn image_details(bytes: &[u8], label: &str) -> Result<([u32; 2], &'static str), 
     if image.width == 0 || image.height == 0 {
         return Err(format!("{label} 原图尺寸无效"));
     }
-    Ok(([image.width, image.height], extension))
+    Ok((image, extension))
+}
+
+pub(crate) fn decode_teaching_image(
+    bytes: &[u8],
+    inspect: &CameraInspect,
+    segment: u32,
+    expected_size: Option<[u32; 2]>,
+) -> Result<(crate::frame::FrameImage, &'static str), String> {
+    let (image, extension) = decode_release_image(bytes, "示教帧")?;
+    let actual = [image.width, image.height];
+    if let Some(expected) = expected_size.filter(|size| *size != actual) {
+        return Err(format!(
+            "示教帧实际为 {}×{}，与冻结时的 {}×{} 不同",
+            actual[0], actual[1], expected[0], expected[1]
+        ));
+    }
+    check_corridor(inspect, segment, actual)?;
+    Ok((image, extension))
 }
 
 fn validate_versions(versions: &Versions) -> Result<(), String> {
@@ -652,9 +682,13 @@ fn json_object(bytes: &[u8], label: &str) -> Result<(), String> {
 
 fn source_bytes(source: ResourceSource) -> Result<Vec<u8>, String> {
     match source {
-        ResourceSource::File(path) => read_file(&absolute_path(&path)?),
+        ResourceSource::File(path) => read_resource_file(&path),
         ResourceSource::Bytes(bytes) => Ok(bytes),
     }
+}
+
+pub(crate) fn read_resource_file(path: &Path) -> Result<Vec<u8>, String> {
+    read_file(&absolute_path(path)?)
 }
 
 fn json_bytes(value: &impl Serialize) -> Result<Vec<u8>, String> {
@@ -996,6 +1030,7 @@ mod tests {
                         segment,
                         image: ResourceSource::Bytes(image_bytes()),
                         image_id: format!("capture-1-0-{}", i.camera),
+                        expected_size: None,
                     })
                     .collect(),
             })

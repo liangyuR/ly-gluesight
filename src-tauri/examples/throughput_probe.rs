@@ -178,6 +178,7 @@ fn probe_production(engine: &Arc<Engine>, teach: &FrameImage) -> (Prepared, Temp
                         segment: 1,
                         image: ResourceSource::Bytes(pgm.clone()),
                         image_id: TEACH_ID.into(),
+                        expected_size: None,
                     }],
                 })
                 .collect(),

@@ -11,6 +11,7 @@
 //!
 //! 结果验证不在这里：在历史页用任意配方重算历史记录。
 
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
@@ -282,10 +283,10 @@ pub(super) fn teach_trial_check(trials: &[TeachTrial]) -> Option<Check> {
     })
 }
 
-pub(super) fn graph_and_trial_checks(
-    w: &Workspace,
+pub(super) fn graph_and_trial_checks<'a>(
+    w: &'a Workspace,
     recipe: &Recipe,
-    measure: impl FnOnce(vision::CorridorSet) -> Option<Check>,
+    measure: impl FnOnce(vision::CorridorSet, Vec<Vec<&'a CameraTeaching>>) -> Vec<Check>,
 ) -> Vec<Check> {
     let mut teaching_targets = BTreeSet::new();
     let result = release_teaching_frames(recipe, &w.camera_teaching).and_then(|frames| {
@@ -295,7 +296,7 @@ pub(super) fn graph_and_trial_checks(
             .collect();
         let (graphs, unavailable) = vision::CorridorSet::build_available(recipe, &sizes);
         if unavailable.is_empty() {
-            return Ok(graphs);
+            return Ok((graphs, frames));
         }
         let problems: Vec<_> = unavailable
             .into_iter()
@@ -315,12 +316,12 @@ pub(super) fn graph_and_trial_checks(
         Err(problems.join("；"))
     });
     let (passed, detail, trial) = match result {
-        Ok(graphs) => (
+        Ok((graphs, frames)) => (
             true,
             format!("{} 组（段, 相机）测量图已构建", graphs.iter().count()),
-            measure(graphs),
+            measure(graphs, frames),
         ),
-        Err(error) => (false, error, None),
+        Err(error) => (false, error, Vec::new()),
     };
     let mut checks = vec![Check {
         name: "测量图".into(),
@@ -333,7 +334,13 @@ pub(super) fn graph_and_trial_checks(
     checks
 }
 
-/// 同一候选实例、修订与核心库下复用建图和试测结果。只有建图成功才读图试测。
+#[derive(Clone)]
+pub(super) struct CachedTeachingFrame {
+    fingerprint: [u8; 32],
+    trial: Option<TeachTrial>,
+}
+
+/// 每次读取实际文件。候选、核心库和文件内容都相同时，复用该帧的解码校验与试测结果。
 fn measurement_checks(
     app: &AppHandle,
     w: &Workspace,
@@ -341,72 +348,45 @@ fn measurement_checks(
     engine: Option<&vision::Engine>,
 ) -> Vec<Check> {
     type Key = (u64, u64, Option<String>);
-    static CACHE: LazyLock<Mutex<HashMap<String, (Key, Vec<Check>)>>> =
-        LazyLock::new(Default::default);
+    type Frames = HashMap<(usize, u32), CachedTeachingFrame>;
+    static CACHE: LazyLock<Mutex<HashMap<String, (Key, Frames)>>> = LazyLock::new(Default::default);
     let key: Key = (
         w.instance_id,
         w.revision,
         engine.map(|engine| engine.identity.clone()),
     );
-    let cached = CACHE
+    let mut cached = CACHE
         .lock()
         .unwrap()
         .get(&w.doc.id)
         .filter(|(k, _)| *k == key)
-        .map(|(_, v)| v.clone());
-    if let Some(checks) = cached {
-        return checks;
-    }
-    let checks = graph_and_trial_checks(w, recipe, |graphs| {
-        let engine = engine?;
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    graph_and_trial_checks(w, recipe, |graphs, teaching| {
         let graphs = graphs.with_channels(&super::burst::teaching_channels(w));
-        teach_trial_check(&measure_teach_frames(app, w, recipe, &graphs, engine))
-    });
-    CACHE
-        .lock()
-        .unwrap()
-        .insert(w.doc.id.clone(), (key, checks.clone()));
-    checks
-}
-
-fn measure_teach_frames(
-    app: &AppHandle,
-    w: &Workspace,
-    recipe: &Recipe,
-    graphs: &vision::CorridorSet,
-    engine: &vision::Engine,
-) -> Vec<TeachTrial> {
-    let host = app.state::<WorkspaceHost>();
-    let cameras = recipe.plan_cameras();
-    let run = vision::unique_run_id(&format!("publish-trial-{}-{}", recipe.id, w.revision));
-    let mut out = Vec::new();
-    for (idx, inspect) in recipe.inspect.iter().enumerate() {
-        for segment in recipe
-            .path_segments
-            .iter()
-            .filter(|s| crate::plan::segment_cameras(s, &cameras).contains(&inspect.camera))
-        {
-            let (Some(graph), Some(teaching)) = (
-                graphs.get(idx, segment.index),
-                w.camera_teaching
-                    .iter()
-                    .find(|t| t.camera == inspect.camera && t.segment == Some(segment.index)),
-            ) else {
-                continue;
-            };
-            let mut incomplete = false;
-            let outcome = image_file(&host, &recipe.id, &teaching.frame.id)
-                .and_then(|path| crate::image_file::load(&path))
-                .and_then(|mut image| {
-                    image.capture = teaching.frame.mix_capture.clone();
-                    vision::measure_frame(
-                        engine,
-                        graph,
-                        &image,
-                        0,
-                        &format!("{run}-c{idx}-s{}", segment.index),
-                    )
-                })
+        let host = app.state::<WorkspaceHost>();
+        let run = engine
+            .map(|_| vision::unique_run_id(&format!("publish-trial-{}-{}", recipe.id, w.revision)));
+        let checks = teaching_image_checks(
+            recipe,
+            &teaching,
+            &mut cached,
+            |frame| {
+                let path = image_file(&host, &recipe.id, &frame.frame.id)?;
+                crate::release::read_resource_file(&path)
+            },
+            |(index, segment), frame, mut image| {
+                let (engine, run) = (engine?, run.as_ref()?);
+                let graph = graphs.get(index, segment)?;
+                image.capture = frame.frame.mix_capture.clone();
+                let mut incomplete = false;
+                let outcome = vision::measure_frame(
+                    engine,
+                    graph,
+                    &image,
+                    0,
+                    &format!("{run}-c{index}-s{segment}"),
+                )
                 .and_then(|m| {
                     incomplete = m.metrics.measurement_incomplete();
                     if m.metrics.has_usable_evidence() {
@@ -415,15 +395,95 @@ fn measure_teach_frames(
                         Err(m.metrics.error.unwrap_or_else(|| "没有可用测量证据".into()))
                     }
                 });
-            out.push(TeachTrial {
-                segment: segment.index,
-                camera: inspect.camera.clone(),
-                outcome,
-                incomplete,
-            });
+                Some(TeachTrial {
+                    segment,
+                    camera: frame.camera.clone(),
+                    outcome,
+                    incomplete,
+                })
+            },
+        );
+        CACHE
+            .lock()
+            .unwrap()
+            .insert(w.doc.id.clone(), (key, cached));
+        checks
+    })
+}
+
+pub(super) fn teaching_image_checks(
+    recipe: &Recipe,
+    teaching: &[Vec<&CameraTeaching>],
+    cached: &mut HashMap<(usize, u32), CachedTeachingFrame>,
+    mut read: impl FnMut(&CameraTeaching) -> Result<Vec<u8>, String>,
+    mut measure: impl FnMut((usize, u32), &CameraTeaching, FrameImage) -> Option<TeachTrial>,
+) -> Vec<Check> {
+    let mut trials = Vec::new();
+    let mut problems = Vec::new();
+    let mut teaching_targets = Vec::new();
+    let mut frame_count = 0;
+    for (index, (inspect, frames)) in recipe.inspect.iter().zip(teaching).enumerate() {
+        let size = frames.first().map(|frame| frame.frame.size);
+        for frame in frames {
+            let segment = frame.segment.expect("已选定段示教帧");
+            let key = (index, segment);
+            frame_count += 1;
+            let checked = (|| {
+                if !crate::recipe::valid_image_id(&frame.frame.id) {
+                    return Err("示教图编号无效".to_owned());
+                }
+                if Some(frame.frame.size) != size {
+                    return Err("同一相机各段的冻结尺寸不同".to_owned());
+                }
+                let bytes = read(frame)?;
+                let fingerprint = Sha256::digest(&bytes).into();
+                if let Some(previous) = cached
+                    .get(&key)
+                    .filter(|entry| entry.fingerprint == fingerprint)
+                {
+                    return Ok(previous.trial.clone());
+                }
+                let (image, _) =
+                    crate::release::decode_teaching_image(&bytes, inspect, segment, size)?;
+                let trial = measure(key, frame, image);
+                cached.insert(
+                    key,
+                    CachedTeachingFrame {
+                        fingerprint,
+                        trial: trial.clone(),
+                    },
+                );
+                Ok(trial)
+            })();
+            match checked {
+                Ok(trial) => trials.extend(trial),
+                Err(error) => {
+                    cached.remove(&key);
+                    problems.push(format!("第 {segment} 段相机 {}：{error}", inspect.camera));
+                    teaching_targets.push(TeachingTarget {
+                        segment: Some(segment),
+                        camera: inspect.camera.clone(),
+                    });
+                }
+            }
         }
     }
-    out
+    let passed = problems.is_empty();
+    let mut checks = vec![Check {
+        name: "示教图像".into(),
+        passed,
+        advisory: false,
+        teaching_targets,
+        detail: if passed {
+            format!("{frame_count} 张示教图可读取，尺寸与冻结记录一致")
+        } else {
+            problems.join("；")
+        },
+    }];
+    if passed {
+        checks.extend(teach_trial_check(&trials));
+    }
+    checks
 }
 
 /// 拦发布的第一项：没满足且不是只提醒的项（D-SB-59）。`workspace_publish` 按它决定能否发布。
@@ -579,6 +639,7 @@ pub(super) fn freeze_bundle(
                             &t.frame.id,
                         )?),
                         image_id: t.frame.id.clone(),
+                        expected_size: Some(t.frame.size),
                     })
                 })
                 .collect::<Result<_, String>>()?,
