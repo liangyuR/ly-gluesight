@@ -78,11 +78,11 @@ export const workspaceApi = {
   historyFrameView: (historyId: number, camera: number, seq: number, signal?: AbortSignal) => scheduleFrameRead(() => desktopCall<CalibrationFrameView>("workspace_history_frame_view", { historyId, camera, seq }), signal),
   /** candidate 不给时用记录所属配方的候选 */
   historyCompareOptions: (historyId: number, candidate: string | null = null) => desktopCall<CompareOptions>("workspace_history_compare_options", { historyId, candidate }),
-  stationCapture: (cam:number,view=1)=>desktopCall<FrozenImage>("workspace_station_capture",{cam,view}),
-  stationImport: (cam:number,bytes:number[],view=1)=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes,view}),
+  stationCapture: (cam:number,id:string,view=1)=>desktopCall<FrozenImage>("workspace_station_capture",{cam,id,view}),
+  stationImport: (cam:number,id:string,bytes:number[],view=1)=>desktopCall<FrozenImage>("workspace_station_import",{cam,id,bytes,view}),
   /** 当前标定所用原图载入为冻结样本；没有可载入的原图为 null */
-  stationRestore: (cam:number,view=1)=>desktopCall<FrozenImage|null>("workspace_station_restore",{cam,view}),
-  stationImage: (cam:number,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId,view}).then(decodeFrameImage),
+  stationRestore: (cam:number,id:string,view=1)=>desktopCall<FrozenImage|null>("workspace_station_restore",{cam,id,view}),
+  stationImage: (cam:number,id:string,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,id,imageId,view}).then(decodeFrameImage),
 
   // ───── 段配方（分段连拍飞拍）：命令与参数见 docs/decisions/segment-burst.md 5.4，结果都在 WorkspaceView.plan ─────
   /** 在这台相机某段冻结的示教帧 imageId 上按选区提取走廊 */

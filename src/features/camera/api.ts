@@ -39,7 +39,7 @@ export const cameraApi = {
   rigStatus: () => call<CameraStatus[]>("camera_rig_status", undefined, () => []),
   rigConfig: () => call<CameraConfig[]>("camera_rig_config", undefined, () => []).then(configs => configs.map(c => ({ ...c, imageMode: c.imageMode ?? "gray" }))),
   bandwidth: (hz: number) => call<BandwidthEstimate | null>("camera_bandwidth", { hz }, () => null),
-  calibInfo: (cam: number, view: number) => call<{ mmPerPx: number | null } | null>("vision_calib_info", { cam, view }, () => null),
+  calibInfo: (cam: number, id: string, view: number) => call<{ mmPerPx: number | null } | null>("vision_calib_info", { cam, id, view }, () => null),
   saveConfig: (cam: number, config: CameraConfig) => call<CameraConfigSaved>("camera_save_config", { cam, config }, () => ({ saved: true, applied: false, warnings: [], applyError: "需要桌面后端" })),
   add: (config: CameraConfig) => call<number>("camera_add", { config }, () => 0),
   remove: (cam: number, id: string) => call<void>("camera_remove", { cam, id }, () => undefined),

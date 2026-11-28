@@ -2154,6 +2154,17 @@ impl CameraRig {
         self.slots.read().unwrap().get(cam).cloned()
     }
 
+    pub(crate) fn target_slot(
+        &self,
+        cam: u8,
+        id: &str,
+    ) -> Result<(Arc<CameraSlot>, CameraConfig), String> {
+        let slot = self.slot(usize::from(cam)).ok_or("相机不存在")?;
+        let config = slot.config();
+        check_camera_target(&config.id, id)?;
+        Ok((slot, config))
+    }
+
     pub fn configs(&self) -> Vec<CameraConfig> {
         self.slots().iter().map(|s| s.config()).collect()
     }
@@ -2186,18 +2197,6 @@ impl CameraRig {
     /// 取图回调是否拷贝整帧。
     pub fn set_capture(&self, on: bool) {
         self.rig.capture.store(on, Ordering::Relaxed);
-    }
-
-    pub fn last_view(&self, cam: u8, view: u8) -> Option<Arc<FrameImage>> {
-        self.slot(cam as usize).and_then(|s| s.last_view(view))
-    }
-
-    fn capture_views(&self, cam: u8) -> Result<Vec<Arc<FrameImage>>, String> {
-        let cycle = self.rig.app.state::<CycleHost>();
-        let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
-        check_idle(&cycle)?;
-        let slot = self.slot(cam as usize).ok_or("相机不存在")?;
-        self.capture_idle(&slot)
     }
 
     pub(crate) fn capture_mix_reference(
@@ -2268,13 +2267,14 @@ impl CameraRig {
         Ok(images)
     }
 
-    pub fn capture_view(&self, cam: u8, view: u8) -> Result<Arc<FrameImage>, String> {
-        let slot = self.slot(cam as usize).ok_or("相机不存在")?;
-        if view == 0 || view > slot.config().view_count {
-            return Err(format!("相机没有视角 {view}"));
-        }
-        self.capture_views(cam)?
-            .get(view as usize - 1)
+    pub(crate) fn capture_view(
+        &self,
+        slot: &CameraSlot,
+        view: u8,
+    ) -> Result<Arc<FrameImage>, String> {
+        let index = view.checked_sub(1).ok_or("图编号超出设备范围")?;
+        self.capture_idle(slot)?
+            .get(usize::from(index))
             .cloned()
             .ok_or_else(|| format!("这一帧缺少视角 {view}"))
     }
@@ -2773,10 +2773,8 @@ async fn camera_remove_inner(app: AppHandle, cam: usize, id: &str) -> Result<(),
         .filter(|r| r.cameras().iter().any(|camera| camera == id))
         .map(|r| r.id.clone())
         .collect();
-    users.extend(
-        app.state::<crate::workspace::WorkspaceHost>()
-            .camera_users(id),
-    );
+    let workspace = app.state::<crate::workspace::WorkspaceHost>();
+    users.extend(workspace.camera_users(id));
     users.sort();
     users.dedup();
     if !users.is_empty() {
@@ -2787,6 +2785,7 @@ async fn camera_remove_inner(app: AppHandle, cam: usize, id: &str) -> Result<(),
     }
     configs.remove(cam);
     cycle.camera.rebuild(&app, configs);
+    workspace.forget_station_sample(id);
     let saved = cycle.camera.save();
     let _ = cycle.tx.send(cycle::Input::Refresh);
     let _ = app.emit("camera://changed", ());
@@ -2815,7 +2814,9 @@ pub fn camera_preview(
 }
 
 /// 相机操作与接件、配置修改互斥：排队等配置门，3 秒内拿不到才放弃。
-async fn camera_gate(cycle: &CycleHost) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
+pub(crate) async fn camera_gate(
+    cycle: &CycleHost,
+) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
     tokio::time::timeout(Duration::from_secs(3), cycle.config_gate.lock())
         .await
         .map_err(|_| "接件或其他配置操作 3 秒内仍未结束，请稍后重试相机操作".into())

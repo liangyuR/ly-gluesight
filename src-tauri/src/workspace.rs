@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::camera::CameraSource;
+use crate::camera::{camera_gate, CameraConfig, CameraSlot, CameraSource};
 use crate::cycle::{self, CycleHost};
 use crate::frame::FrameImage;
 use crate::judge::{self, Verdict};
@@ -416,13 +416,19 @@ pub struct WorkspaceHost {
     live_burst: Mutex<LiveFrames>,
     /// 段配方在途件各帧测到的叠图，按 (计划相机下标, seq)
     live_views: Mutex<LiveViews>,
-    station: Mutex<HashMap<u8, (FrozenImage, Arc<FrameImage>)>>,
+    station: Mutex<HashMap<String, StationSample>>,
     mix_samples: Mutex<HashMap<String, mix_teaching::Sample>>,
     capture_seq: std::sync::atomic::AtomicU64,
     comparisons: comparisons::Comparisons,
     frame_metadata: recorded::FrameMetadataCache,
     /// 历史叠图最近用的发布包及其项目（不在生产预热里时另加载，只留一个，不占生产预热）
     history_bundle: Mutex<Option<(String, Arc<crate::production::Prepared>)>>,
+}
+
+struct StationSample {
+    sequence: u64,
+    meta: FrozenImage,
+    image: Arc<FrameImage>,
 }
 
 /// 在途件的原图：按工件与配方修订成组，换件即清空。内存里只留最近的帧（总量超过上限时丢最早的），
@@ -2025,49 +2031,135 @@ fn recorded_part_frame(
     burst_history::frame_image(app, &detail, camera, seq)
 }
 
-pub fn station_image_ref(
-    app: &AppHandle,
-    cam: u8,
-    image_id: &str,
-) -> Result<Arc<FrameImage>, String> {
-    let cycle = app.state::<CycleHost>();
-    if cycle.busy() {
-        return Err("工件正在检测，结束后再操作标定样本".into());
+impl WorkspaceHost {
+    fn save_station_sample(
+        &self,
+        sequence: u64,
+        meta: FrozenImage,
+        image: Arc<FrameImage>,
+    ) -> Result<FrozenImage, String> {
+        let mut samples = self.station.lock().unwrap();
+        if samples
+            .get(&meta.camera)
+            .is_some_and(|sample| sample.sequence > sequence)
+        {
+            return Err("冻结样本已更新，请重新选择图像".into());
+        }
+        samples.insert(
+            meta.camera.clone(),
+            StationSample {
+                sequence,
+                meta: meta.clone(),
+                image,
+            },
+        );
+        Ok(meta)
     }
-    let config = cycle
-        .camera
-        .slot(cam as usize)
-        .ok_or("相机不存在")?
-        .config();
-    let host = app.state::<WorkspaceHost>();
-    let samples = host.station.lock().unwrap();
-    let (meta, image) = samples
-        .get(&cam)
-        .filter(|(meta, _)| meta.id == image_id)
-        .ok_or("冻结样本已更新，请重新选择图像")?;
-    if meta.camera_tag != state_value(&config) {
-        return Err("相机参数变化，请重新冻结标定样本".into());
+
+    pub(crate) fn station_sample(
+        &self,
+        config: &CameraConfig,
+        view: u8,
+        image_id: &str,
+    ) -> Result<Arc<FrameImage>, String> {
+        let samples = self.station.lock().unwrap();
+        let sample = samples
+            .get(&config.id)
+            .filter(|sample| sample.meta.id == image_id)
+            .ok_or("冻结样本已更新，请重新选择图像")?;
+        if sample.meta.view != view {
+            return Err("冻结标定样本的图编号与当前选择不一致".into());
+        }
+        if sample.meta.camera_tag != state_value(config) {
+            return Err("相机参数变化，请重新冻结标定样本".into());
+        }
+        Ok(Arc::clone(&sample.image))
     }
-    Ok(image.clone())
+
+    pub(crate) fn forget_station_sample(&self, id: &str) {
+        self.station.lock().unwrap().remove(id);
+    }
 }
 
-pub fn station_image_view(app: &AppHandle, cam: u8, image_id: &str) -> Result<u8, String> {
-    let host = app.state::<WorkspaceHost>();
-    let samples = host.station.lock().unwrap();
-    samples
-        .get(&cam)
-        .filter(|(meta, _)| meta.id == image_id)
-        .map(|(meta, _)| meta.view)
-        .ok_or_else(|| "标定样本已更新".into())
+struct StationCamera {
+    cam: u8,
+    slot: Arc<CameraSlot>,
+    config: CameraConfig,
+    view: u8,
+}
+
+impl StationCamera {
+    fn resolve(cycle: &CycleHost, cam: u8, id: &str, view: Option<u8>) -> Result<Self, String> {
+        let (slot, config) = cycle.camera.target_slot(cam, id)?;
+        let view = view.unwrap_or(1);
+        if !(1..=config.view_count).contains(&view) {
+            return Err("图编号超出设备范围".into());
+        }
+        Ok(Self {
+            cam,
+            slot,
+            config,
+            view,
+        })
+    }
+
+    fn still_current(&self, cycle: &CycleHost) -> bool {
+        !cycle.busy()
+            && cycle
+                .camera
+                .slot(usize::from(self.cam))
+                .is_some_and(|slot| Arc::ptr_eq(&slot, &self.slot) && slot.config() == self.config)
+    }
+
+    fn metadata(
+        &self,
+        id: String,
+        source: String,
+        captured_at: i64,
+        image: &FrameImage,
+    ) -> FrozenImage {
+        FrozenImage {
+            mix_capture: None,
+            view: self.view,
+            id,
+            source,
+            captured_at,
+            size: [image.width, image.height],
+            camera: self.config.id.clone(),
+            camera_tag: state_value(&self.config),
+            calib_tag: Value::Null,
+            geometry_tag: Value::Null,
+            exposure_us: None,
+            gain_db: None,
+            history_id: None,
+        }
+    }
+}
+
+fn station_sequence(app: &AppHandle) -> u64 {
+    app.state::<WorkspaceHost>()
+        .capture_seq
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[tauri::command]
-pub fn workspace_station_image(
+pub async fn workspace_station_image(
     app: AppHandle,
     cam: u8,
+    id: String,
     image_id: String,
+    view: Option<u8>,
 ) -> Result<tauri::ipc::Response, String> {
-    let image = station_image_ref(&app, cam, &image_id)?;
+    let image = {
+        let cycle = app.state::<CycleHost>();
+        let _gate = camera_gate(&cycle).await?;
+        if cycle.busy() {
+            return Err("工件正在检测，结束后再操作标定样本".into());
+        }
+        let camera = StationCamera::resolve(&cycle, cam, &id, view)?;
+        app.state::<WorkspaceHost>()
+            .station_sample(&camera.config, camera.view, &image_id)?
+    };
     Ok(preview_response(&image))
 }
 
@@ -2075,47 +2167,31 @@ pub fn workspace_station_image(
 pub async fn workspace_station_capture(
     app: AppHandle,
     cam: u8,
+    id: String,
     view: Option<u8>,
 ) -> Result<FrozenImage, String> {
+    let sequence = station_sequence(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let cycle = app.state::<CycleHost>();
+        let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
         if cycle.busy() {
             return Err("工件正在检测，结束后再取标定样本".into());
         }
-        let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
-        let config = slot.config();
-        if !(1..=config.view_count).contains(&view.unwrap_or(1)) {
-            return Err("图编号超出设备范围".into());
-        }
-        let selected = view.unwrap_or(1);
-        let image = cycle.camera.capture_view(cam, selected)?;
-        if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
+        crate::camera::check_idle(&cycle)?;
+        let camera = StationCamera::resolve(&cycle, cam, &id, view)?;
+        let image = cycle.camera.capture_view(&camera.slot, camera.view)?;
+        if !camera.still_current(&cycle) {
             return Err("取样期间设备或节拍状态变化，样本已丢弃".into());
         }
-        let host = app.state::<WorkspaceHost>();
-        let seq = host
-            .capture_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let meta = FrozenImage {
-            mix_capture: None,
-            view: view.unwrap_or(1),
-            id: format!("station-{cam}-{}-{seq}", ly_plc::now_ms()),
-            source: format!("{:?}", config.source),
-            captured_at: ly_plc::now_ms(),
-            size: [image.width, image.height],
-            camera: config.id,
-            camera_tag: state_value(&slot.config()),
-            calib_tag: Value::Null,
-            geometry_tag: Value::Null,
-            exposure_us: None,
-            gain_db: None,
-            history_id: None,
-        };
-        host.station
-            .lock()
-            .unwrap()
-            .insert(cam, (meta.clone(), image));
-        Ok(meta)
+        let captured_at = ly_plc::now_ms();
+        let meta = camera.metadata(
+            format!("station-{cam}-{captured_at}-{sequence}"),
+            format!("{:?}", camera.config.source),
+            captured_at,
+            &image,
+        );
+        app.state::<WorkspaceHost>()
+            .save_station_sample(sequence, meta, image)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2125,47 +2201,37 @@ pub async fn workspace_station_capture(
 pub async fn workspace_station_import(
     app: AppHandle,
     cam: u8,
+    id: String,
     bytes: Vec<u8>,
     view: Option<u8>,
 ) -> Result<FrozenImage, String> {
+    let sequence = station_sequence(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let cycle = app.state::<CycleHost>();
-        if cycle.busy() {
-            return Err("工件正在检测，结束后再导入标定原图".into());
-        }
-        let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
-        let config = slot.config();
-        if !(1..=config.view_count).contains(&view.unwrap_or(1)) {
-            return Err("图编号超出设备范围".into());
-        }
-        let image = Arc::new(decode_imported_image(bytes, config.image_mode.color())?);
-        if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
+        let camera = {
+            let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
+            if cycle.busy() {
+                return Err("工件正在检测，结束后再导入标定原图".into());
+            }
+            StationCamera::resolve(&cycle, cam, &id, view)?
+        };
+        let image = Arc::new(decode_imported_image(
+            bytes,
+            camera.config.image_mode.color(),
+        )?);
+        let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
+        if !camera.still_current(&cycle) {
             return Err("导入期间设备或节拍状态变化，原图已丢弃".into());
         }
-        let host = app.state::<WorkspaceHost>();
-        let seq = host
-            .capture_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let meta = FrozenImage {
-            mix_capture: None,
-            view: view.unwrap_or(1),
-            id: format!("station-import-{cam}-{}-{seq}", ly_plc::now_ms()),
-            source: "import".into(),
-            captured_at: ly_plc::now_ms(),
-            size: [image.width, image.height],
-            camera: config.id.clone(),
-            camera_tag: state_value(&config),
-            calib_tag: Value::Null,
-            geometry_tag: Value::Null,
-            exposure_us: None,
-            gain_db: None,
-            history_id: None,
-        };
-        host.station
-            .lock()
-            .unwrap()
-            .insert(cam, (meta.clone(), image));
-        Ok(meta)
+        let captured_at = ly_plc::now_ms();
+        let meta = camera.metadata(
+            format!("station-import-{cam}-{captured_at}-{sequence}"),
+            "import".into(),
+            captured_at,
+            &image,
+        );
+        app.state::<WorkspaceHost>()
+            .save_station_sample(sequence, meta, image)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2176,49 +2242,33 @@ pub async fn workspace_station_import(
 pub async fn workspace_station_restore(
     app: AppHandle,
     cam: u8,
+    id: String,
     view: Option<u8>,
 ) -> Result<Option<FrozenImage>, String> {
+    let sequence = station_sequence(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let cycle = app.state::<CycleHost>();
-        if cycle.busy() {
-            return Err("工件正在检测，结束后再读取标定原图".into());
-        }
-        let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
-        let config = slot.config();
-        let selected = view.unwrap_or(1);
-        if !(1..=config.view_count).contains(&selected) {
-            return Err("图编号超出设备范围".into());
-        }
-        let keys = vision::camera_calib_keys(&app, cam, Some(selected))?;
-        let calib = vision::calib_key_path(&app, &keys[0])?;
-        let Some((id, image, ts)) = vision::calib_sample(&crate::storage::project(&app), &calib)?
-        else {
-            return Ok(None);
+        let camera = {
+            let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
+            if cycle.busy() {
+                return Err("工件正在检测，结束后再读取标定原图".into());
+            }
+            StationCamera::resolve(&cycle, cam, &id, view)?
         };
-        if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
+        let keys = vision::calib_keys(&camera.config, Some(camera.view))?;
+        let calib = vision::calib_key_path(&app, &keys[0])?;
+        let sample = vision::calib_sample(&crate::storage::project(&app), &calib)?;
+        let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
+        if !camera.still_current(&cycle) {
             return Err("读取期间设备或节拍状态变化，原图已丢弃".into());
         }
-        let meta = FrozenImage {
-            mix_capture: None,
-            view: selected,
-            id,
-            source: "calib".into(),
-            captured_at: ts.unwrap_or(0),
-            size: [image.width, image.height],
-            camera: config.id.clone(),
-            camera_tag: state_value(&config),
-            calib_tag: Value::Null,
-            geometry_tag: Value::Null,
-            exposure_us: None,
-            gain_db: None,
-            history_id: None,
+        let Some((image_id, image, ts)) = sample else {
+            return Ok(None);
         };
+        let meta = camera.metadata(image_id, "calib".into(), ts.unwrap_or(0), &image);
         app.state::<WorkspaceHost>()
-            .station
-            .lock()
-            .unwrap()
-            .insert(cam, (meta.clone(), Arc::new(image)));
-        Ok(Some(meta))
+            .save_station_sample(sequence, meta, Arc::new(image))
+            .map(Some)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2248,6 +2298,77 @@ mod tests {
         }
     }
 
+    fn test_host(root: PathBuf, items: HashMap<String, Workspace>) -> WorkspaceHost {
+        WorkspaceHost {
+            root,
+            items: Mutex::new(items),
+            notes: Vec::new(),
+            live_burst: Mutex::default(),
+            live_views: Mutex::default(),
+            station: Mutex::default(),
+            mix_samples: Mutex::default(),
+            capture_seq: std::sync::atomic::AtomicU64::new(0),
+            comparisons: comparisons::Comparisons::default(),
+            frame_metadata: recorded::FrameMetadataCache::default(),
+            history_bundle: Mutex::default(),
+        }
+    }
+
+    #[test]
+    fn late_station_sample_cannot_replace_the_newer_sample_or_cross_camera_config_and_view() {
+        let host = test_host(PathBuf::new(), HashMap::new());
+        let camera = CameraConfig {
+            id: "cam1".into(),
+            ..CameraConfig::default()
+        };
+        let other = CameraConfig {
+            id: "cam2".into(),
+            ..camera.clone()
+        };
+        let save = |config: &CameraConfig, sequence, id: &str, pixel| {
+            let meta = FrozenImage {
+                mix_capture: None,
+                view: 1,
+                id: id.into(),
+                source: "import".into(),
+                captured_at: 1,
+                size: [1, 1],
+                camera: config.id.clone(),
+                camera_tag: state_value(config),
+                calib_tag: Value::Null,
+                geometry_tag: Value::Null,
+                exposure_us: None,
+                gain_db: None,
+                history_id: None,
+            };
+            host.save_station_sample(sequence, meta, Arc::new(FrameImage::new(1, 1, vec![pixel])))
+        };
+        save(&camera, 2, "new-sample", 42).unwrap();
+        assert!(save(&camera, 1, "old-sample", 17).is_err());
+        save(&other, 3, "other-camera", 89).unwrap();
+
+        assert_eq!(
+            host.station_sample(&camera, 1, "new-sample")
+                .unwrap()
+                .pixels,
+            [42]
+        );
+        assert_eq!(
+            host.station_sample(&other, 1, "other-camera")
+                .unwrap()
+                .pixels,
+            [89]
+        );
+        assert!(host.station_sample(&camera, 1, "old-sample").is_err());
+        assert!(host.station_sample(&other, 1, "new-sample").is_err());
+        assert!(host.station_sample(&camera, 2, "new-sample").is_err());
+        let changed = CameraConfig {
+            serial: "changed".into(),
+            ..camera
+        };
+        assert!(host.station_sample(&changed, 1, "new-sample").is_err());
+    }
+
     #[test]
     fn candidate_copy_requires_the_listed_instance_even_when_revision_is_reused() {
         let root = ImportTestDir::new();
@@ -2275,19 +2396,10 @@ mod tests {
             _base_revision: Discarded,
         }));
         original.publish = PublishState::Waiting;
-        let host = WorkspaceHost {
-            root: root.0.join("workspaces"),
-            items: Mutex::new(HashMap::from([(saved.id.clone(), original)])),
-            notes: Vec::new(),
-            live_burst: Mutex::default(),
-            live_views: Mutex::default(),
-            station: Mutex::default(),
-            mix_samples: Mutex::default(),
-            capture_seq: std::sync::atomic::AtomicU64::new(0),
-            comparisons: comparisons::Comparisons::default(),
-            frame_metadata: recorded::FrameMetadataCache::default(),
-            history_bundle: Mutex::default(),
-        };
+        let host = test_host(
+            root.0.join("workspaces"),
+            HashMap::from([(saved.id.clone(), original)]),
+        );
         let listed = host.catalog().pop().unwrap();
         assert_eq!(
             host.candidate_doc(&listed.id, listed.instance_id, listed.revision)
