@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import { Alert, Button, Card, IconButton, Stack, StatusBadge, Text } from "qing-steel";
 import { displayReason, formatTime, HistoryRecordActions, historyApi, partVerdict, triggerModeLabel, type HistoryDetailState, type HistoryListState, type PartDetail } from "../features/history";
 import BurstHistoryDetail from "../features/history/components/BurstDetail";
+import { useHistoryOverview } from "../features/history/useHistoryOverview";
 import { subscribe } from "../features/plc";
 import { Panel } from "../features/workspace/components";
-import { errorText } from "../lib/errors";
 import { useProjectDirectory, type ProjectDirectory } from "../features/project/hooks";
 import { recordProject } from "../features/project/rules";
 
@@ -16,6 +16,7 @@ const EMPTY_NEIGHBORS: Neighbors = { older: null, newer: null };
 
 export default function HistoryDetailPage() {
   const { id } = useParams(), navigate = useNavigate(), location = useLocation();
+  const recordId = Number(id);
   const state = location.state as HistoryDetailState | null;
   const listQuery = state?.query ?? null;
   const returnPath = state?.returnTo?.path ?? "/history";
@@ -28,36 +29,13 @@ export default function HistoryDetailPage() {
   const [neighborResult, setNeighborResult] = useState<NeighborResult | null>(null);
   const activeNeighborResult = useRef<NeighborResult | null>(null);
   const neighbors = neighborResult?.locationKey === location.key ? neighborResult.neighbors : EMPTY_NEIGHBORS;
-  const [detail, setDetail] = useState<PartDetail | null>(null);
-  const [error, setError] = useState("");
-  const overviewSerial = useRef(0);
-  const mutationBusy = useRef(false);
-  const refreshPending = useRef(false);
+  const { detail, error, retry, setMutationBusy, saveTags, stopRefreshing } = useHistoryOverview(recordId);
   const projects = useProjectDirectory();
-  const reload = useCallback((preserveDetailOnError = false) => {
-    const serial = ++overviewSerial.current;
-    void historyApi.overview(Number(id)).then(next => {
-      if (serial === overviewSerial.current) { setDetail(next); setError(""); }
-    }).catch(cause => {
-      if (serial === overviewSerial.current) { if (!preserveDetailOnError) setDetail(null); setError(errorText(cause)); }
-    });
-  }, [id]);
-  const setMutationBusy = useCallback((busy: boolean) => {
-    const wasBusy = mutationBusy.current;
-    mutationBusy.current = busy;
-    if (busy) overviewSerial.current++;
-    else if (wasBusy && refreshPending.current) { refreshPending.current = false; reload(true); }
-  }, [reload]);
 
-  useEffect(() => {
-    setDetail(null); setError(""); reload();
-    return () => { overviewSerial.current++; };
-  }, [reload]);
   useEffect(() => {
     let alive = true;
     let loading = false;
     let pending = false;
-    const recordId = Number(id);
     const locationKey = location.key;
     const refresh = (invalidate = false) => {
       if (!alive) return;
@@ -87,20 +65,7 @@ export default function HistoryDetailPage() {
     });
     refresh(true);
     return () => { alive = false; stopInserted(); stopChanged(); };
-  }, [id, listQuery, location.key]);
-  useEffect(() => {
-    const stop = subscribe<string>("history://updated", cycleId => {
-      if (!detail || cycleId !== detail.summary.cycleId) return;
-      if (mutationBusy.current) { refreshPending.current = true; return; }
-      reload();
-    });
-    return stop;
-  }, [detail?.summary.id, detail?.summary.cycleId, reload]);
-  useEffect(() => subscribe<number[]>("history://changed", ids => {
-    if (!ids.includes(Number(id))) return;
-    if (mutationBusy.current) refreshPending.current = true;
-    else reload();
-  }), [id, reload]);
+  }, [recordId, listQuery, location.key]);
 
   const openPart = (target: number | null) => {
     const current = activeNeighborResult.current;
@@ -109,20 +74,20 @@ export default function HistoryDetailPage() {
       navigate("/history/" + target, { state: partState });
     }
   };
-  if (!detail || detail.summary.id !== Number(id)) return <div className="stack hist-detail">
+  if (!detail || detail.summary.id !== recordId) return <div className="stack hist-detail">
     <div className="wp-actions">
       <Button variant="tonal" size="sm" leadingIcon={<ArrowLeft size={16} aria-hidden="true" />} onClick={back.onBack}>{back.backLabel}</Button>
     </div>
     {error ? <Alert tone="ng" title="历史详情读取失败"
-      action={<Button size="sm" onClick={() => { setError(""); reload(); }}>重试</Button>}>{error}</Alert>
+      action={<Button size="sm" onClick={retry}>重试</Button>}>{error}</Alert>
       : <Text muted role="status">正在读取历史详情…</Text>}
   </div>;
   const foreignProject = foreignProjectNote(detail.summary.projectId, projects);
   const actions = <HistoryRecordActions key={detail.summary.id} id={detail.summary.id} tags={detail.summary.tags ?? []}
       onBusyChange={setMutationBusy}
-      onSaved={tags => { refreshPending.current = false; setDetail(current => current?.summary.id === detail.summary.id ? { ...current, summary: { ...current.summary, tags } } : current); reload(); }}
+      onSaved={saveTags}
       onDeleted={result => {
-        refreshPending.current = false;
+        stopRefreshing();
         navigate(returnPath, {
           replace: true,
           state: { ...returnState, rejudgeReview: undefined, historyNotice: { message: `已删除 ${result.deleted} 件历史记录。`, warnings: result.warnings } },

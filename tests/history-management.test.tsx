@@ -107,6 +107,112 @@ it("历史详情首次读取失败 → 原地重试打开同一件", async () =>
 });
 
 it.each([
+  { description: "同件更新只补读一次", currentUpdated: true },
+  { description: "外件更新不触发补读", currentUpdated: false },
+])("等待原生订阅后首读 → $description", async ({ currentUpdated }) => {
+  const registerUpdated = deferred<void>();
+  const registerChanged = deferred<void>();
+  const listenImmediately = vi.mocked(listen).getMockImplementation()!;
+  vi.mocked(listen).mockImplementation(async (event, handler, options) => {
+    if (event === "history://updated") await registerUpdated.promise;
+    if (event === "history://changed") await registerChanged.promise;
+    return listenImmediately(event, handler, options);
+  });
+  detail.summary.delivery.state = "pending";
+  detail.recording = { ...detail.recording, state: "pending", available: false };
+  const updated: PartDetail = {
+    ...detail,
+    summary: { ...detail.summary, delivery: { state: "submitted", updatedAt: 2, message: "首读期间已写入" } },
+    recording: { ...detail.recording, state: "complete", available: true },
+  };
+  const first = deferred<PartDetail>();
+  const refreshed = deferred<PartDetail>();
+  const readOverview = vi.fn<(id: number) => Promise<PartDetail>>()
+    .mockReturnValueOnce(first.promise).mockReturnValueOnce(refreshed.promise).mockResolvedValue(updated);
+  overview = readOverview;
+  show();
+
+  expect(readOverview).not.toHaveBeenCalled();
+  await act(async () => registerUpdated.resolve(undefined));
+  expect(readOverview).not.toHaveBeenCalled();
+  await act(async () => registerChanged.resolve(undefined));
+  await waitFor(() => expect(readOverview).toHaveBeenCalledExactlyOnceWith(1));
+  act(() => {
+    emit("history://updated", "other-cycle");
+    if (currentUpdated) {
+      emit("history://updated", detail.summary.cycleId);
+      emit("history://updated", detail.summary.cycleId);
+    }
+  });
+  expect(readOverview).toHaveBeenCalledTimes(1);
+
+  await act(async () => first.resolve(detail));
+  expect(await screen.findByText("等待提交")).toBeVisible();
+  if (!currentUpdated) {
+    expect(readOverview).toHaveBeenCalledExactlyOnceWith(1);
+    return;
+  }
+  await waitFor(() => expect(readOverview.mock.calls).toEqual([[1], [1]]));
+  await act(async () => refreshed.resolve(updated));
+  expect(await screen.findByText("已回写 PLC · 首读期间已写入")).toBeVisible();
+  expect(screen.getByText("完整落盘 · 已核验落盘")).toBeVisible();
+  expect(readOverview.mock.calls).toEqual([[1], [1]]);
+});
+
+it("已显示的历史详情连续收到同件通知 → 进行中的刷新结束后只补读一次", async () => {
+  const refresh = deferred<PartDetail>();
+  const latest = deferred<PartDetail>();
+  const updated: PartDetail = {
+    ...detail,
+    summary: { ...detail.summary, delivery: { state: "acknowledged", updatedAt: 3, message: "现场已确认" } },
+  };
+  const readOverview = vi.fn<(id: number) => Promise<PartDetail>>()
+    .mockResolvedValueOnce(detail).mockReturnValueOnce(refresh.promise).mockReturnValueOnce(latest.promise).mockResolvedValue(updated);
+  overview = readOverview;
+  show();
+  await screen.findByRole("button", { name: "编辑 Tag" });
+  act(() => emit("history://updated", detail.summary.cycleId));
+  await waitFor(() => expect(readOverview).toHaveBeenCalledTimes(2));
+  act(() => {
+    emit("history://updated", detail.summary.cycleId);
+    emit("history://updated", "other-cycle");
+    emit("history://updated", detail.summary.cycleId);
+  });
+  expect(readOverview).toHaveBeenCalledTimes(2);
+
+  await act(async () => refresh.resolve(detail));
+  await waitFor(() => expect(readOverview.mock.calls).toEqual([[1], [1], [1]]));
+  await act(async () => latest.resolve(updated));
+  expect(await screen.findByText("PLC 已确认 · 现场已确认")).toBeVisible();
+  expect(readOverview.mock.calls).toEqual([[1], [1], [1]]);
+});
+
+it("旧件仍在刷新时切到后件 → 旧响应和已排的补读不带到新件", async () => {
+  const refresh = deferred<PartDetail>();
+  const next = { ...detail, summary: burstPartSummary(2) };
+  const readOverview = vi.fn<(id: number) => Promise<PartDetail>>()
+    .mockResolvedValue(next).mockResolvedValueOnce(detail).mockReturnValueOnce(refresh.promise);
+  overview = readOverview;
+  neighbors = async id => ({ older: null, newer: id === 1 ? 2 : null });
+  show();
+
+  const nextButton = await screen.findByRole("button", { name: "后一件" });
+  await waitFor(() => expect(nextButton).toBeEnabled());
+  act(() => {
+    emit("history://updated", detail.summary.cycleId);
+    emit("history://updated", detail.summary.cycleId);
+  });
+  expect(readOverview.mock.calls).toEqual([[1], [1]]);
+  await userEvent.click(nextButton);
+  expect(await screen.findByText("SN SN-102")).toBeVisible();
+  await act(async () => refresh.resolve(detail));
+
+  expect(screen.getByText("SN SN-102")).toBeVisible();
+  expect(screen.queryByText("SN SN-101")).not.toBeInTheDocument();
+  expect(readOverview.mock.calls).toEqual([[1], [1], [2]]);
+});
+
+it.each([
   { kind: "分段", hasBurst: true },
   { kind: "普通", hasBurst: false },
 ])("$kind 详情打开复检件 → 沿用历史筛选并能返回试测", async ({ hasBurst }) => {

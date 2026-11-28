@@ -110,14 +110,18 @@ export function usePlcOperationState() {
   return useCycleControl(selectOperation, pendingOperation, sameOperation);
 }
 
-export function subscribe<T>(event: string, cb: (payload: T) => void, onError?: (error: unknown) => void): () => void {
-  if (!isTauri()) return () => {};
+export function subscribe<T>(event: string, cb: (payload: T) => void, onError?: (error: unknown) => void, onSettled?: () => void): () => void {
+  if (!isTauri()) {
+    onSettled?.();
+    return () => {};
+  }
   let unlisten: UnlistenFn | undefined;
   let disposed = false;
-  listen<T>(event, (e) => cb(e.payload)).then((fn) => {
+  const registration = listen<T>(event, (e) => cb(e.payload)).then((fn) => {
     if (disposed) fn();
     else unlisten = fn;
   }).catch(error => { if (!disposed) onError?.(error); });
+  if (onSettled) void registration.finally(() => { if (!disposed) onSettled(); });
   return () => {
     disposed = true;
     unlisten?.();

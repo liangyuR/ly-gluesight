@@ -26,7 +26,12 @@ vi.mock("../src/features/cycle/api", () => ({
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(),  } }));
 vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), liveView: vi.fn(), record: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, usePlcValues: () => values,
-  usePlcStatus: () => ({ state: "connected", since: 1 }), subscribe: () => () => {} }));
+  usePlcStatus: () => ({ state: "connected", since: 1 }),
+  subscribe: (_event: string, _receive: unknown, _onError?: unknown, onSettled?: () => void) => {
+    onSettled?.();
+    return () => {};
+  },
+}));
 
 let state: Snapshot, layout: Recipe | null;
 let recipeList: RecipeSummary[];
