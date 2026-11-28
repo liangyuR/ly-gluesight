@@ -497,7 +497,7 @@ export default function HistoryPage() {
       </Card>
 
       <Card className="hist-results">
-        <div ref={resultsBody} className={`hist-results-body${pending ? " is-loading" : ""}`} aria-busy={loading || draftPending} onClick={openRow}>
+        <div ref={resultsBody} className={`hist-results-body${pending ? " is-loading" : ""}`} aria-busy={draftPending || (loading && staleView)} onClick={openRow}>
           <Table<Item>
             className="hist-table"
             caption="历史记录"
@@ -507,7 +507,7 @@ export default function HistoryPage() {
             selectable
             selectedKeys={selected}
             onSelectionChange={setSelected}
-            isRowSelectable={() => !loading && !stale}
+            isRowSelectable={() => !stale}
             getRowLabel={(p) => `SN ${p.sn || p.id}`}
             loading={!page && (loading || (projectBlocked && projects.loading))}
             emptyState={page ? <EmptyState icon={<History />} title="没有符合条件的记录" description={hasFilters ? "试试扩大日期范围，或重置筛选。" : "当前来源最近 7 天暂无记录，可扩大日期范围查看。"} /> : <></>}
@@ -520,7 +520,7 @@ export default function HistoryPage() {
             page={offset / PAGE + 1}
             pageSize={PAGE}
             pageSizeOptions={[PAGE]}
-            disabled={loading || draftPending}
+            disabled={stale}
             onPageChange={(next) => setOffset((next - 1) * PAGE)}
           />
         )}

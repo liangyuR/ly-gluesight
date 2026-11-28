@@ -396,6 +396,58 @@ it("首页查询期间连续入库 → 补查一次并显示最新记录", async
   expect(queries().slice(beforeRefresh)).toHaveLength(2);
 });
 
+it("首页后台刷新时可勾选并翻页 → 换页及筛选期间只允许操作已加载的新结果", async () => {
+  const homeRefresh = deferred<ReturnType<typeof page>>();
+  const nextPage = deferred<ReturnType<typeof page>>();
+  const filtered = deferred<ReturnType<typeof page>>();
+  const records = Array.from({ length: 51 }, (_, index) => burstPartSummary(51 - index));
+  let refreshing = false;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "project_current") return projects[0].meta;
+    if (command === "project_list") return projects;
+    if (command === "history_query") {
+      const { offset, sn } = (args as { query: HistoryQuery }).query;
+      if (sn) return filtered.promise;
+      if (offset === 50) return nextPage.promise;
+      return refreshing ? homeRefresh.promise : { ...page(records), items: records.slice(0, 50) };
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  const user = userEvent.setup();
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await row(51);
+  const selection = screen.getByRole("checkbox", { name: /SN-151/ });
+  const next = screen.getByRole("button", { name: "下一页" });
+  const beforeRefresh = queries().length;
+  refreshing = true;
+  const updated = [burstPartSummary(52), ...records];
+  emitHistory("history://inserted", 52);
+
+  await user.click(selection);
+  expect(selection).toBeChecked();
+  expect(screen.getByRole("button", { name: "删除历史件（1）" })).toBeDisabled();
+  await user.click(next);
+  expect(queries().slice(beforeRefresh).map(query => query.offset)).toEqual([0]);
+  expect(selection).toBeDisabled();
+  expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
+
+  await act(async () => homeRefresh.resolve({ ...page(updated), items: updated.slice(0, 50) }));
+  expect(queries().slice(beforeRefresh).map(query => query.offset)).toEqual([0, 50]);
+  expect(screen.queryByRole("button", { name: "查看 SN SN-152 的记录" })).not.toBeInTheDocument();
+  await act(async () => nextPage.resolve({ ...page(updated), items: updated.slice(50) }));
+  expect(await row(1)).toBeVisible();
+  expect(screen.queryByRole("button", { name: "查看 SN SN-151 的记录" })).not.toBeInTheDocument();
+  const currentSelection = screen.getByRole("checkbox", { name: /SN-101/ });
+  expect(currentSelection).toBeEnabled();
+  expect(screen.getByRole("button", { name: "上一页" })).toBeEnabled();
+
+  await user.type(screen.getByLabelText("历史 SN"), "SN-101{Enter}");
+  expect(currentSelection).toBeDisabled();
+  await act(async () => filtered.resolve(page([records.at(-1)!])));
+  expect(screen.getByRole("checkbox", { name: /SN-101/ })).toBeEnabled();
+});
+
 it("后续页刷新期间先收到越界结果 → 最新查询仍有记录时保留页码", async () => {
   const early = deferred<ReturnType<typeof page>>();
   const slice = (total: number, ids: number[]) => ({ total, counts: { ok: total, excursion: 0, ng: 0, err: 0 }, items: ids.map(burstPartSummary) });
