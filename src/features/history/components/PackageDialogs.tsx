@@ -10,6 +10,7 @@ import type { HistoryPackageExported, HistoryPackageImported, HistoryPackagePrev
 const MAX_PARTS = 20;
 const exportLabels: OperationLabels = { measuring: "正在打包", saving: "正在写入导出包", cancelling: "正在取消，等待当前文件结束" };
 const importLabels: OperationLabels = { measuring: "正在解包校验", saving: "正在写入历史", cancelling: "正在取消，等待当前文件结束" };
+const PREVIEW_CHANGED = "历史包内容已变化，请重新读取预览后再导入";
 
 function Notes({ notes }: { notes: string[] }) {
   if (!notes.length) return null;
@@ -79,20 +80,41 @@ export function HistoryExportDialog({ ids, onClose }: { ids: number[]; onClose: 
   </Dialog>;
 }
 
-export function HistoryImportDialog({ preview, projectName, onClose, onImported }: { preview: HistoryPackagePreview; projectName?: string; onClose: () => void; onImported: () => void }) {
+export function HistoryImportDialog({ preview: initialPreview, projectName, onClose, onImported }: {
+  preview: HistoryPackagePreview; projectName?: string; onClose: () => void; onImported: () => void;
+}) {
   const operation = useOperation();
+  const [preview, setPreview] = useState(initialPreview);
   const [running, setRunning] = useState(false);
   const [imported, setImported] = useState<HistoryPackageImported | null>(null);
+  const [attempt, setAttempt] = useState<"idle" | "submitted" | "expired">("idle");
+  const [previewError, setPreviewError] = useState("");
   const pending = useRef(false);
+  const expired = attempt === "expired";
 
   const submit = async () => {
     if (pending.current) return;
     pending.current = true;
     setRunning(true);
-    const result = await operation.run(taskId => historyApi.packageImport(preview.path, taskId)).catch(() => null);
-    pending.current = false;
-    setRunning(false);
-    if (result) { setImported(result); onImported(); }
+    setPreviewError("");
+    try {
+      if (expired) {
+        setPreview(await historyApi.packagePreview(preview.path));
+        setAttempt("idle");
+        return;
+      }
+      setAttempt("submitted");
+      const result = await operation.run(taskId => historyApi.packageImport(preview.path, preview.manifestSha256, taskId));
+      setImported(result);
+      onImported();
+    } catch (error) {
+      const message = errorText(error);
+      if (expired) setPreviewError(message);
+      else if (message === PREVIEW_CHANGED) setAttempt("expired");
+    } finally {
+      pending.current = false;
+      setRunning(false);
+    }
   };
 
   if (imported) return <Dialog open title="已导入历史件" size="md" onOpenChange={open => { if (!open) onClose(); }} footer={<Button variant="filled" onClick={onClose}>完成</Button>}>
@@ -110,8 +132,9 @@ export function HistoryImportDialog({ preview, projectName, onClose, onImported 
     </Stack>
   </Dialog>;
 
+  const label = expired ? (running ? "正在读取预览…" : "重新读取预览") : (running ? "正在导入…" : "导入");
   return <Dialog open title="导入历史件" size="md" closeDisabled={running} onOpenChange={open => { if (!open && !running) onClose(); }}
-    footer={<><Button disabled={running} onClick={onClose}>取消</Button><Button variant="filled" loading={running} disabled={running} onClick={() => void submit()}>{running ? "正在导入…" : "导入"}</Button></>}>
+    footer={<><Button disabled={running} onClick={onClose}>取消</Button><Button variant="filled" loading={running} disabled={running} onClick={() => void submit()}>{label}</Button></>}>
     <Stack direction="column" align="stretch" gap={12}>
       <dl className="kv">
         <dt>来源项目</dt><dd>{preview.sourceProjectName} <span className="mono muted">{preview.sourceProject}</span></dd>
@@ -123,7 +146,9 @@ export function HistoryImportDialog({ preview, projectName, onClose, onImported 
       </dl>
       <Notes notes={preview.notes} />
       <Alert tone="info">导入的件归当前项目{projectName ? `（${projectName}）` : ""}。</Alert>
-      <OperationStatus operation={operation} label="导入历史件" labels={importLabels} unit="个文件" />
+      {expired && <Alert tone="warn">{PREVIEW_CHANGED}</Alert>}
+      {attempt === "submitted" && <OperationStatus operation={operation} label="导入历史件" labels={importLabels} unit="个文件" />}
+      {previewError && <Alert tone="ng">{previewError}</Alert>}
     </Stack>
   </Dialog>;
 }

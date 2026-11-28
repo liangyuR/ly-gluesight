@@ -186,6 +186,7 @@ export interface HistoryPackageExported {
 /** 历史件导出包：导入前读到的清单；duplicates 为本机已有同一 cycleId、导入时跳过的件数 */
 export interface HistoryPackagePreview {
   path: string;
+  manifestSha256: string;
   bytes: number;
   sourceProject: string;
   sourceProjectName: string;

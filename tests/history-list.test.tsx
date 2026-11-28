@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { expect, it, vi } from "vitest";
 import { RejudgeTaskProvider } from "../src/features/history/rejudgeTask";
-import type { HistoryQuery, RejudgeResult } from "../src/features/history/types";
+import type { HistoryPackagePreview, HistoryQuery, RejudgeResult } from "../src/features/history/types";
 import type { OperationProgress } from "../src/features/workspace/operation";
 import HistoryDetailPage from "../src/pages/HistoryDetailPage";
 import HistoryPage from "../src/pages/HistoryPage";
@@ -694,6 +694,58 @@ it("确认删除已选历史件 → 记录与统计刷新，取消确认则保�
   await waitFor(() => expect(screen.queryByRole("button", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument());
   expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("共 0 件");
   expect(screen.getByRole("button", { name: "删除历史件（0）" })).toBeDisabled();
+});
+
+it("历史包预览失效 → 原地重新读取，同一路径的新预览须再次确认", async () => {
+  const original: HistoryPackagePreview = {
+    path: "C:/history.zip", manifestSha256: "a".repeat(64), bytes: 2048,
+    sourceProject: "line-a", sourceProjectName: "原项目", exportedAt: 1, appVersion: "1.0.0",
+    parts: 1, withImages: 0, duplicates: 0, notes: [],
+  };
+  const updated = { ...original, manifestSha256: "b".repeat(64), sourceProjectName: "新项目", parts: 2 };
+  const expired = "历史包内容已变化，请重新读取预览后再导入";
+  const pick = vi.fn().mockResolvedValue(original);
+  const preview = vi.fn().mockRejectedValueOnce("历史包暂时无法读取").mockResolvedValue(updated);
+  const importPackage = vi.fn().mockRejectedValueOnce("历史库暂时忙").mockRejectedValueOnce(expired)
+    .mockResolvedValue({ imported: 2, ids: [1, 2], skipped: [], notes: [] });
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "project_current") return projects[0].meta;
+    if (command === "project_list") return projects;
+    if (command === "history_query") return page([burstPartSummary(1)]);
+    if (command === "operation_status") return null;
+    if (command === "history_package_pick") return pick();
+    if (command === "history_package_preview") return preview(args);
+    if (command === "history_package_import") return importPackage(args);
+    throw new Error(`Unexpected command: ${command}`);
+  });
+
+  const user = userEvent.setup();
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await user.click(screen.getByRole("button", { name: "导入历史件" }));
+  await screen.findByRole("dialog", { name: "导入历史件" });
+  const dialog = () => within(screen.getByRole("dialog", { name: "导入历史件" }));
+  expect(dialog().getByText("原项目")).toBeVisible();
+  await user.click(dialog().getByRole("button", { name: "导入" }));
+  expect(await dialog().findByText("历史库暂时忙")).toBeVisible();
+
+  await user.click(dialog().getByRole("button", { name: "导入" }));
+  expect(await dialog().findByText(expired)).toBeVisible();
+  expect(dialog().queryByRole("button", { name: "导入" })).not.toBeInTheDocument();
+  await user.click(dialog().getByRole("button", { name: "重新读取预览" }));
+  expect(await dialog().findByText("历史包暂时无法读取")).toBeVisible();
+  expect(dialog().queryByRole("button", { name: "导入" })).not.toBeInTheDocument();
+  await user.click(dialog().getByRole("button", { name: "重新读取预览" }));
+
+  expect(await dialog().findByText("新项目")).toBeVisible();
+  expect(dialog().getByText("2 件，其中 0 件带原图")).toBeVisible();
+  expect(importPackage).toHaveBeenCalledTimes(2);
+  await user.click(dialog().getByRole("button", { name: "导入" }));
+  expect(await screen.findByRole("dialog", { name: "已导入历史件" })).toBeVisible();
+  expect(pick).toHaveBeenCalledTimes(1);
+  expect(preview.mock.calls).toEqual([[{ path: original.path }], [{ path: original.path }]]);
+  const request = (manifestSha256: string) => ({ path: original.path, manifestSha256, taskId: expect.any(String) });
+  expect(importPackage.mock.calls).toEqual([[request(original.manifestSha256)], [request(original.manifestSha256)], [request(updated.manifestSha256)]]);
 });
 
 it("按结果筛选与新件入库 → 每次只查询一次，列表和各结果计数同步更新", async () => {

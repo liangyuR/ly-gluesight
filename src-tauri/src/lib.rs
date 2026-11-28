@@ -339,6 +339,7 @@ pub fn run() {
             history_package::history_package_target,
             history_package::history_package_export,
             history_package::history_package_pick,
+            history_package::history_package_preview,
             history_package::history_package_import,
             history::reveal_path,
             vision::vision_calib_info,

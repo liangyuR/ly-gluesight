@@ -29,5 +29,7 @@ export const historyApi = {
   packageExport: (ids: number[], includeImages: boolean, path: string, taskId: string) =>
     desktopCall<HistoryPackageExported>("history_package_export", { ids, includeImages, path, taskId }),
   packagePick: () => desktopCall<HistoryPackagePreview | null>("history_package_pick"),
-  packageImport: (path: string, taskId: string) => desktopCall<HistoryPackageImported>("history_package_import", { path, taskId }),
+  packagePreview: (path: string) => desktopCall<HistoryPackagePreview>("history_package_preview", { path }),
+  packageImport: (path: string, manifestSha256: string, taskId: string) =>
+    desktopCall<HistoryPackageImported>("history_package_import", { path, manifestSha256, taskId }),
 };
