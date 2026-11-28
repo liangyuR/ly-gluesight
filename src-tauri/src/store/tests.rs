@@ -110,6 +110,63 @@ fn covering_index_upgrade_preserves_scoped_and_cross_project_history() {
 }
 
 #[test]
+fn sn_index_upgrade_preserves_exact_retest_links_within_the_current_project() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let insert = |store: &Store, cycle, sn, ts| {
+        store
+            .insert(&PartRecord {
+                sn,
+                ts,
+                ..burst_part(&recipe, cycle, &judgement, &burst)
+            })
+            .unwrap()
+    };
+    insert(&store, "sn-upgrade-first", "SAME-SN", 100);
+    let latest = insert(&store, "sn-upgrade-tie", "SAME-SN", 100);
+    insert(&store, "sn-upgrade-older", "SAME-SN", 90);
+    insert(&store, "sn-upgrade-case", "same-sn", 110);
+    insert(&store, "sn-upgrade-blank", "", 112);
+    let other = Store::open_for(&db.path(), "other-project").unwrap();
+    insert(&other, "sn-upgrade-other", "SAME-SN", 120);
+    drop(other);
+    store
+        .conn
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "DROP INDEX parts_sn_project_ts;
+         CREATE INDEX parts_sn ON parts(sn);",
+        )
+        .unwrap();
+    drop(store);
+
+    let upgraded = Store::open(&db.path()).unwrap();
+    assert!(upgraded.backup_path().is_none());
+    let retest = insert(&upgraded, "sn-upgrade-retest", "SAME-SN", 95);
+    let blank = insert(&upgraded, "sn-upgrade-blank-later", "", 130);
+    assert_eq!(upgraded.summary(retest).unwrap().retest_of, Some(latest));
+    assert_eq!(upgraded.summary(blank).unwrap().retest_of, None);
+    let index: String = upgraded
+        .conn
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT group_concat(name) FROM (
+             SELECT name FROM sqlite_schema WHERE type='index'
+             AND name IN ('parts_sn', 'parts_sn_project_ts') ORDER BY name
+         )",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(index, "parts_sn_project_ts");
+}
+
+#[test]
 fn appending_a_recipe_revision_accepts_legacy_fields_and_rechecks_changed_snapshots() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

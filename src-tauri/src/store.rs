@@ -1037,7 +1037,9 @@ impl Store {
              DROP INDEX IF EXISTS parts_project_ts;
              CREATE INDEX IF NOT EXISTS parts_project_source_ts_id_verdict
                  ON parts(project_id, source, ts, id, verdict);
-             CREATE INDEX IF NOT EXISTS parts_sn ON parts(sn);
+             DROP INDEX IF EXISTS parts_sn;
+             CREATE INDEX IF NOT EXISTS parts_sn_project_ts
+                 ON parts(sn, project_id, ts) WHERE sn <> '';
              CREATE INDEX IF NOT EXISTS parts_retest ON parts(retest_of) WHERE retest_of IS NOT NULL;
              CREATE INDEX IF NOT EXISTS parts_recording_directory ON parts(recording_directory);
              CREATE INDEX IF NOT EXISTS parts_maintenance
@@ -1256,7 +1258,14 @@ impl Store {
         let retest_of: Option<i64> = if r.sn.is_empty() {
             None
         } else {
-            tx.query_row("SELECT id FROM parts WHERE project_id = ?1 AND sn = ?2 ORDER BY ts DESC, id DESC LIMIT 1", [self.project.as_str(), r.sn], |row| row.get(0)).optional().map_err(db_err)?
+            tx.query_row(
+                "SELECT id FROM parts WHERE project_id = ?1 AND sn = ?2 AND sn <> ''
+                 ORDER BY ts DESC, id DESC LIMIT 1",
+                [self.project.as_str(), r.sn],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)?
         };
         let j = r.judgement;
         let text = |value: Result<String, serde_json::Error>| value.map_err(|e| e.to_string());
