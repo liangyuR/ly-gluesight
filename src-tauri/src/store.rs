@@ -1032,7 +1032,8 @@ impl Store {
                  tags TEXT NOT NULL DEFAULT '[]'
              );
              CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
-             CREATE INDEX IF NOT EXISTS parts_source_ts ON parts(source, ts);
+             DROP INDEX IF EXISTS parts_source_ts;
+             CREATE INDEX IF NOT EXISTS parts_source_ts_id_verdict ON parts(source, ts, id, verdict);
              CREATE INDEX IF NOT EXISTS parts_project_ts ON parts(project_id, ts);
              CREATE INDEX IF NOT EXISTS parts_sn ON parts(sn);
              CREATE INDEX IF NOT EXISTS parts_retest ON parts(retest_of) WHERE retest_of IS NOT NULL;

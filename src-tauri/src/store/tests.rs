@@ -30,6 +30,68 @@ impl Drop for TestDb {
 }
 
 #[test]
+fn source_index_upgrade_keeps_existing_history_counts_and_tie_order() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let insert = |cycle, ts| {
+        store
+            .insert(&PartRecord {
+                ts,
+                ..burst_part(&recipe, cycle, &judgement, &burst)
+            })
+            .unwrap()
+    };
+    let earlier = insert("index-upgrade-earlier", 90);
+    let tied = insert("index-upgrade-tied", 100);
+    insert("index-upgrade-newer", 100);
+    store
+        .conn
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "DROP INDEX parts_source_ts_id_verdict;
+         CREATE INDEX parts_source_ts ON parts(source, ts);
+         PRAGMA user_version = 11;",
+        )
+        .unwrap();
+    let query = HistoryQuery {
+        from: Some(80),
+        offset: 1,
+        limit: 2,
+        ..Default::default()
+    };
+    let before = store.query(&query).unwrap();
+    drop(store);
+
+    let upgraded = Store::open(&db.path()).unwrap();
+    assert!(upgraded.backup_path().is_none());
+    let after = upgraded.query(&query).unwrap();
+    assert_eq!(
+        after.items.iter().map(|part| part.id).collect::<Vec<_>>(),
+        [tied, earlier]
+    );
+    assert_eq!(
+        serde_json::to_value(after).unwrap(),
+        serde_json::to_value(before).unwrap()
+    );
+    let index: String = upgraded
+        .conn
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT group_concat(name) FROM sqlite_schema
+         WHERE type='index' AND name IN ('parts_source_ts', 'parts_source_ts_id_verdict')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(index, "parts_source_ts_id_verdict");
+}
+
+#[test]
 fn appending_a_recipe_revision_accepts_legacy_fields_and_rechecks_changed_snapshots() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
