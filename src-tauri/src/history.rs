@@ -432,6 +432,7 @@ fn rejudge_rows(
     }
     let mut originals = HashMap::new();
     let mut candidates = HashMap::new();
+    let mut compatible_layouts = HashMap::new();
     let mut matrix: HashMap<(Verdict, Verdict), u64> = HashMap::new();
     let mut changes = Vec::new();
     let mut skip_reasons = Vec::new();
@@ -505,7 +506,10 @@ fn rejudge_rows(
                 skip(SkipKind::NoCandidate)?;
                 continue;
             };
-            if !same_measurement_layout(&original, &candidate) {
+            if !*compatible_layouts
+                .entry(key)
+                .or_insert_with(|| same_measurement_layout(&original, &candidate))
+            {
                 skip(SkipKind::LayoutChanged)?;
                 continue;
             }

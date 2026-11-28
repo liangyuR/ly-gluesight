@@ -332,3 +332,75 @@ fn rejudge_limit_counts_the_oldest_row_without_decoding_it() {
         .unwrap();
     assert!(rejudge_history(&store, &request, |_| None, None).is_err());
 }
+
+#[test]
+fn rejudge_keeps_layout_checks_separate_for_revisions_of_the_same_recipe() {
+    let doc = burst_doc();
+    let original_a = Arc::new(doc.build().unwrap());
+    let mut changed_doc = doc.clone();
+    changed_doc.version = original_a.version + 1;
+    changed_doc.inspect[0].segments[0].corridor[0][0] += 5.0;
+    let original_b = Arc::new(changed_doc.build().unwrap());
+    let mut current_doc = doc;
+    current_doc.version = original_b.version + 1;
+    current_doc.segments[1].checks.width.tol_lower = 3.0;
+    let current = Arc::new(current_doc.build().unwrap());
+
+    let (mut first_a, frames_a) = burst_row(&original_a);
+    let (mut row_b, frames_b) = burst_row(&original_b);
+    let (last_a, _) = burst_row(&original_a);
+    first_a.id = last_a.id + 2;
+    row_b.id = last_a.id + 1;
+    first_a.sn = "SN-A-NEW".into();
+    row_b.sn = "SN-B".into();
+    let (first_a_id, b_id, last_a_id) = (first_a.id, row_b.id, last_a.id);
+    let request = RejudgeRequest {
+        use_current_recipe: true,
+        ..Default::default()
+    };
+    let result = rejudge_rows(
+        RejudgeSelection {
+            rows: [first_a, row_b, last_a].into_iter().map(Ok),
+            limit_hit: false,
+        },
+        &request,
+        "default",
+        |_, revision| {
+            Ok([&original_a, &original_b]
+                .into_iter()
+                .find(|recipe| recipe.revision_id == revision)
+                .cloned())
+        },
+        |id| (id == current.id.as_str()).then(|| current.clone()),
+        |id| {
+            Ok(if id == b_id {
+                frames_b.clone()
+            } else {
+                frames_a.clone()
+            })
+        },
+        None,
+    )
+    .unwrap();
+
+    assert_eq!((result.total, result.skipped), (2, 1));
+    let [skip] = result.skip_reasons.as_slice() else {
+        panic!("只有修改了走廊的原修订应跳过");
+    };
+    assert_eq!((skip.id, skip.kind), (b_id, SkipKind::LayoutChanged));
+    let [cell] = result.matrix.as_slice() else {
+        panic!("两件布局兼容的工件应汇入同一单元");
+    };
+    assert_eq!(
+        (cell.from, cell.to, cell.count),
+        (Verdict::NgWidth, Verdict::Ok, 2)
+    );
+    assert_eq!(
+        result
+            .changes
+            .iter()
+            .map(|change| change.id)
+            .collect::<Vec<_>>(),
+        [first_a_id, last_a_id]
+    );
+}
