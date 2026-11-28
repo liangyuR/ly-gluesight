@@ -329,13 +329,11 @@ impl Comparisons {
         Ok(saved)
     }
 
-    /// 删除早于 before 的记录（`keep` 里被示教件引用的历史件除外）并清理失效的对照；另返回被删记录里非当前项目的录制目录（项目、来源、目录）。
     pub(super) fn purge(
         &self,
         root: &Path,
         store: &Store,
-        before: i64,
-        keep: &std::collections::BTreeSet<String>,
+        expired: Option<(i64, &std::collections::BTreeSet<String>)>,
     ) -> Result<
         (
             usize,
@@ -345,7 +343,10 @@ impl Comparisons {
         String,
     > {
         let mut cache = self.0.lock().unwrap();
-        let (count, orphaned) = store.purge_before(before, keep)?;
+        let (count, orphaned) = match expired {
+            Some((before, keep)) => store.purge_before(before, keep)?,
+            None => (0, Vec::new()),
+        };
         if count > 0 {
             cache.decoded = None;
         }
@@ -685,6 +686,56 @@ mod tests {
         let comparisons = Comparisons::default();
         comparisons.save(&root.0, &store, &saved).unwrap();
         (root, store, comparisons, saved)
+    }
+
+    #[test]
+    fn unreadable_references_only_stop_purge_when_history_has_expired() {
+        let (root, store, comparisons, saved) = saved_comparison();
+        fs::write(crate::project::projects_root(&root.0), b"not a directory").unwrap();
+        let cutoff = store.summary(saved.history_id).unwrap().ts;
+        let purge = |before| {
+            crate::workspace::purge_history_for(&root.0, &root.0, &store, &comparisons, before)
+        };
+
+        assert_eq!(purge(cutoff).unwrap(), (0, Vec::new()));
+        assert!(purge(cutoff + 1).is_err());
+        assert!(store.summary(saved.history_id).is_ok());
+    }
+
+    #[test]
+    fn empty_purge_recovers_comparisons_without_deleting_history_that_aged_into_scope() {
+        let (root, store, comparisons, saved) = saved_comparison();
+        let cutoff = store.summary(saved.history_id).unwrap().ts;
+        assert!(!store.has_history_before(cutoff).unwrap());
+        let active = root
+            .0
+            .join("comparisons")
+            .join(saved.history_id.to_string());
+        let interrupted = active.join(format!("{}-10-1.tmp", saved.history_id));
+        fs::write(&interrupted, b"partial").unwrap();
+        let orphan_id = saved.history_id + 1;
+        let orphan = root.0.join("comparisons").join(orphan_id.to_string());
+        fs::create_dir(&orphan).unwrap();
+        fs::write(orphan.join(format!("{orphan_id}-10-1.tmp")), b"partial").unwrap();
+        rusqlite::Connection::open(root.0.join("parts.sqlite"))
+            .unwrap()
+            .execute(
+                "UPDATE parts SET ts=?2 WHERE id=?1",
+                rusqlite::params![saved.history_id, cutoff - 1],
+            )
+            .unwrap();
+
+        let (count, warnings, orphaned) = comparisons.purge(&root.0, &store, None).unwrap();
+        assert_eq!(count, 0);
+        assert!(warnings.is_empty() && orphaned.is_empty());
+        assert!(!interrupted.exists() && !orphan.exists());
+        assert_eq!(
+            comparisons
+                .get(&root.0, &store, saved.history_id, &saved.id)
+                .unwrap()
+                .cycle_id,
+            saved.cycle_id
+        );
     }
 
     #[test]

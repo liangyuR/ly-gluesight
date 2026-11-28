@@ -1443,23 +1443,39 @@ fn save_comparison(app: &AppHandle, comparison: &Comparison) -> Result<(), Strin
         .save(&host.root, &app.state::<Store>(), comparison)
 }
 
-/// 按天清理：被示教件、标定件引用的历史件（记录与录制）保留，引用核对不了时本次不清理。调用方持
+/// 按天清理：有过期件时先核对示教与标定引用，核对失败时保留历史记录。调用方持
 /// `recipe_capture::REFERENCES`（先于追溯状态锁取得）。
 pub(crate) fn purge_history(app: &AppHandle, before: i64) -> Result<(usize, Vec<String>), String> {
     let host = app.state::<WorkspaceHost>();
-    let data = crate::storage::root(app);
-    let keep = crate::project::records::referenced_cycles(&data)
-        .map_err(|e| format!("无法核对示教件引用的历史件，本次不清理：{e}"))?;
+    purge_history_for(
+        &crate::storage::root(app),
+        &host.root,
+        &app.state::<Store>(),
+        &host.comparisons,
+        before,
+    )
+}
+
+fn purge_history_for(
+    data: &Path,
+    root: &Path,
+    store: &Store,
+    comparisons: &comparisons::Comparisons,
+    before: i64,
+) -> Result<(usize, Vec<String>), String> {
+    let keep = store
+        .has_history_before(before)?
+        .then(|| {
+            crate::project::records::referenced_cycles(data)
+                .map_err(|e| format!("无法核对示教件引用的历史件，本次不清理：{e}"))
+        })
+        .transpose()?;
     let (count, mut warnings, orphaned) =
-        host.comparisons
-            .purge(&host.root, &app.state::<Store>(), before, &keep)?;
+        comparisons.purge(root, store, keep.as_ref().map(|keep| (before, keep)))?;
     for (project, source, directory) in orphaned {
-        if let Err(error) = crate::project::records::remove_recording(
-            &data,
-            &project,
-            source,
-            Path::new(&directory),
-        ) {
+        if let Err(error) =
+            crate::project::records::remove_recording(data, &project, source, Path::new(&directory))
+        {
             warnings.push(format!(
                 "项目 {project} 的过期原图 {directory} 未删除：{error}"
             ));

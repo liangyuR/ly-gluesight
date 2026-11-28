@@ -2690,6 +2690,18 @@ impl Store {
             .map_err(db_err)
     }
 
+    pub(crate) fn has_history_before(&self, ts: i64) -> Result<bool, String> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM parts WHERE ts < ?1)",
+                [ts],
+                |row| row.get(0),
+            )
+            .map_err(db_err)
+    }
+
     /// 删除本机全部项目里早于 ts 的记录，`keep` 里的历史件（被示教件引用，按 cycleId）不删；返回删除件数与其中非当前项目记录、
     /// 导入件的录制目录（项目、来源、目录），这些原图没有在运行的录制滚动清理，由调用方随记录一起删。
     pub fn purge_before(
