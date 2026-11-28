@@ -784,16 +784,20 @@ pub async fn workspace_package_import(
     task_id: Option<String>,
 ) -> Result<PackageImported, String> {
     let operation = Operation::start(&app, task_id)?;
-    let cycle = app.state::<CycleHost>();
-    let _config = cycle.config_gate.lock().await;
-    let task = app.clone();
+    let import_guard = app
+        .state::<CycleHost>()
+        .recipe_import_gate
+        .clone()
+        .lock_owned()
+        .await;
     tauri::async_runtime::spawn_blocking(move || {
+        let _import = import_guard;
         operation.run(|operation| {
             let staging = transfer::staging_dir(
-                &crate::storage::root(&task).join("cache"),
+                &crate::storage::root(&app).join("cache"),
                 "recipe-import",
             )?;
-            let result = import(&task, Path::new(&path), &target, &staging, operation);
+            let result = import(&app, Path::new(&path), &target, &staging, operation);
             let _ = std::fs::remove_dir_all(&staging);
             crate::cycle::log_op(
                 &crate::applog::events::OP_RECIPE_PACKAGE,
@@ -825,9 +829,11 @@ fn import(
                 .and_then(|text| serde_json::from_str(&text).ok())
         })
         .collect();
-    let mut notes = camera_notes(&rounds, &current_cameras(app));
-    let installed = {
+    let (installed, cameras) = {
         let cycle = app.state::<CycleHost>();
+        let _config = cycle.config_gate.blocking_lock();
+        operation.check()?;
+        let cameras = current_cameras(app);
         let production = cycle.recipes.list();
         let host = app.state::<WorkspaceHost>();
         let mut items = host.items.lock().unwrap();
@@ -840,7 +846,7 @@ fn import(
             return Err(reason);
         }
         let local = Local {
-            has_production: cycle.recipe(&id).is_some(),
+            has_production: production.iter().any(|recipe| recipe.id == id),
             next_version: cycle.recipes.next_version(&id)?,
         };
         rebase(&mut w, &local, Path::new(&manifest.source_root), &project)?;
@@ -852,8 +858,9 @@ fn import(
             install(&project, staging, &w)?;
         }
         items.insert(id.clone(), w.clone());
-        w
+        (w, cameras)
     };
+    let mut notes = camera_notes(&rounds, &cameras);
     let mut teaching_images = false;
     if let Some(piece) = &installed.teaching_piece {
         let cycle = app.state::<CycleHost>();

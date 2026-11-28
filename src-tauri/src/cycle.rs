@@ -431,6 +431,8 @@ pub struct CycleHost {
     pub link_gate: tokio::sync::Mutex<()>,
     /// 接件与配置门：接件登记、切换生产配方与相机重配置、配方/设置/标定修改互斥。节拍只在接件到登记在途、切换待生效配方时持有。
     pub config_gate: tokio::sync::Mutex<()>,
+    /// 工件配方包导入与项目切换互斥，先于 link_gate 或 config_gate 取得。
+    pub(crate) recipe_import_gate: Arc<tokio::sync::Mutex<()>>,
     pub camera: CameraRig,
     pub recipes: RecipeStore,
     pub recorders: Recorders,
@@ -541,6 +543,7 @@ impl CycleHost {
             tx,
             link_gate: tokio::sync::Mutex::new(()),
             config_gate: tokio::sync::Mutex::new(()),
+            recipe_import_gate: Arc::default(),
             recipes: RecipeStore::open_with_floors(
                 data.join("recipes"),
                 &app.state::<crate::store::Store>().recipe_version_floors()?,
