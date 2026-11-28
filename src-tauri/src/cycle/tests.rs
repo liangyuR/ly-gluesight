@@ -439,7 +439,12 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             (None, None, None),
             "{case}：测完后不再是送测中"
         );
-        assert_eq!(p.view().burst.groups[5].cells[0].verdict, Some(Verdict::Ok));
+        let acquired = p.published_view(Phase::Acquire);
+        assert_eq!(
+            (acquired.measured_frames, acquired.burst.measured_frames),
+            (36, 36)
+        );
+        assert_eq!(acquired.burst.groups[5].cells[0].verdict, Some(Verdict::Ok));
         let recording_dir = crate::offline::test_dir::TestDir::new("cycle-post", case);
         if keep_images {
             let recorder = crate::recorder::Recorder::new(vec![recording_dir.to_path_buf()], None);
@@ -490,11 +495,21 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             };
             assert_eq!(jobs, expected, "{case}");
             assert!(!p.complete(), "{case}：补测完之前不收尾");
+            let draining = p.published_view(Phase::Drain);
+            let remaining = 36 - expected.len();
+            assert_eq!(
+                (
+                    draining.measured_frames,
+                    draining.burst.measured_frames,
+                    draining.burst.pending_measure
+                ),
+                (remaining, remaining, expected.len()),
+                "{case}"
+            );
             let remeasures_visible_frame =
                 jobs.iter().any(|&(camera, seq, _)| camera == 0 && seq == 6);
             if remeasures_visible_frame {
-                let view = p.view();
-                let cell = &view.burst.groups[5].cells[0];
+                let cell = &draining.burst.groups[5].cells[0];
                 assert_eq!(
                     (cell.status, cell.verdict),
                     (FrameCellStatus::Measuring, None)
@@ -512,9 +527,19 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
                 };
                 p.apply_burst(result).unwrap();
             }
+            let remeasured = p.published_view(Phase::Drain);
+            assert_eq!(
+                (
+                    remeasured.measured_frames,
+                    remeasured.burst.measured_frames,
+                    remeasured.burst.pending_measure
+                ),
+                (36, 36, 0),
+                "{case}"
+            );
             if remeasures_visible_frame {
                 assert_eq!(
-                    p.view().burst.groups[5].cells[0].verdict,
+                    remeasured.burst.groups[5].cells[0].verdict,
                     Some(Verdict::NgGap)
                 );
             }
@@ -792,6 +817,13 @@ fn pending_measurement_timeout_allows_finish_and_rejects_late_result() {
     deliver(&mut part, 2, 4);
     end(&mut part, Some(4), true);
     assert!(!part.complete());
+    let pending = part.published_view(Phase::Drain);
+    assert_eq!(pending.received, 12);
+    assert_eq!(
+        (pending.measured_frames, pending.burst.measured_frames),
+        (11, 11)
+    );
+    assert_eq!(pending.burst.pending_measure, 1);
 
     let expired_at = Instant::now() + part.proc_timeout;
     assert_eq!(part.expire_burst(expired_at, part.proc_timeout), [(0, 4)]);
@@ -803,10 +835,29 @@ fn pending_measurement_timeout_allows_finish_and_rejects_late_result() {
     let judgement = judge_burst(&mut part);
     assert_eq!(judgement.verdict, Verdict::Ok);
     assert!(judgement.flags.incomplete);
-    let view = part.view();
+    let view = part.published_view(Phase::Idle);
+    assert_eq!((view.measured_frames, view.burst.measured_frames), (12, 12));
+    assert_eq!(view.burst.pending_measure, 0);
     let cells = &view.burst.groups[3].cells;
     assert_eq!(cells[0].status, FrameCellStatus::Unmeasured);
     assert_eq!(cells[1].status, FrameCellStatus::Measured);
+}
+
+#[test]
+fn maintenance_collection_counts_received_frames_without_measuring_them() {
+    let mut part = burst_part("maintenance-collect-snapshot", &Ledgers::default());
+    part.mode = PartMode::MaintenanceCollect;
+    part.burst.collect = true;
+    assert_eq!(
+        part.receive_burst(&burst_frame(0, 1)),
+        Some(burst::Arrival::Accepted { camera: 0, seq: 1 })
+    );
+
+    let view = part.published_view(Phase::Acquire);
+    assert_eq!(view.received, 1);
+    assert_eq!(view.burst.groups[0].cells[0].frame_counter, Some(1));
+    assert_eq!((view.measured_frames, view.burst.measured_frames), (0, 0));
+    assert_eq!(view.burst.pending_measure, 0);
 }
 
 /// 防的回归（D-SB-54）：PLC 报结束后不管门控已关闭都固定等满收尾窗口；或门控还开着（还有帧要来）就提前收尾、丢掉后面的帧。

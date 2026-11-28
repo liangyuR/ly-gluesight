@@ -890,6 +890,7 @@ impl Part {
                 )
             })
             .collect();
+        let mut measured_frames = 0;
         let groups = (1..=group_count)
             .map(|seq| {
                 let cells =
@@ -901,19 +902,20 @@ impl Part {
                         });
                         match frames.next_if(|(key, _)| key.1 == seq) {
                             Some((_, frame)) => {
-                                let (status, verdict) = match &frame.metrics {
-                                    Some(m) => (
-                                        FrameCellStatus::from(m.state),
-                                        match decided {
+                                let (status, verdict, segment) = match &frame.metrics {
+                                    Some(m) => {
+                                        measured_frames += 1;
+                                        let verdict = match decided {
                                             Some(_) => final_verdict,
                                             None => (m.state == FrameState::Measured).then(|| {
                                                 *frame
                                                     .provisional_verdict
                                                     .get_or_init(|| provisional(m))
                                             }),
-                                        },
-                                    ),
-                                    None => (FrameCellStatus::Measuring, None),
+                                        };
+                                        (FrameCellStatus::from(m.state), verdict, m.corridor)
+                                    }
+                                    None => (FrameCellStatus::Measuring, None, None),
                                 };
                                 FrameCellView {
                                     status,
@@ -922,7 +924,7 @@ impl Part {
                                         && status == FrameCellStatus::Measured
                                         && verdict.is_none(),
                                     frame_counter: Some(frame.frame_counter),
-                                    segment: frame.metrics.as_ref().and_then(|m| m.corridor),
+                                    segment,
                                 }
                             }
                             None => FrameCellView {
@@ -957,11 +959,7 @@ impl Part {
             device_triggers: self.device_triggers.map(u32::from),
             group_count,
             camera_frames: burst.grouper.camera_counts(),
-            measured_frames: burst
-                .frames
-                .values()
-                .filter(|frame| frame.metrics.is_some())
-                .count(),
+            measured_frames,
             pending_measure: burst.pending.len(),
             groups,
         }

@@ -933,16 +933,6 @@ struct Part {
 }
 
 impl Part {
-    /// 计划帧数 ΣN_exp（未标定为 0）。
-    fn n(&self) -> usize {
-        self.recipe.expected_total().map_or(0, |n| n as usize)
-    }
-
-    /// PLC 报的 deviceTriggers（partEnd 前为 0）。
-    fn triggers(&self) -> u64 {
-        self.device_triggers.map_or(0, u64::from)
-    }
-
     /// 用本件已经观察到的 SDK 帧号更新下一件基线。
     fn close_routing(&mut self, ledgers: &mut Ledgers) {
         if self.routing_closed {
@@ -973,9 +963,9 @@ impl Part {
             sn: self.sn.clone(),
             recipe_id: self.recipe.id.clone(),
             recipe_revision: self.recipe.revision_id.clone(),
-            n: self.n(),
+            n: burst.expected_total.unwrap_or_default() as usize,
             received: burst.camera_frames.iter().map(|&n| n as usize).sum(),
-            triggers: self.triggers(),
+            triggers: burst.device_triggers.map_or(0, u64::from),
             queue: burst.pending_measure,
             measured_frames: burst.measured_frames,
             burst,
