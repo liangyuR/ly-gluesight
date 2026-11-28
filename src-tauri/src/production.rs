@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Semaphore;
 
@@ -37,23 +37,29 @@ pub(crate) fn frozen_graphs(set: &vision::CorridorSet) -> Value {
         }
         v
     };
-    let mut templates =
-        json!({ vision::template::corridor().id: vision::template::corridor().doc });
+    let mut templates = Map::new();
+    let mut register_template = |template: &vision::template::Template| {
+        templates
+            .entry(template.id)
+            .or_insert_with(|| template.doc.clone());
+    };
+    register_template(vision::template::corridor());
     let graphs: Vec<Value> = set.iter()
         .map(|c| {
-            templates[c.template.id] = c.template.doc.clone();
+            register_template(c.template);
             entry(c.template, json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "params": c.params, "judge": c.judge}))
         })
         .collect();
-    let mut doc = json!({"schemaVersion": 5, "version": GRAPH_VERSION_BURST, "graphs": graphs});
+    let mut doc = json!({"schemaVersion": 5, "version": GRAPH_VERSION_BURST});
+    doc["graphs"] = Value::Array(graphs);
     let headings: Vec<Value> = set.headings()
         .map(|h| {
-            templates[h.template.id] = h.template.doc.clone();
+            register_template(h.template);
             entry(h.template, json!({"index": h.camera_idx, "camera": h.camera, "segment": h.segment, "size": h.size, "params": h.params, "judge": h.judge}))
         })
         .collect();
     if !headings.is_empty() {
-        doc["headings"] = json!(headings);
+        doc["headings"] = Value::Array(headings);
     }
     let mut mixes = Vec::new();
     for corridor in set.iter() {
@@ -61,9 +67,9 @@ pub(crate) fn frozen_graphs(set: &vision::CorridorSet) -> Value {
             .get(corridor.camera_idx, corridor.segment)
             .and_then(|g| g.mix_plan())
         {
-            templates["mix"] = vision::template::mix().doc.clone();
+            register_template(vision::template::mix());
             if plan.retry.is_some() {
-                templates["mix_retrack"] = vision::template::mix_retrack().doc.clone();
+                register_template(vision::template::mix_retrack());
             }
             let mut entry = plan.frozen();
             entry["index"] = json!(corridor.camera_idx);
@@ -72,9 +78,9 @@ pub(crate) fn frozen_graphs(set: &vision::CorridorSet) -> Value {
         }
     }
     if !mixes.is_empty() {
-        doc["mix"] = json!(mixes);
+        doc["mix"] = Value::Array(mixes);
     }
-    doc["templates"] = templates;
+    doc["templates"] = Value::Object(templates);
     doc
 }
 
