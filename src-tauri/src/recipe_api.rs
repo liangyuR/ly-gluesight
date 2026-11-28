@@ -30,11 +30,11 @@ pub struct RecipeEntry {
 pub fn recipe_list(cycle: State<'_, CycleHost>) -> RecipeListing {
     let recipes = cycle
         .recipes
-        .list()
-        .iter()
-        .map(|r| RecipeEntry {
-            summary: RecipeSummary::listed(&cycle.recipes, r),
-            stage: r.stage,
+        .list_with_teaching_piece()
+        .into_iter()
+        .map(|(recipe, teaching_piece)| RecipeEntry {
+            summary: RecipeSummary::listed(&recipe, teaching_piece),
+            stage: recipe.stage,
         })
         .collect();
     RecipeListing {

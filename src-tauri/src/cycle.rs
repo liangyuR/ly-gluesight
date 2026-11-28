@@ -32,7 +32,7 @@ use crate::plc::PlcHost;
 use crate::plc_session::{
     PartSite, PartTiming, PlcSession, SessionEvent, SessionPhase, SessionView,
 };
-use crate::recipe::{Recipe, RecipeStore, TriggerMode};
+use crate::recipe::{Recipe, RecipeStore, TeachingPieceRef, TriggerMode};
 use crate::recorder::{Recorder, Recorders, Recording};
 use crate::recording_health::{AlarmChange, RecordingAlarm, RecordingHealth};
 use crate::settings::{CycleSettings, ProductSource};
@@ -378,15 +378,14 @@ pub struct RecipeSummary {
     /// 已标定（expected_total 非空）
     pub calibrated: bool,
     /// 示教件来源（RB-7）：取自生产配方文档；旧流程发布的配方为空
-    pub teaching_piece: Option<crate::recipe::TeachingPieceRef>,
+    pub teaching_piece: Option<TeachingPieceRef>,
 }
 
 impl RecipeSummary {
-    /// 配方库里一份生产配方的摘要，带配方文档里的示教件来源。
-    pub fn listed(store: &RecipeStore, r: &Recipe) -> Self {
+    pub(crate) fn listed(recipe: &Recipe, teaching_piece: Option<TeachingPieceRef>) -> Self {
         Self {
-            teaching_piece: store.doc(&r.id).and_then(|d| d.teaching_piece),
-            ..Self::from(r)
+            teaching_piece,
+            ..Self::from(recipe)
         }
     }
 }
@@ -3133,9 +3132,9 @@ pub fn cycle_control_state(cycle: State<'_, CycleHost>) -> Option<ControlState> 
 pub fn cycle_recipes(cycle: State<'_, CycleHost>) -> Vec<RecipeSummary> {
     cycle
         .recipes
-        .list()
-        .iter()
-        .map(|r| RecipeSummary::listed(&cycle.recipes, r))
+        .list_with_teaching_piece()
+        .into_iter()
+        .map(|(recipe, teaching_piece)| RecipeSummary::listed(&recipe, teaching_piece))
         .collect()
 }
 

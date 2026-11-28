@@ -1409,6 +1409,15 @@ impl RecipeStore {
             .collect()
     }
 
+    pub(crate) fn list_with_teaching_piece(&self) -> Vec<(Arc<Recipe>, Option<TeachingPieceRef>)> {
+        self.inner
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(doc, recipe)| (Arc::clone(recipe), doc.teaching_piece.clone()))
+            .collect()
+    }
+
     pub fn errors(&self) -> Vec<String> {
         self.errors.read().unwrap().clone()
     }
@@ -1593,6 +1602,57 @@ mod tests {
         let second = store.save_published(doc.clone()).unwrap();
         assert_eq!(second.revision_id, "EXPLICIT-PUBLISHED-v8");
         assert_eq!(store.save(doc, None).unwrap().version, 9);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recipe_listing_keeps_each_revision_with_its_own_teaching_piece() {
+        let dir = std::env::temp_dir().join(format!(
+            "gluesight-recipe-listing-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let source = |record_id| TeachingPieceRef {
+            cycle_id: format!("teaching-cycle-{record_id}"),
+            record_id,
+            sn: format!("TEACH-{record_id}"),
+            ts: 1000 + record_id,
+        };
+        let first_source = source(1);
+        let next_source = source(2);
+        let mut doc = samples_burst();
+        doc.teaching_piece = Some(first_source.clone());
+        let first_release = store.save_published(doc.clone()).unwrap();
+
+        let mut legacy_doc = samples_burst();
+        legacy_doc.id = "OLDER-RELEASE".into();
+        legacy_doc.product_code = 15;
+        let legacy = store.save_published(legacy_doc).unwrap();
+        let before = store.list_with_teaching_piece();
+
+        doc.version += 1;
+        doc.teaching_piece = Some(next_source.clone());
+        let next_release = store.save_published(doc).unwrap();
+        let after = store.list_with_teaching_piece();
+
+        for (listing, release, teaching) in [
+            (before, first_release, first_source),
+            (after, next_release, next_source),
+        ] {
+            let (recipe, piece) = listing
+                .iter()
+                .find(|(recipe, _)| recipe.id == release.id)
+                .unwrap();
+            assert_eq!(recipe.revision_id, release.revision_id);
+            assert_eq!(piece.as_ref(), Some(&teaching));
+            let (recipe, piece) = listing
+                .iter()
+                .find(|(recipe, _)| recipe.id == legacy.id)
+                .unwrap();
+            assert_eq!(recipe.revision_id, legacy.revision_id);
+            assert!(piece.is_none());
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 
