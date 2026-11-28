@@ -634,21 +634,11 @@ pub fn camera_calib_path(app: &AppHandle, inspect: &CameraInspect) -> Result<Pat
     calib_key_path(app, &station_key(&inspect.camera)?)
 }
 
-fn camera_id(app: &AppHandle, cam: u8) -> Result<String, String> {
-    Ok(app
-        .state::<CycleHost>()
-        .camera
-        .slot(cam as usize)
-        .ok_or("相机不存在")?
-        .config()
-        .id)
-}
-
 /// 标定命令的键：第一个是 `vision_calib_info` 读的键，全部是 `vision_calibrate` 写的键。
 /// - 给了图编号（标定页总会给，单视角相机为 1）：旧配方的 `{device}-v{view}`。单视角相机的图 1 就是这台设备的整幅图，
 ///   同时写段配方读的设备标定 `device/{device}`（D-SB-30），标定页做的标定段配方才用得上；三目拼接相机的各图只写 `{device}-v{view}`。
 /// - 没给：只写段配方的设备标定，这台相机必须是单视角（D-SB-11）。
-fn calib_keys(
+pub(crate) fn calib_keys(
     config: &crate::camera::CameraConfig,
     view: Option<u8>,
 ) -> Result<Vec<CalibKey>, String> {
@@ -660,6 +650,9 @@ fn calib_keys(
     };
     match view {
         Some(view) => {
+            if !(1..=config.view_count).contains(&view) {
+                return Err("图编号超出设备范围".into());
+            }
             let mut keys = vec![CalibKey::Station(station_view_key(&config.id, view)?)];
             if view == 1 && single_view().is_ok() {
                 keys.push(station_key(&config.id)?);
@@ -671,21 +664,6 @@ fn calib_keys(
             Ok(vec![station_key(&config.id)?])
         }
     }
-}
-
-pub(crate) fn camera_calib_keys(
-    app: &AppHandle,
-    cam: u8,
-    view: Option<u8>,
-) -> Result<Vec<CalibKey>, String> {
-    calib_keys(
-        &app.state::<CycleHost>()
-            .camera
-            .slot(cam as usize)
-            .ok_or("相机不存在")?
-            .config(),
-        view,
-    )
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -779,9 +757,14 @@ fn overlay_corners(overlay: Option<&Value>) -> Vec<[f64; 2]> {
 pub fn vision_calib_info(
     app: AppHandle,
     cam: Option<u8>,
+    id: String,
     view: Option<u8>,
 ) -> Result<Option<CalibInfo>, String> {
-    let keys = camera_calib_keys(&app, cam.unwrap_or(0), view)?;
+    let (_, config) = app
+        .state::<CycleHost>()
+        .camera
+        .target_slot(cam.unwrap_or(0), &id)?;
+    let keys = calib_keys(&config, view)?;
     Ok(calib_info(&calib_key_path(&app, &keys[0])?))
 }
 
@@ -831,6 +814,7 @@ pub async fn vision_calibrate(
     pattern: [f64; 2],
     square: f64,
     cam: Option<u8>,
+    id: String,
     view: Option<u8>,
     image_id: Option<String>,
 ) -> Result<CalibInfo, String> {
@@ -838,18 +822,18 @@ pub async fn vision_calibrate(
         let cycle = app.state::<CycleHost>();
         let _gate = cycle.config_gate.try_lock().map_err(|_| "正在采集、标定或接件，请稍后重试")?;
         crate::camera::check_idle(&cycle)?;
-        let keys = camera_calib_keys(&app, cam.unwrap_or(0), view)?;
+        let (slot, config) = cycle.camera.target_slot(cam.unwrap_or(0), &id)?;
+        let keys = calib_keys(&config, view)?;
         let view = view.unwrap_or(1);
-        if app.state::<CycleHost>().busy() { return Err("设备正在检测，结束后再标定".into()); }
+        if cycle.busy() { return Err("设备正在检测，结束后再标定".into()); }
         if pattern.iter().any(|n|!n.is_finite()||*n<2.0||*n>100.0||n.fract()!=0.0)||!square.is_finite()||square<=0.0 { return Err("棋盘格内角点与格长无效".into()); }
         let engine = app.state::<VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
-        let image = if let Some(id)=image_id.as_deref() {
-            if crate::workspace::station_image_view(&app, cam.unwrap_or(0), id)? != view { return Err("冻结标定样本的图编号与当前选择不一致".into()); }
-            crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)? } else { app
-            .state::<CycleHost>()
-            .camera
-            .last_view(cam.unwrap_or(0), view)
-            .ok_or("还没有整帧图像：打开图像测量后软触发一帧（标定板放在内边所在高度）")? };
+        let image = match image_id.as_deref() {
+            Some(image_id) => app.state::<crate::workspace::WorkspaceHost>()
+                .station_sample(&config, view, image_id)?,
+            None => slot.last_view(view)
+                .ok_or("还没有整帧图像：打开图像测量后软触发一帧（标定板放在内边所在高度）")?,
+        };
         let graph = json!({
             "schemaVersion": 1,
             "id": "01TUJIAOBOARDCALIB00000000",
@@ -878,11 +862,10 @@ pub async fn vision_calibrate(
         for dir in paths.iter().filter_map(|path| path.parent()) {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        if let Some(id)=image_id.as_deref() {
-            if crate::workspace::station_image_view(&app, cam.unwrap_or(0), id)? != view { return Err("标定过程中样本视图已改变".into()); }
-            crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)?;
+        if cycle.busy() || slot.config() != config {
+            return Err("标定期间设备或节拍状态变化，请重新取样".into());
         }
-        let written = save_calibration(&crate::storage::project(&app), &paths, data, &corners, &image, image_id.as_deref(), &camera_id(&app,cam.unwrap_or(0))?, view);
+        let written = save_calibration(&crate::storage::project(&app), &paths, data, &corners, &image, image_id.as_deref(), &config.id, view);
         let _ = app.emit("calibration://changed", ());
         written?;
         calib_info(&paths[0]).ok_or_else(|| "标定文件写入后读不回来".into())

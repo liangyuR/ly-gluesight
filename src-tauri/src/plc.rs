@@ -19,6 +19,7 @@ use crate::plc_plan::PlcPlan;
 use crate::recipe::Recipe;
 
 pub mod grouped_logs;
+pub(crate) mod log_snapshot;
 use grouped_logs::GroupSelection;
 
 pub struct PlcHost {
@@ -89,6 +90,10 @@ impl PlcHost {
 
     pub fn engine(&self) -> &PlcEngine {
         &self.engine
+    }
+
+    pub(crate) fn log_path(&self) -> &std::path::Path {
+        &self.log_path
     }
 
     pub fn start_if_configured(app: &AppHandle) {

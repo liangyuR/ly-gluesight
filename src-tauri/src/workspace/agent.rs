@@ -338,15 +338,17 @@ async fn status(
     expected_instance: Option<u64>,
 ) -> Result<Vec<Content>, ToolError> {
     let Some(id) = args.recipe else {
-        let candidates: Vec<Value> = super::workspace_list(app.state())
+        let candidates: Vec<Value> = app
+            .state::<WorkspaceHost>()
+            .catalog()
             .iter()
             .map(|w| {
                 json!({
-                    "recipe": w.doc.id,
-                    "name": w.doc.name,
+                    "recipe": w.id,
+                    "name": w.name,
                     "revision": w.revision,
-                    "segmentRecipe": w.doc.is_burst(),
-                    "teachingPiece": w.teaching_piece.is_some(),
+                    "segmentRecipe": w.segment_recipe,
+                    "teachingPiece": w.has_teaching_piece,
                 })
             })
             .collect();
@@ -464,9 +466,11 @@ async fn status(
         })
         .collect();
     let blockers = {
-        let (app, id, revision) = (app.clone(), id.clone(), w.revision);
-        match blocking(move || super::burst_release::workspace_publish_checks(app, id, revision))
-            .await
+        let (app, id, revision, instance_id) = (app.clone(), id.clone(), w.revision, w.instance_id);
+        match blocking(move || {
+            super::burst_release::workspace_publish_checks(app, id, revision, instance_id)
+        })
+        .await
         {
             Ok(checks) => json!(checks
                 .iter()
@@ -567,14 +571,10 @@ fn pass_status(app: &AppHandle, w: &Workspace) -> Value {
         .collect();
     let recorded = app
         .state::<crate::store::Store>()
-        .measurements(
-            &crate::store::HistoryQuery::default(),
-            &[piece.record_id],
-            1,
-        )
+        .rejudge_reader()
+        .and_then(|reader| reader.burst_judgement(piece.record_id))
         .ok()
-        .and_then(|records| records.into_iter().next())
-        .and_then(|record| record.burst);
+        .flatten();
     let layout = snapshots::pass_layout_status(
         &piece.passes,
         w.doc.pass_frames.as_deref(),

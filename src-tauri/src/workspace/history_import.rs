@@ -3,6 +3,7 @@
 //! 采集轮次（见 `pieces`）。
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use super::*;
 use crate::camera::CameraImaging;
@@ -111,10 +112,9 @@ fn read_part(root: &Path, recording: &RecordingEvidence) -> Result<(PathBuf, Val
     let path = checked.join("part.json");
     crate::image_file::checked_source_path(&path)
         .map_err(|_| "录制元数据 part.json 缺失或不可读".to_string())?;
-    let value = serde_json::from_slice(
-        &std::fs::read(&path).map_err(|e| format!("录制元数据读取失败：{e}"))?,
-    )
-    .map_err(|e| format!("录制元数据损坏：{e}"))?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("录制元数据读取失败：{e}"))?;
+    let value = crate::history_metadata::part_metadata(&bytes)
+        .map_err(|e| format!("录制元数据损坏：{e}"))?;
     Ok((checked, value))
 }
 
@@ -133,6 +133,7 @@ pub(super) fn assess(
     summary: &PartSummary,
     recording: &RecordingEvidence,
     part: Result<(PathBuf, Value), String>,
+    prepare_import: bool,
 ) -> Assessed {
     let mut reasons = Vec::new();
     let mut view = HistoryCandidate {
@@ -194,14 +195,15 @@ pub(super) fn assess(
         .unwrap_or_default();
     let group_count = part["groupCount"].as_u64().unwrap_or(0);
     view.group_count = group_count;
-    let frames = part["frames"].as_array().cloned().unwrap_or_default();
+    let frames = part["frames"].as_array().map_or(&[][..], Vec::as_slice);
     let mut saved = vec![BTreeSet::new(); cameras.len()];
     let mut history_frames = Vec::new();
     let mut baselines: Vec<Option<u64>> = vec![None; cameras.len()];
-    let mut stamps: Vec<Vec<i64>> = vec![Vec::new(); cameras.len()];
+    let mut stamps: Vec<Option<(usize, i64, i64)>> = vec![None; cameras.len()];
+    let mut expected_file = String::new();
     let (mut unsaved, mut manual, mut misnamed, mut counter_gap) =
         (0usize, false, false, BTreeSet::new());
-    for frame in &frames {
+    for frame in frames {
         let camera = frame["camera"]
             .as_u64()
             .and_then(|c| usize::try_from(c).ok())
@@ -215,8 +217,12 @@ pub(super) fn assess(
             misnamed = true;
             continue;
         };
-        if let Some(ts) = frame["ts"].as_i64() {
-            stamps[camera].push(ts);
+        let timestamp = frame["ts"].as_i64();
+        if let Some(ts) = timestamp {
+            let (samples, first, last) = stamps[camera].get_or_insert((0, ts, ts));
+            *samples += 1;
+            *first = (*first).min(ts);
+            *last = (*last).max(ts);
         }
         if frame["available"].as_bool() != Some(true) {
             unsaved += 1;
@@ -224,9 +230,13 @@ pub(super) fn assess(
         }
         manual |= frame["manual"].as_bool() == Some(true);
         let file = frame["file"].as_str().unwrap_or_default();
-        if frame["cameraId"].as_str() != Some(cameras[camera].as_str())
-            || file != format!("{}_s{seq:06}.pgm", cameras[camera])
-        {
+        if frame["cameraId"].as_str() != Some(cameras[camera].as_str()) {
+            misnamed = true;
+            continue;
+        }
+        expected_file.clear();
+        write!(&mut expected_file, "{}_s{seq:06}.pgm", cameras[camera]).unwrap();
+        if file != expected_file {
             misnamed = true;
             continue;
         }
@@ -234,7 +244,7 @@ pub(super) fn assess(
         match counter.checked_sub(seq) {
             Some(base) if *baselines[camera].get_or_insert(base) == base => {}
             _ => {
-                counter_gap.insert(cameras[camera].clone());
+                counter_gap.insert(cameras[camera].as_str());
             }
         }
         if !saved[camera].insert(seq) {
@@ -251,15 +261,17 @@ pub(super) fn assess(
             misnamed = true;
             continue;
         };
-        history_frames.push(HistoryFrame {
-            camera,
-            seq,
-            frame_counter: counter,
-            width,
-            height,
-            ts: frame["ts"].as_i64().unwrap_or(summary.ts),
-            source: dir.join(file),
-        });
+        if prepare_import {
+            history_frames.push(HistoryFrame {
+                camera,
+                seq,
+                frame_counter: counter,
+                width,
+                height,
+                ts: timestamp.unwrap_or(summary.ts),
+                source: dir.join(file),
+            });
+        }
     }
     view.cameras = cameras
         .iter()
@@ -269,20 +281,15 @@ pub(super) fn assess(
             frames: frame_count(seqs.len()),
         })
         .collect();
-    let spans: Vec<(usize, i64)> = stamps
-        .iter()
-        .filter_map(|s| {
-            let span = s.iter().max()? - s.iter().min()?;
-            (span > 0).then_some((s.len(), span))
-        })
-        .collect();
-    view.duration_ms = spans.iter().map(|&(_, span)| span as u64).max();
-    view.measured_fps = median(
-        spans
-            .iter()
-            .map(|&(n, span)| (n - 1) as f64 * 1000.0 / span as f64)
-            .collect(),
-    );
+    let mut rates = Vec::with_capacity(stamps.len());
+    for (samples, first, last) in stamps.into_iter().flatten() {
+        let span = last.abs_diff(first);
+        if span > 0 {
+            view.duration_ms = Some(view.duration_ms.unwrap_or(0).max(span));
+            rates.push((samples - 1) as f64 * 1000.0 / span as f64);
+        }
+    }
+    view.measured_fps = median(rates);
     let missing = part["missingFrames"].as_array().map_or(0, Vec::len);
     let dropped = part["rawDropped"].as_array().map_or(0, Vec::len);
     let absent =
@@ -364,20 +371,21 @@ pub(super) fn assess(
             view.warnings
                 .push(format!("录制时相机 {camera_id} 的设备配置与当前不同"));
         }
-        let mut imaging = serde_json::from_value::<CameraImaging>(device["imaging"].clone()).ok();
+        let imaging = serde_json::from_value::<CameraImaging>(device["imaging"].clone());
         let session = device["deviceSession"].as_u64().filter(|&s| s > 0);
-        let same_session = session.is_some()
-            && frames
+        let (Ok(mut imaging), Some(device_session)) = (imaging, session) else {
+            reasons.push(format!("相机 {camera_id} 缺曝光增益或设备会话记录"));
+            continue;
+        };
+        if prepare_import {
+            let same_session = frames
                 .iter()
                 .filter(|f| f["cameraId"].as_str() == Some(camera_id))
                 .all(|f| f["session"].as_u64() == session);
-        if !same_session {
-            if let Some(i) = imaging.as_mut() {
-                i.white_balance = None;
+            if !same_session {
+                imaging.white_balance = None;
             }
-        }
-        match (imaging, session) {
-            (Some(imaging), Some(device_session)) => capture_cameras.push(CaptureCamera {
+            capture_cameras.push(CaptureCamera {
                 camera_id: camera_id.clone(),
                 camera_config: config.clone(),
                 synthetic_capture: crate::frame::MixCapture::recorded(device)
@@ -385,12 +393,11 @@ pub(super) fn assess(
                 imaging,
                 device_session,
                 received_count: 0,
-            }),
-            _ => reasons.push(format!("相机 {camera_id} 缺曝光增益或设备会话记录")),
+            });
         }
     }
     let blocked = reasons.len() > usize::from(view.imported_round.is_some());
-    let round = (!blocked).then(|| HistoryRound {
+    let round = (prepare_import && !blocked).then(|| HistoryRound {
         recipe_id: doc.id.clone(),
         origin: RoundOrigin::History {
             cycle_id: cycle_id.to_string(),
@@ -501,6 +508,7 @@ fn assess_parts(
     app: &AppHandle,
     w: &Workspace,
     parts: &[(PartSummary, RecordingEvidence)],
+    prepare_import: bool,
 ) -> Result<Vec<Assessed>, String> {
     let doc = &w.doc;
     if !doc.is_burst() {
@@ -510,6 +518,7 @@ fn assess_parts(
     let current = current_configs(&cycle);
     let imported = imported_cycles(cycle.camera.recipe_capture(), &doc.id)?;
     let data = crate::storage::root(app);
+    let mut roots = crate::project::records::RecordRoots::new(&data);
     let mut assessed: Vec<Assessed> = parts
         .iter()
         .map(|(summary, recording)| {
@@ -519,12 +528,10 @@ fn assess_parts(
                 &imported,
                 summary,
                 recording,
-                crate::project::records::record_root_of(
-                    &data,
-                    &summary.project_id,
-                    recording.directory.as_deref(),
-                )
-                .and_then(|root| read_part(&root, recording)),
+                roots
+                    .resolve(&summary.project_id, recording.directory.as_deref())
+                    .and_then(|root| read_part(root, recording)),
+                prepare_import,
             )
         })
         .collect();
@@ -560,7 +567,7 @@ pub async fn workspace_history_candidates(
         let (total, parts) = app
             .state::<Store>()
             .recorded_parts(&history_query(&app, &w.doc, &query))?;
-        let mut assessed = assess_parts(&app, &w, &parts)?;
+        let mut assessed = assess_parts(&app, &w, &parts, false)?;
         flag_short_parts(&mut assessed);
         Ok(CandidatePage {
             total,
@@ -611,14 +618,13 @@ fn import(
     let parts = picks
         .iter()
         .map(|pick| {
-            let detail = store
-                .detail(pick.record_id)
-                .map_err(|_| format!("记录 {} 不存在", pick.record_id))?;
-            Ok((detail.summary, detail.recording))
+            store
+                .history_import_record(pick.record_id)
+                .map_err(|_| format!("记录 {} 不存在", pick.record_id))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let mut rounds = Vec::with_capacity(picks.len());
-    for (pick, entry) in picks.iter().zip(assess_parts(app, w, &parts)?) {
+    for (pick, entry) in picks.iter().zip(assess_parts(app, w, &parts, true)?) {
         let round = entry
             .round
             .filter(|_| entry.view.reasons.is_empty())

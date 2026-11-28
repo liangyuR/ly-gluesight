@@ -1,11 +1,10 @@
+import { createFrameReadQueue, frameReadAbortError } from "../../lib/frameReadQueue";
 import type { FrameImage } from "./types";
 
 const budget = 24 * 1024 * 1024;
 const entries = new Map<string, { image: FrameImage; size: number; expires: number }>();
 let used = 0;
-let active = 0;
-const queue: (() => void)[] = [];
-const aborted = () => new DOMException("图像请求已取消", "AbortError");
+export const scheduleFrameRead = createFrameReadQueue(2);
 
 function remember(key: string, image: FrameImage) {
   const size = image.pixels?.data.byteLength ?? image.url.length * 2;
@@ -20,7 +19,7 @@ function remember(key: string, image: FrameImage) {
 }
 
 export function loadPreview(key: string, read: () => Promise<FrameImage>, signal?: AbortSignal): Promise<FrameImage> {
-  if (signal?.aborted) return Promise.reject(aborted());
+  if (signal?.aborted) return Promise.reject(frameReadAbortError());
   const cached = entries.get(key);
   if (cached) {
     entries.delete(key);
@@ -32,26 +31,4 @@ export function loadPreview(key: string, read: () => Promise<FrameImage>, signal
     remember(key, image);
     return image;
   }, signal);
-}
-
-export function scheduleFrameRead<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (signal?.aborted) return Promise.reject(aborted());
-  return new Promise((resolve, reject) => {
-    const cancel = () => {
-      const index = queue.indexOf(start);
-      if (index >= 0) queue.splice(index, 1);
-      reject(aborted());
-    };
-    const start = () => {
-      if (signal?.aborted) { cancel(); return; }
-      active++;
-      void Promise.resolve().then(read).then(value => { if (!signal?.aborted) resolve(value); }, reject).finally(() => {
-        signal?.removeEventListener("abort", cancel);
-        active--;
-        while (active < 2 && queue.length) queue.shift()!();
-      });
-    };
-    signal?.addEventListener("abort", cancel, { once: true });
-    if (active < 2) start(); else queue.push(start);
-  });
 }

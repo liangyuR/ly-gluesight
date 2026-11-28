@@ -1,33 +1,32 @@
 use std::collections::HashMap;
+use std::fs::{self, File};
 use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 
-use chrono::{Local, TimeZone};
+use chrono::{Local, NaiveDate, TimeZone};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::burst_judge::{self, BurstJudgement, Flags, FrameState};
 use crate::cycle::CycleHost;
-use crate::frame_group::FrameGroup;
+use crate::frame_group::GroupCoverage;
 use crate::judge::Verdict;
+use crate::operation::Operation;
 use crate::plan::{PathSegment, SegmentKind, WidthCheck};
 use crate::recipe::Recipe;
 use crate::segmentation::RegionKind;
 use crate::store::{
-    same_measurement_layout, FrameRecord, HistoryPage, HistoryQuery, HistoryScope, PartDetail,
-    PartSummary, Store, StoredMeasurement,
+    same_measurement_layout, FrameRecord, HistoryPage, HistoryQuery, PartDetail, PartSummary,
+    RejudgeSelection, Store, StoredMeasurement,
 };
 
-pub fn local_midnight_ms() -> i64 {
-    let today = Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
+pub fn local_midnight_ms(day: NaiveDate) -> i64 {
+    let midnight = day.and_hms_opt(0, 0, 0).unwrap();
     Local
-        .from_local_datetime(&today)
+        .from_local_datetime(&midnight)
         .earliest()
         .map_or(0, |t| t.timestamp_millis())
-}
-
-pub fn local_day() -> i64 {
-    Local::now().date_naive().to_epoch_days() as i64
 }
 
 pub(crate) fn format_ts(ts: i64) -> String {
@@ -105,6 +104,13 @@ pub async fn history_overview(app: AppHandle, id: i64) -> Result<PartDetail, Str
 }
 
 #[tauri::command]
+pub async fn history_id_by_cycle(app: AppHandle, cycle_id: String) -> Result<Option<i64>, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Store>().id_by_cycle(&cycle_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub async fn history_frame_detail(
     app: AppHandle,
     id: i64,
@@ -122,7 +128,7 @@ pub struct Neighbors {
     pub newer: Option<i64>,
 }
 
-/// 逐件回看：按历史列表当时的筛选找前后一件；没有筛选时只在本件所属的真机 / 离线 / 调试范围内找。
+/// 逐件回看：按历史列表当时的筛选查找；没有筛选时查本机全部真机记录。
 #[tauri::command]
 pub async fn history_neighbors(
     app: AppHandle,
@@ -130,15 +136,9 @@ pub async fn history_neighbors(
     query: Option<HistoryQuery>,
 ) -> Result<Neighbors, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let store = app.state::<Store>();
-        let query = match query {
-            Some(query) => query,
-            None => HistoryQuery {
-                scope: HistoryScope::of(store.detail(id)?.summary.source),
-                ..HistoryQuery::default()
-            },
-        };
-        let (older, newer) = store.neighbors(&query, id)?;
+        let (older, newer) = app
+            .state::<Store>()
+            .neighbors(&query.unwrap_or_default(), id)?;
         Ok(Neighbors { older, newer })
     })
     .await
@@ -285,26 +285,47 @@ const REJUDGE_LIMIT: usize = 5000;
 pub async fn history_rejudge(
     app: AppHandle,
     request: RejudgeRequest,
+    task_id: Option<String>,
 ) -> Result<RejudgeResult, String> {
+    let operation = task_id
+        .map(|id| Operation::start(&app, Some(id)))
+        .transpose()?;
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
         let cycle = app.state::<CycleHost>();
-        let rows = store.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
-        rejudge_rows(
-            rows,
-            &request,
-            store.project(),
-            |project, revision_id| {
-                store
-                    .recipe_snapshot(project, revision_id)
-                    .map(|r| r.map(Arc::new))
-            },
-            |id| cycle.recipe(id),
-            |id| store.burst_frames(id),
-        )
+        let run = |operation: Option<&Operation>| {
+            rejudge_history(&store, &request, |id| cycle.recipe(id), operation)
+        };
+        match operation {
+            Some(operation) => operation.run(|operation| run(Some(operation))),
+            None => run(None),
+        }
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+pub(crate) fn rejudge_history(
+    store: &Store,
+    request: &RejudgeRequest,
+    current: impl FnMut(&str) -> Option<Arc<Recipe>>,
+    operation: Option<&Operation>,
+) -> Result<RejudgeResult, String> {
+    let reader = store.rejudge_reader()?;
+    let rows = reader.measurements(&request.query, &request.ids, REJUDGE_LIMIT)?;
+    rejudge_rows(
+        rows,
+        request,
+        store.project(),
+        |project, revision_id| {
+            reader
+                .recipe_snapshot(project, revision_id)
+                .map(|r| r.map(Arc::new))
+        },
+        current,
+        |id| reader.burst_frames(id),
+        operation,
+    )
 }
 
 fn cached_recipe(
@@ -320,25 +341,24 @@ fn cached_recipe(
     Ok(value)
 }
 
-/// 段配方记录的帧组按帧记录还原（与 Grouper 同一口径）：到了的帧（不论测没测成）算 present，缺帧不算。
-fn frame_groups(frames: &[FrameRecord], cameras: usize) -> Vec<FrameGroup> {
-    let total = frames.iter().map(|frame| frame.seq).max().unwrap_or(0);
-    (1..=total)
-        .map(|seq| {
-            let present: Vec<bool> = (0..cameras)
-                .map(|camera| {
-                    frames.iter().any(|f| {
-                        f.camera == camera && f.seq == seq && f.status != FrameState::Missing
-                    })
-                })
-                .collect();
-            FrameGroup {
-                seq,
-                incomplete: present.contains(&false),
-                present,
-            }
-        })
-        .collect()
+/// 帧表主键保证每件内的相机和序号组合唯一。显式缺帧行计入帧组上限，但不计入该组到达数。
+fn stored_frame_coverage(
+    frames: &[FrameRecord],
+    cameras: usize,
+) -> GroupCoverage<impl Iterator<Item = u64>> {
+    let mut group_count = 0;
+    let mut arrived_by_seq = HashMap::new();
+    for frame in frames {
+        group_count = group_count.max(frame.seq);
+        if frame.camera < cameras && frame.status != FrameState::Missing {
+            *arrived_by_seq.entry(frame.seq).or_insert(0) += 1;
+        }
+    }
+    GroupCoverage {
+        group_count,
+        incomplete_seqs: (1..=group_count)
+            .filter(move |seq| arrived_by_seq.get(seq).copied().unwrap_or(0) < cameras),
+    }
 }
 
 /// 段配方记录的区域都落在原配方的段内、帧都属于原配方的计划相机；否则存储与原配方布局不一致。
@@ -381,16 +401,13 @@ fn rejudge_burst(
         .iter()
         .map(|result| result.region.clone())
         .collect();
-    let metrics: Vec<_> = frames
-        .iter()
-        .filter_map(|frame| frame.metrics.clone())
-        .collect();
+    let metrics = frames.iter().filter_map(|frame| frame.metrics.as_deref());
     burst_judge::judge(
         &segments,
         recipe.expected_total(),
         &regions,
-        &frame_groups(frames, cameras.len()),
-        &metrics,
+        stored_frame_coverage(frames, cameras.len()),
+        metrics,
         &cameras,
         &judgement.alarms,
         recipe.pass_rules(&judgement.passes),
@@ -398,21 +415,33 @@ fn rejudge_burst(
 }
 
 fn rejudge_rows(
-    rows: Vec<StoredMeasurement>,
+    RejudgeSelection {
+        mut rows,
+        limit_hit,
+    }: RejudgeSelection<impl ExactSizeIterator<Item = Result<StoredMeasurement, String>>>,
     request: &RejudgeRequest,
     current_project: &str,
     mut snapshot: impl FnMut(&str, &str) -> Result<Option<Arc<Recipe>>, String>,
     mut current: impl FnMut(&str) -> Option<Arc<Recipe>>,
     mut burst_frames: impl FnMut(i64) -> Result<Vec<FrameRecord>, String>,
+    operation: Option<&Operation>,
 ) -> Result<RejudgeResult, String> {
-    let limit_hit = rows.len() > REJUDGE_LIMIT;
+    let total_candidates = rows.len();
+    if let Some(operation) = operation {
+        operation.rejudging(total_candidates)?;
+    }
     let mut originals = HashMap::new();
     let mut candidates = HashMap::new();
+    let mut compatible_layouts = HashMap::new();
     let mut matrix: HashMap<(Verdict, Verdict), u64> = HashMap::new();
     let mut changes = Vec::new();
     let mut skip_reasons = Vec::new();
     let (mut total, mut skipped) = (0, 0);
-    for row in rows.into_iter().take(REJUDGE_LIMIT) {
+    for _ in 0..total_candidates {
+        if let Some(operation) = operation {
+            operation.check()?;
+        }
+        let row = rows.next().expect("候选迭代器长度不足")?;
         let mut skip = |kind: SkipKind| {
             skipped += 1;
             if skip_reasons.len() < 300 {
@@ -424,17 +453,26 @@ fn rejudge_rows(
                     reason: kind.reason().into(),
                 });
             }
+            operation.map_or(Ok(()), |operation| operation.advance_record(true))
         };
         if row.verdict == Verdict::ErrInspect {
-            skip(SkipKind::ErrResult);
+            skip(SkipKind::ErrResult)?;
             continue;
         }
         let Some(burst) = &row.burst else {
-            skip(SkipKind::NoTable);
+            skip(SkipKind::NoTable)?;
             continue;
         };
+        if burst
+            .regions
+            .iter()
+            .any(|result| !result.region.has_ordered_frame_range())
+        {
+            skip(SkipKind::LayoutMismatch)?;
+            continue;
+        }
         let Some(revision_id) = row.recipe_revision.as_deref() else {
-            skip(SkipKind::NoRevision);
+            skip(SkipKind::NoRevision)?;
             continue;
         };
         let key = format!("{}/{revision_id}", row.project_id);
@@ -442,34 +480,37 @@ fn rejudge_rows(
             snapshot(&row.project_id, revision_id)
         })?
         else {
-            skip(SkipKind::SnapshotMissing);
+            skip(SkipKind::SnapshotMissing)?;
             continue;
         };
         let frames = burst_frames(row.id)?;
         if frames.is_empty() {
-            skip(SkipKind::NoTable);
+            skip(SkipKind::NoTable)?;
             continue;
         }
         if row.recipe_id.as_deref() != Some(original.id.as_str())
             || revision_id != original.revision_id
             || !burst_layout_matches(&original, burst, &frames)
         {
-            skip(SkipKind::LayoutMismatch);
+            skip(SkipKind::LayoutMismatch)?;
             continue;
         }
         let recipe = if request.use_current_recipe {
             if row.project_id != current_project {
-                skip(SkipKind::OtherProject);
+                skip(SkipKind::OtherProject)?;
                 continue;
             }
             let Some(candidate) =
                 cached_recipe(&mut candidates, &original.id, || Ok(current(&original.id)))?
             else {
-                skip(SkipKind::NoCandidate);
+                skip(SkipKind::NoCandidate)?;
                 continue;
             };
-            if !same_measurement_layout(&original, &candidate) {
-                skip(SkipKind::LayoutChanged);
+            if !*compatible_layouts
+                .entry(key)
+                .or_insert_with(|| same_measurement_layout(&original, &candidate))
+            {
+                skip(SkipKind::LayoutChanged)?;
                 continue;
             }
             candidate
@@ -489,6 +530,9 @@ fn rejudge_rows(
                 reason: j.reason,
                 flags: Some(j.flags),
             });
+        }
+        if let Some(operation) = operation {
+            operation.advance_record(false)?;
         }
     }
     let mut matrix: Vec<_> = matrix
@@ -588,38 +632,42 @@ fn flag_labels(flags: &Flags) -> Vec<&'static str> {
 
 pub(crate) const CSV_HEADER: &str = "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明,预期帧组数(ΣN_exp),各相机帧数,deviceTriggers,标记,项目,人工 Tag\r\n";
 
+pub(crate) fn export_csv(store: &Store, query: &HistoryQuery, path: &Path) -> Result<(), String> {
+    let temporary = path.with_extension("csv.tmp");
+    let file = File::create_new(&temporary).map_err(|e| e.to_string())?;
+    let write = || {
+        let mut file = std::io::BufWriter::new(file);
+        file.write_all(CSV_HEADER.as_bytes())
+            .map_err(|e| e.to_string())?;
+        store.visit_history(query, |part| {
+            file.write_all(csv_row(&part).as_bytes())
+                .map_err(|e| e.to_string())
+        })?;
+        file.flush().map_err(|e| e.to_string())
+    };
+    let result = write().and_then(|()| {
+        if path.try_exists().map_err(|e| e.to_string())? {
+            return Err("检测记录导出文件已存在，请重试".into());
+        }
+        fs::rename(&temporary, path).map_err(|e| e.to_string())
+    });
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 /// 按筛选条件导出 CSV（带 BOM，Excel 可直接打开），返回文件路径。
 #[tauri::command]
 pub async fn history_export(app: AppHandle, query: HistoryQuery) -> Result<String, String> {
     let dir = crate::storage::root(&app).join("exports");
     tauri::async_runtime::spawn_blocking(move || {
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!(
             "检测记录_{}.csv",
-            Local::now().format("%Y%m%d_%H%M%S")
+            Local::now().format("%Y%m%d_%H%M%S_%3f")
         ));
-        let mut f =
-            std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
-        f.write_all(CSV_HEADER.as_bytes())
-            .map_err(|e| e.to_string())?;
-        let store = app.state::<Store>();
-        let mut q = HistoryQuery {
-            limit: 500,
-            offset: 0,
-            ..query
-        };
-        loop {
-            let page = store.query(&q)?;
-            for p in &page.items {
-                f.write_all(csv_row(p).as_bytes())
-                    .map_err(|e| e.to_string())?;
-            }
-            if page.items.len() < q.limit as usize {
-                break;
-            }
-            q.offset += q.limit;
-        }
-        f.flush().map_err(|e| e.to_string())?;
+        export_csv(&app.state::<Store>(), &query, &path)?;
         Ok(path.display().to_string())
     })
     .await

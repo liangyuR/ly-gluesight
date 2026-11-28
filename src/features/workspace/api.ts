@@ -5,7 +5,7 @@ import type { NavigationMapData } from "./navigation/types";
 import type { RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PassSkipSuggestView, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidatePage, HistoryCandidateQuery, PackageExported, PackageImported, PackagePreview, PassLink, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
+import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidatePage, HistoryCandidateQuery, PackageExported, PackageImported, PackageImportTarget, PackagePreview, PassLink, SegmentSaveImpact, WorkspaceCatalogEntry, WorkspaceDeleteTarget, WorkspaceView } from "./types";
 
 let liveSeq = 0;
 
@@ -25,14 +25,15 @@ export const workspaceApi = {
   navigationDelete: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_navigation_delete", { id, revision }),
   navigationImage: (id: string, imageId: string) => desktopCall<ArrayBuffer | number[]>("workspace_navigation_image", { id, imageId }),
   captureGet: (roundId?: string) => desktopCall<CaptureRoundV2 | null>("recipe_capture_get", { roundId }),
-  list: () => desktopCall<Workspace[]>("workspace_list"),
+  list: () => desktopCall<WorkspaceCatalogEntry[]>("workspace_catalog"),
+  candidateDoc: (id: string, instanceId: number, revision: number) => desktopCall<RecipeDoc>("workspace_candidate_doc", { id, instanceId, revision }),
   get: (id: string) => desktopCall<WorkspaceView>("workspace_get", { id }),
   create: (doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_create", { doc }),
-  remove: (id: string) => desktopCall<void>("workspace_delete", { id }),
-  saveDoc: (id: string, revision: number, doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_save_doc", { id, revision, doc }),
+  remove: (id: string, target: WorkspaceDeleteTarget) => desktopCall<void>("workspace_delete", { id, target }),
+  saveDoc: (id: string, revision: number, instanceId: number, doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_save_doc", { id, revision, instanceId, doc }),
   image: (id: string, imageId: string) => desktopCall<ArrayBuffer>("workspace_image", { id, imageId }).then(decodeFrameImage),
-  retryPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision }),
-  abandonPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision }),
+  retryPublish: (id: string, revision: number, instanceId: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision, instanceId }),
+  abandonPublish: (id: string, revision: number, instanceId: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision, instanceId }),
   /** 导入件（轮次）里某台相机第 seq 帧（帧组序号，从 1 起）的原图；缺帧时后端报错。 */
   captureFrameImage: (roundId: string, cameraId: string, seq: number, signal?: AbortSignal) => loadPreview(JSON.stringify(["capture", roundId, cameraId, seq]), () => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeFrameImage), signal),
   /** 历史件选择器与试测：按筛选条件分页列出真机录制件、能否选用与是否已被本候选使用（只读）；ownRecipe 只看当前项目本配方的 */
@@ -51,7 +52,7 @@ export const workspaceApi = {
   packageExport: (id: string, path: string, taskId: string) =>
     desktopCall<PackageExported>("workspace_package_export", { id, path, taskId }),
   packagePick: () => desktopCall<PackagePreview | null>("workspace_package_pick"),
-  packageImport: (path: string, taskId: string) => desktopCall<PackageImported>("workspace_package_import", { path, taskId }),
+  packageImport: (path: string, target: PackageImportTarget, taskId: string) => desktopCall<PackageImported>("workspace_package_import", { path, target, taskId }),
   /** 导入件一台相机指定范围的缩略图，startSeq 从 1 起，count 不超过 32。 */
   captureRoundThumbs: (roundId: string, cameraId: string, startSeq: number, count: number) => desktopCall<ArrayBuffer>("recipe_capture_round_thumbs", { roundId, cameraId, startSeq, count }).then(decodeThumbStrip),
   /** 工作台一次保存：段列表 + 示教件边界（确认） */
@@ -60,13 +61,13 @@ export const workspaceApi = {
   /** 工作台保存前预演（只读）：会清掉哪些走廊、保存后哪些段缺走廊 */
   segmentTemplatePreview: (id: string, revision: number, segments: PathSegment[], cuts: number[]) =>
     desktopCall<SegmentSaveImpact>("workspace_segment_template_preview", { id, revision, segments, cuts }),
-  publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
+  publish: (id: string, revision: number, instanceId: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision, instanceId }),
   /** 采集版检查：计划相机、相机组、曝光与增益、PLC 型号、段、生产版本；不改候选 */
-  collectChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_collect_checks", { id, revision }),
+  collectChecks: (id: string, revision: number, instanceId: number) => desktopCall<Check[]>("workspace_collect_checks", { id, revision, instanceId }),
   /** 发布生产配方前检查（设备、走廊示教、段标定、标定采集参数、x_ref、生产版本），当场核对，不改候选（D-SB-46） */
-  publishChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_publish_checks", { id, revision }),
+  publishChecks: (id: string, revision: number, instanceId: number) => desktopCall<Check[]>("workspace_publish_checks", { id, revision, instanceId }),
   /** 发布采集版（只供维护模式采图，不判定），在工件边界生效 */
-  publishCollect: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish_collect", { id, revision }),
+  publishCollect: (id: string, revision: number, instanceId: number) => desktopCall<WorkspaceView>("workspace_publish_collect", { id, revision, instanceId }),
   compare: (id: string, revision: number, historyId: number, raw: boolean, taskId?: string) =>
     desktopCall<Comparison>("workspace_compare", { id, revision, historyId, raw, taskId }),
   compareOriginal: (historyId: number, taskId?: string) => desktopCall<Comparison>("workspace_compare_original", { historyId, taskId }),
@@ -77,11 +78,11 @@ export const workspaceApi = {
   historyFrameView: (historyId: number, camera: number, seq: number, signal?: AbortSignal) => scheduleFrameRead(() => desktopCall<CalibrationFrameView>("workspace_history_frame_view", { historyId, camera, seq }), signal),
   /** candidate 不给时用记录所属配方的候选 */
   historyCompareOptions: (historyId: number, candidate: string | null = null) => desktopCall<CompareOptions>("workspace_history_compare_options", { historyId, candidate }),
-  stationCapture: (cam:number,view=1)=>desktopCall<FrozenImage>("workspace_station_capture",{cam,view}),
-  stationImport: (cam:number,bytes:number[],view=1)=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes,view}),
+  stationCapture: (cam:number,id:string,view=1)=>desktopCall<FrozenImage>("workspace_station_capture",{cam,id,view}),
+  stationImport: (cam:number,id:string,bytes:number[],view=1)=>desktopCall<FrozenImage>("workspace_station_import",{cam,id,bytes,view}),
   /** 当前标定所用原图载入为冻结样本；没有可载入的原图为 null */
-  stationRestore: (cam:number,view=1)=>desktopCall<FrozenImage|null>("workspace_station_restore",{cam,view}),
-  stationImage: (cam:number,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId,view}).then(decodeFrameImage),
+  stationRestore: (cam:number,id:string,view=1)=>desktopCall<FrozenImage|null>("workspace_station_restore",{cam,id,view}),
+  stationImage: (cam:number,id:string,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,id,imageId,view}).then(decodeFrameImage),
 
   // ───── 段配方（分段连拍飞拍）：命令与参数见 docs/decisions/segment-burst.md 5.4，结果都在 WorkspaceView.plan ─────
   /** 在这台相机某段冻结的示教帧 imageId 上按选区提取走廊 */

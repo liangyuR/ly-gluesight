@@ -53,9 +53,19 @@ pub fn record_root_of(
     project: &str,
     directory: Option<&str>,
 ) -> Result<PathBuf, String> {
-    let directory = Path::new(directory.ok_or("这条记录没有录制目录，原图未录制或已清理")?);
-    let root = record_roots(data, project)?
-        .into_iter()
+    let directory = recording_dir(directory)?;
+    record_root_from_roots(&record_roots(data, project)?, directory).map(Path::to_path_buf)
+}
+
+fn recording_dir(directory: Option<&str>) -> Result<&Path, String> {
+    directory
+        .map(Path::new)
+        .ok_or_else(|| "这条记录没有录制目录，原图未录制或已清理".into())
+}
+
+fn record_root_from_roots<'a>(roots: &'a [PathBuf], directory: &Path) -> Result<&'a Path, String> {
+    let root = roots
+        .iter()
         .find(|root| crate::log_storage::within(root, directory))
         .ok_or_else(|| {
             format!(
@@ -70,6 +80,33 @@ pub fn record_root_of(
         ));
     }
     Ok(root)
+}
+
+pub(crate) struct RecordRoots<'a> {
+    data: &'a Path,
+    projects: BTreeMap<String, Result<Vec<PathBuf>, String>>,
+}
+
+impl<'a> RecordRoots<'a> {
+    pub(crate) fn new(data: &'a Path) -> Self {
+        Self {
+            data,
+            projects: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn resolve(
+        &mut self,
+        project: &str,
+        directory: Option<&str>,
+    ) -> Result<&Path, String> {
+        let directory = recording_dir(directory)?;
+        let roots = self
+            .projects
+            .entry(project.to_owned())
+            .or_insert_with(|| record_roots(self.data, project));
+        record_root_from_roots(roots.as_deref().map_err(String::clone)?, directory)
+    }
 }
 
 /// 本机各项目采集轮次（示教件、标定件）引用的历史件 cycleId：这些记录与录制不参与按天清理与录制滚动清理，也不能手动删除；

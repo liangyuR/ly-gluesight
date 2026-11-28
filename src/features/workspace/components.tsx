@@ -1,5 +1,5 @@
 import type { BrushGuide, ImagePoint } from "./teachingPath";
-import { cloneElement, createContext, useContext, useEffect, useId, useRef, useState, type PointerEvent, type ReactElement, type ReactNode } from "react";
+import { cloneElement, createContext, memo, useContext, useEffect, useId, useMemo, useRef, useState, type PointerEvent, type ReactElement, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Camera, Minus, Plus, RotateCcw } from "lucide-react";
 import { Alert, Button, Card, Chip, EmptyState, IconButton, NumberField as SteelNumberField, StatusBadge, Tooltip } from "qing-steel";
@@ -11,7 +11,7 @@ import type { FrameImage, FramePixels } from "./types";
 import { fillRgba } from "../../lib/frame";
 import { errorText } from "../../lib/errors";
 import { PlanSteps } from "./PlanSteps";
-import { searchBand } from "./searchBand";
+import { prepareSearchBand, searchBand } from "./searchBand";
 import { useRecipeHref } from "./recipeRoutes";
 import { fanRadii, guideRadii, HEADING_MARK, rayEnd, wedgePath, type HeadingGuide, type HeadingPart } from "./headingOverlay";
 import ContextHelp from "../cycle/components/ContextHelp";
@@ -102,6 +102,44 @@ export interface ImageOverlay {
   selected?: number | null;
   /** 逐帧定向叠加（走廊示教页，开启定向的段） */
   heading?: HeadingGuide | null;
+}
+
+const EMPTY_PATH: ImagePoint[] = [];
+const HANDLE_BLOCK_SIZE = 128;
+
+function pathHandle([x, y]: ImagePoint, index: number, radius: number, selected: number | null | undefined) {
+  return <circle key={"v" + index} data-vertex={index} aria-label={"中线点 " + (index + 1)} cx={x} cy={y} r={radius}
+    fill={selected === index ? "var(--ov-line)" : "var(--ov-halo)"} fillOpacity={.85}
+    stroke={index === 0 ? "var(--ov-ok)" : "var(--ov-line)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />;
+}
+
+const PathHandleBlock = memo(function PathHandleBlock({ path, start, end, radius, selected }: {
+  path: ImagePoint[]; start: number; end: number; radius: number; selected: number | null;
+}) {
+  return path.slice(start, end).map((point, index) => pathHandle(point, start + index, radius, selected));
+}, (previous, next) => {
+  if (previous.start !== next.start || previous.end !== next.end
+    || previous.radius !== next.radius || previous.selected !== next.selected) return false;
+  for (let index = next.start; index < next.end; index++) {
+    const a = previous.path[index], b = next.path[index];
+    if (a !== b && (a[0] !== b[0] || a[1] !== b[1])) return false;
+  }
+  return true;
+});
+
+function pathHandles(path: ImagePoint[], radius: number, selected: number | null | undefined, all: boolean) {
+  if (path.length <= 24) return path.map((point, index) => pathHandle(point, index, radius, selected));
+  if (!all) {
+    const last = path.length - 1;
+    const indices = selected != null && Number.isInteger(selected) && selected > 0 && selected < last ? [0, selected, last] : [0, last];
+    return indices.map(index => pathHandle(path[index], index, radius, selected));
+  }
+  return Array.from({ length: Math.ceil(path.length / HANDLE_BLOCK_SIZE) }, (_, block) => {
+    const start = block * HANDLE_BLOCK_SIZE;
+    const end = Math.min(path.length, start + HANDLE_BLOCK_SIZE);
+    const active = selected != null && selected >= start && selected < end ? selected : null;
+    return <PathHandleBlock key={start} path={path} start={start} end={end} radius={radius} selected={active} />;
+  });
 }
 
 /** 定向叠加；`turnable` 时扇区中线上是可拖动的把手（没拖过时脉冲提示，拖动中显示方向角度）。 */
@@ -270,7 +308,7 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
     const round = (v: number, max: number) => Math.round(Math.min(max, Math.max(0, v)) * 10) / 10;
     return [round(p.x, image.width), round(p.y, image.height)];
   };
-  const brushPoint = (e: PointerEvent<SVGSVGElement>, inverse: DOMMatrix): ImagePoint | null => {
+  const pixelPoint = (e: PointerEvent<SVGSVGElement>, inverse?: DOMMatrix): ImagePoint | null => {
     const p = point(e, inverse);
     return p && image ? [Math.min(p[0], image.width - 1), Math.min(p[1], image.height - 1)] : null;
   };
@@ -278,11 +316,15 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
   const handle = screenPx(7);
   const editing = !!onEdit && shown && !editDisabled;
   const turnable = !!onSectorTurn && !editDisabled && headingShown && !!overlay?.heading?.sector;
-  const path = overlay?.path ?? [];
-  const band = searchBand(path, overlay?.searchHalfPx);
+  const path = overlay?.path ?? EMPTY_PATH;
+  const searchHalf = overlay?.searchHalfPx;
+  const bandPath = useMemo(() => prepareSearchBand(path, searchHalf), [path, searchHalf]);
+  const showBand = bandShown && !!image;
+  const band = useMemo(() => bandPath && showBand ? searchBand(bandPath) : null, [bandPath, showBand]);
+  const pathPoints = useMemo(() => shown && path.length >= 2 ? path.map(point => point.join(",")).join(" ") : "", [path, shown]);
   const hint = error || emptyHint;
   const footer = controlsAt === "footer";
-  const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{!!marks?.length && <Chip selected={marksShown} onClick={() => setMarksShown(v => !v)}>角点</Chip>}{band && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{overlay?.heading && <Chip selected={headingShown} onClick={() => setHeadingShown(v => !v)}>定向</Chip>}{!!overlay?.partEdges?.length && <Chip selected={partEdgesShown} onClick={() => setPartEdgesShown(v => !v)}>胶边距</Chip>}{overlay?.mixEvidence?.observation && <Chip selected={mixShown} onClick={() => setMixShown(v => !v)}>混胶色差</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
+  const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{!!marks?.length && <Chip selected={marksShown} onClick={() => setMarksShown(v => !v)}>角点</Chip>}{bandPath && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{overlay?.heading && <Chip selected={headingShown} onClick={() => setHeadingShown(v => !v)}>定向</Chip>}{!!overlay?.partEdges?.length && <Chip selected={partEdgesShown} onClick={() => setPartEdgesShown(v => !v)}>胶边距</Chip>}{overlay?.mixEvidence?.observation && <Chip selected={mixShown} onClick={() => setMixShown(v => !v)}>混胶色差</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
   return <div className={"wp-viewport" + (footer ? " wp-viewport-footer" : "")}>{footer ? tools && <div className="wp-image-tools">{tools}</div> : <div className="wp-image-tools">{tools ?? <span>{caption ?? label}</span>}{controls}</div>}{subtools}
     <div className={footer ? "wp-image-stage" : "wp-image-stage-plain"}>{!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "暂无图像"}</strong>{hint && <span>{hint}</span>}</div> :
       <svg ref={svg} role="img" tabIndex={0} style={{ aspectRatio: `${image.width} / ${image.height}` }} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
@@ -307,7 +349,7 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
         e.currentTarget.focus({ preventScroll: true });
         if (onBrush && !editDisabled) {
           const inverse = group.current?.getScreenCTM()?.inverse();
-          const p = inverse ? brushPoint(e, inverse) : null;
+          const p = inverse ? pixelPoint(e, inverse) : null;
           if (p && inverse) { brushStroke.current = { points: [p], inverse, pointerId: e.pointerId }; onBrush([p]); e.currentTarget.setPointerCapture?.(e.pointerId); }
           return;
         }
@@ -317,10 +359,10 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
           if (turning.current) { setTurningNow(true); e.currentTarget.setPointerCapture?.(e.pointerId); }
           return;
         }
-        if (onPoint) { if (!editDisabled) { const p = point(e); if (p) onPoint(p); } return; }
+        if (onPoint) { if (!editDisabled) { const p = pixelPoint(e); if (p) onPoint(p); } return; }
         if (!editing || !onEdit) return;
         const inverse = group.current?.getScreenCTM()?.inverse();
-        const p = inverse ? point(e, inverse) : null;
+        const p = inverse ? pixelPoint(e, inverse) : null;
         if (!p || !inverse) return;
         const vertex = (e.target as Element).closest?.("[data-vertex]")?.getAttribute("data-vertex");
         // 整次拖动使用按下时的图像坐标变换，提示文字改变页面布局也不影响
@@ -339,7 +381,7 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
         if (brushStroke.current && onBrush && !editDisabled) {
           const stroke = brushStroke.current;
           if (e.pointerId !== stroke.pointerId) return;
-          const p = brushPoint(e, stroke.inverse), last = stroke.points[stroke.points.length - 1];
+          const p = pixelPoint(e, stroke.inverse), last = stroke.points[stroke.points.length - 1];
           if (p && stroke.points.length < 4096 && Math.hypot(p[0] - last[0], p[1] - last[1]) >= 2) { stroke.points.push(p); onBrush([...stroke.points]); }
           return;
         }
@@ -351,14 +393,14 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
         if (onRegion && regionStart.current) { const p = point(e), a = regionStart.current; if (p) onRegion([Math.min(a[0],p[0]), Math.min(a[1],p[1]), Math.abs(p[0]-a[0]), Math.abs(p[1]-a[1])]); return; }
         const current = drag.current;
         if (!current || !onEdit || editDisabled) return;
-        const p = point(e, current.inverse);
+        const p = pixelPoint(e, current.inverse);
         if (p) onEdit.move(current.index, p);
       }} onPointerUp={() => { if (turning.current && turnDeg != null) onSectorTurn?.(turnDeg); stopGesture(); }} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
         <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}>{image.pixels ? <FrameCanvas image={image} pixels={image.pixels} /> : <image href={image.url} width={image.width} height={image.height} />}
-          {band && bandShown && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--ov-line)" opacity={.75}>
+          {band && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--ov-line)" opacity={.75}>
             <defs><clipPath id={bandClip}><rect width={image.width} height={image.height} /></clipPath></defs>
-            {[band.left, band.right].map((edge, i) => <polyline key={i} points={edge.map(p => p.join(",")).join(" ")} strokeWidth={1} strokeDasharray="5 5" vectorEffect="non-scaling-stroke" />)}
-            {band.bars.map(i => <line key={i} x1={band.left[i][0]} y1={band.left[i][1]} x2={band.right[i][0]} y2={band.right[i][1]} strokeWidth={1} strokeDasharray="2 6" vectorEffect="non-scaling-stroke" />)}
+            {[band.left, band.right].map((edge, i) => <polyline key={i} points={edge} strokeWidth={1} strokeDasharray="5 5" vectorEffect="non-scaling-stroke" />)}
+            {band.bars.map(([left, right], i) => <line key={i} x1={left[0]} y1={left[1]} x2={right[0]} y2={right[1]} strokeWidth={1} strokeDasharray="2 6" vectorEffect="non-scaling-stroke" />)}
           </g>}
           {brush && brush.points.length > 0 && <g aria-label="刷选胶路区域" pointerEvents="none">
             <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--ov-line)" strokeOpacity={.25} strokeWidth={brush.radiusPx * 2} strokeLinecap="round" strokeLinejoin="round" />
@@ -388,8 +430,8 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
             </g>)}
           </g>}
           {overlay && shown && <g aria-label="中线叠加">
-            {path.length >= 2 && ([["var(--ov-halo)", 4], ["var(--ov-line)", 2]] as const).map(([stroke, width]) => <polyline key={stroke} points={path.map(p => p.join(",")).join(" ")} fill="none" stroke={stroke} strokeWidth={width} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
-            {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--ov-line)" : "var(--ov-halo)"} fillOpacity={.85} stroke={i === 0 ? "var(--ov-ok)" : "var(--ov-line)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
+            {path.length >= 2 && ([["var(--ov-halo)", 4], ["var(--ov-line)", 2]] as const).map(([stroke, width]) => <polyline key={stroke} points={pathPoints} fill="none" stroke={stroke} strokeWidth={width} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
+            {onEdit && pathHandles(path, handle, overlay.selected, allHandles)}
             {overlay.segments && <g aria-label="测量横线" pointerEvents="none">
               {overlay.segments.map((segment, i) => <line key={i} x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={segment.width ?? 2} vectorEffect="non-scaling-stroke" />)}
             </g>}

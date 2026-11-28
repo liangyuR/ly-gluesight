@@ -5,13 +5,14 @@ use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{c_uint, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use ly_plc::now_ms;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::Sender;
+use tokio::sync::Notify;
 
 use crate::applog::throttle::{Tally, Throttle};
 use crate::applog::{events, Fields};
@@ -122,11 +123,6 @@ pub struct BurstRender {
     pub progress: f32,
     pub scenario: Scenario,
     pub seed: u64,
-}
-
-/// 内部合成夹具的取图依据。
-pub enum TriggerPayload {
-    Burst(BurstRender),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -404,21 +400,64 @@ struct Preview {
 /// 一台相机的缩略图：现成的，或海康彩色帧留着原始马赛克、读预览时才生成。
 #[derive(Default)]
 struct Previews {
+    revision: u64,
     ready: Vec<Preview>,
     /// 最近一帧彩色马赛克，还没生成缩略图
     pending: Option<BayerMosaic>,
+    lazy: Option<Arc<LazyPreview>>,
+}
+
+struct LazyPreview {
+    image: Arc<FrameImage>,
+    thumbnail: OnceLock<Preview>,
+}
+
+impl LazyPreview {
+    fn bytes(&self) -> Vec<u8> {
+        let image = &self.image;
+        self.thumbnail
+            .get_or_init(|| {
+                make_preview(
+                    &image.pixels,
+                    image.width as usize,
+                    image.height as usize,
+                    image.channels,
+                )
+            })
+            .bytes()
+    }
 }
 
 impl Previews {
     fn set(&mut self, ready: Vec<Preview>) {
         *self = Self {
+            revision: self.revision.wrapping_add(1),
             ready,
-            pending: None,
+            ..Self::default()
         };
+    }
+
+    fn defer_image(&mut self, image: Arc<FrameImage>) {
+        self.set(Vec::new());
+        if image.consistent() {
+            self.lazy = Some(Arc::new(LazyPreview {
+                image,
+                thumbnail: OnceLock::new(),
+            }));
+        }
+    }
+
+    fn defer_bayer(&mut self, mosaic: BayerMosaic) {
+        self.revision = self.revision.wrapping_add(1);
+        self.lazy = None;
+        self.pending = Some(mosaic);
     }
 
     /// 最近一帧的原图尺寸。
     fn full_size(&self) -> Option<(u32, u32)> {
+        if let Some(preview) = &self.lazy {
+            return Some((preview.image.width, preview.image.height));
+        }
         match &self.pending {
             Some(mosaic) => Some((mosaic.image.width, mosaic.image.height)),
             None => self.ready.first().map(|p| (p.full_width, p.full_height)),
@@ -431,13 +470,20 @@ fn make_preview(src: &[u8], w: usize, h: usize, channels: u8) -> Preview {
     let c = channels.max(1) as usize;
     let step = w.div_ceil(960).max(1);
     let (pw, ph) = (w / step, h / step);
-    let mut data = Vec::with_capacity(pw * ph * c);
-    for y in 0..ph {
-        let row = &src[y * step * w * c..];
-        for x in 0..pw {
-            data.extend_from_slice(&row[x * step * c..x * step * c + c]);
+    let data = match (step, c) {
+        (1, _) => src[..w * h * c].to_vec(),
+        (_, 1) => sample_preview::<1>(src, w, pw, ph, step),
+        (_, 3) => sample_preview::<3>(src, w, pw, ph, step),
+        _ => {
+            let mut data = Vec::with_capacity(pw * ph * c);
+            for row in src.chunks_exact(w * c).step_by(step).take(ph) {
+                for pixel in row.chunks_exact(c).step_by(step).take(pw) {
+                    data.extend_from_slice(pixel);
+                }
+            }
+            data
         }
-    }
+    };
     Preview {
         width: pw as u32,
         height: ph as u32,
@@ -447,6 +493,25 @@ fn make_preview(src: &[u8], w: usize, h: usize, channels: u8) -> Preview {
         data,
         charge: None,
     }
+}
+
+fn sample_preview<const C: usize>(
+    src: &[u8],
+    width: usize,
+    preview_width: usize,
+    preview_height: usize,
+    step: usize,
+) -> Vec<u8> {
+    let mut data = Vec::<[u8; C]>::with_capacity(preview_width * preview_height);
+    for row in src
+        .chunks_exact(width * C)
+        .step_by(step)
+        .take(preview_height)
+    {
+        let (pixels, _) = row.as_chunks::<C>();
+        data.extend(pixels.iter().step_by(step).take(preview_width).copied());
+    }
+    data.into_flattened()
 }
 
 impl Preview {
@@ -560,18 +625,20 @@ impl CapturedFrame {
 struct RigShared {
     app: AppHandle,
     tx: Sender<Frame>,
+    frame_events: Arc<Notify>,
     /// 需要整帧图像（图像测量或帧录制）；模拟测量时不必拷整帧
     capture: AtomicBool,
     recipe_capture: Arc<crate::recipe_capture::RecipeCaptureHost>,
     imaging: Mutex<BTreeMap<String, CameraImaging>>,
-    /// 各相机轮询到的 Line0 门控状态（`watch_gate`），收尾用
-    gate: Arc<crate::gate::Gate>,
 }
 
 /// 单台相机的交付通道，取图回调与模拟 / 样本集共用。
 struct Shared {
     cam: u8,
+    camera_id: String,
     rig: Arc<RigShared>,
+    gate: Arc<crate::gate::Gate>,
+    retired: AtomicBool,
     /// 取图回调的整帧缓冲，按 IMAGE_BUDGET_PER_CAMERA 封顶在途字节：灰度图、彩色帧的原始马赛克，
     /// 以及由马赛克按需生成的 RGB 与缩略图
     pool: FramePool,
@@ -582,7 +649,7 @@ struct Shared {
     budget_dropped: AtomicU64,
     /// 彩色模式（配置的 image_mode）：每帧留原始马赛克，RGB 在测量、预览要用时才去马赛克
     color: AtomicBool,
-    recent: Mutex<VecDeque<Instant>>,
+    recent: Mutex<RecentFrames>,
     preview: Mutex<Previews>,
     last_full: Mutex<Option<CapturedFrame>>,
     identity: Mutex<crate::shot_router::Ledgers>,
@@ -609,12 +676,103 @@ struct Shared {
     composite_layout: Mutex<Option<crate::recipe_capture::CompositeLayout>>,
 }
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CameraFrameEvent<'a> {
+    #[serde(flatten)]
+    frame: CameraFrameMetadata,
+    camera_id: &'a str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CameraFrameMetadata {
+    cam: u8,
+    session: u64,
+    counter: CounterSource,
+    frame_counter: u64,
+    trigger_counter: u64,
+    lost_packets: u32,
+    ts: i64,
+    dev_ts: Option<u64>,
+}
+
+impl From<&Frame> for CameraFrameMetadata {
+    fn from(frame: &Frame) -> Self {
+        Self {
+            cam: frame.cam,
+            session: frame.session,
+            counter: frame.counter,
+            frame_counter: frame.frame_counter,
+            trigger_counter: frame.trigger_counter,
+            lost_packets: frame.lost_packets,
+            ts: frame.ts,
+            dev_ts: frame.dev_ts,
+        }
+    }
+}
+
+#[derive(Default)]
+struct RecentFrames {
+    arrivals: VecDeque<Instant>,
+    pending: Option<CameraFrameMetadata>,
+    last_sent: Option<(u64, Instant)>,
+}
+
+const FRAME_EVENT_INTERVAL: Duration = Duration::from_millis(100);
+
+#[derive(Debug, PartialEq, Eq)]
+enum FrameEventPlan {
+    Empty,
+    Ready(CameraFrameMetadata),
+    Waiting(Instant),
+}
+
+impl RecentFrames {
+    fn remember(&mut self, frame: CameraFrameMetadata, session: u64) -> bool {
+        frame.session == session
+            && self
+                .pending
+                .replace(frame)
+                .is_none_or(|previous| previous.session != session)
+    }
+
+    fn take_ready(&mut self, session: u64, now: Instant) -> FrameEventPlan {
+        let Some(frame) = self.pending.filter(|frame| frame.session == session) else {
+            self.pending = None;
+            return FrameEventPlan::Empty;
+        };
+        if let Some((_, sent_at)) = self
+            .last_sent
+            .filter(|(sent_session, _)| *sent_session == session)
+        {
+            let deadline = sent_at + FRAME_EVENT_INTERVAL;
+            if now < deadline {
+                return FrameEventPlan::Waiting(deadline);
+            }
+        }
+        self.pending = None;
+        self.last_sent = Some((session, now));
+        FrameEventPlan::Ready(frame)
+    }
+}
+
 impl Shared {
+    fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::Acquire)
+    }
+
     fn capture(&self) -> bool {
         self.rig.capture.load(Ordering::Relaxed)
     }
 
-    /// 每帧都做缩略图：触发采集的帧少，示教裁模板用的就是显示的那帧。
+    fn update_preview(&self, session: u64, update: impl FnOnce(&mut Previews)) {
+        let mut previews = self.preview.lock().unwrap();
+        if !self.is_retired() && session == self.session.load(Ordering::SeqCst) {
+            update(&mut previews);
+        }
+    }
+
     fn set_previews(&self, session: u64, images: &[Arc<FrameImage>]) {
         if session != self.session.load(Ordering::SeqCst) {
             return;
@@ -631,14 +789,25 @@ impl Shared {
                 )
             })
             .collect();
-        self.preview.lock().unwrap().set(previews);
+        self.update_preview(session, |cache| cache.set(previews));
     }
 
     /// 预览命令的字节（见 `Preview::bytes`）：彩色帧的缩略图在这里（读预览的线程）由共享的 RGB 生成，
     /// 两次读之间到的帧不生成；记在相机池的预算上。
     fn preview_bytes(&self, index: usize) -> Vec<u8> {
-        let session = self.session.load(Ordering::SeqCst);
-        let pending = self.preview.lock().unwrap().pending.take();
+        let (session, revision, pending) = {
+            let mut previews = self.preview.lock().unwrap();
+            if let Some(lazy) = &previews.lazy {
+                let lazy = Arc::clone(lazy);
+                drop(previews);
+                return if index == 0 { lazy.bytes() } else { Vec::new() };
+            }
+            (
+                self.session.load(Ordering::SeqCst),
+                previews.revision,
+                previews.pending.take(),
+            )
+        };
         let made = pending.and_then(|mosaic| {
             let rgb = mosaic.rgb().ok()?;
             let mut preview = make_preview(
@@ -651,9 +820,15 @@ impl Shared {
             Some(preview)
         });
         let mut previews = self.preview.lock().unwrap();
+        if self.is_retired() || session != self.session.load(Ordering::SeqCst) {
+            return Vec::new();
+        }
         if let Some(preview) = made {
-            if session == self.session.load(Ordering::SeqCst) {
+            if revision == previews.revision {
                 previews.ready = vec![preview];
+            } else if index == 0 {
+                drop(previews);
+                return preview.bytes();
             }
         }
         previews
@@ -668,6 +843,7 @@ impl Shared {
     /// 要留整帧而图像内存预算已满时返回 Err，这一帧按缺帧处理；不留整帧时预算满只是没有缩略图。
     fn frame_image(
         &self,
+        session: u64,
         kind: PixelKind,
         w: u32,
         h: u32,
@@ -677,7 +853,7 @@ impl Shared {
         if self.color.load(Ordering::Relaxed) {
             return match color_mosaic(&self.pool, kind, w, h, data) {
                 Ok(mosaic) => {
-                    self.preview.lock().unwrap().pending = Some(mosaic.clone());
+                    self.update_preview(session, |previews| previews.defer_bayer(mosaic.clone()));
                     Ok((None, keep.then_some(mosaic)))
                 }
                 Err(GrayError::Invalid(e)) => {
@@ -698,13 +874,19 @@ impl Shared {
                 return if keep { Err(full) } else { Ok((None, None)) }
             }
         };
-        let preview = make_preview(image.pixels(), w as usize, h as usize, 1);
-        self.preview.lock().unwrap().set(vec![preview]);
         if !keep {
+            let preview = make_preview(image.pixels(), w as usize, h as usize, 1);
+            self.update_preview(session, |previews| previews.set(vec![preview]));
             return Ok((None, None));
         }
-        let image = Arc::new(image.into_image(&self.pool, w, h)?);
-        Ok((Some(image), None))
+        match image.into_image(&self.pool, w, h) {
+            Ok(image) => Ok((Some(Arc::new(image)), None)),
+            Err(error) => {
+                let preview = make_preview(data, w as usize, h as usize, 1);
+                self.update_preview(session, |previews| previews.set(vec![preview]));
+                Err(error)
+            }
+        }
     }
 
     /// 图像内存预算满被丢弃的帧给状态栏的说明。
@@ -738,21 +920,32 @@ impl Shared {
     }
 
     fn deliver(&self, mut frame: Frame) {
+        if self.is_retired() {
+            return;
+        }
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
         delivery::observe(&self.identity, &self.manual, &mut frame, current_session);
         if (frame.bayer.is_some() || !frame.images.is_empty()) && current_session {
-            if frame.counter == CounterSource::Synthetic || frame.images.len() == 3 {
+            if let [image] = frame.images.as_slice() {
+                self.update_preview(frame.session, |previews| {
+                    previews.defer_image(Arc::clone(image))
+                });
+            } else if frame.counter == CounterSource::Synthetic || frame.images.len() == 3 {
                 self.set_previews(frame.session, &frame.images);
             }
             *self.last_full.lock().unwrap() = Some(CapturedFrame::from_frame(&frame));
             self.full_seq.fetch_add(1, Ordering::SeqCst);
         }
-        self.count_arrival(&frame);
-        let _ = delivery::offer(&self.rig.tx, &self.dropped, frame);
+        if self.count_arrival(&frame) {
+            let _ = delivery::offer(&self.rig.tx, &self.dropped, frame);
+        }
     }
 
     /// 图像内存预算满、没拷图的帧：台账照记、计入帧数，但不交付（节拍按缺帧处理），不中断回调。
     fn discard_over_budget(&self, mut frame: Frame) {
+        if self.is_retired() {
+            return;
+        }
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
         delivery::discard_over_budget(
             &self.identity,
@@ -765,32 +958,67 @@ impl Shared {
     }
 
     /// 帧数、丢包、帧率与界面事件：交付与否都算相机出了这一帧。
-    fn count_arrival(&self, frame: &Frame) {
+    fn count_arrival(&self, frame: &Frame) -> bool {
         self.frames.fetch_add(1, Ordering::Relaxed);
         self.lost_packets
             .fetch_add(frame.lost_packets as u64, Ordering::Relaxed);
         let now = Instant::now();
-        {
+        let (active, notify) = {
             let mut recent = self.recent.lock().unwrap();
-            recent.push_back(now);
+            recent.arrivals.push_back(now);
             while recent
+                .arrivals
                 .front()
                 .is_some_and(|t| now.duration_since(*t) > Duration::from_secs(3))
             {
-                recent.pop_front();
+                recent.arrivals.pop_front();
             }
+            let active = !self.is_retired();
+            let notify =
+                active && recent.remember(frame.into(), self.session.load(Ordering::SeqCst));
+            (active, notify)
+        };
+        if notify {
+            self.rig.frame_events.notify_one();
         }
-        let _ = self.rig.app.emit("camera://frame", frame);
+        active
+    }
+
+    fn publish_frame_event(&self) -> Option<Instant> {
+        if self.is_retired() {
+            return None;
+        }
+        let plan = {
+            let mut recent = self.recent.lock().unwrap();
+            recent.take_ready(self.session.load(Ordering::SeqCst), Instant::now())
+        };
+        let frame = match plan {
+            FrameEventPlan::Empty => return None,
+            FrameEventPlan::Waiting(deadline) => return Some(deadline),
+            FrameEventPlan::Ready(frame) => frame,
+        };
+        if self.is_retired() || frame.session != self.session.load(Ordering::SeqCst) {
+            return None;
+        }
+        let _ = self.rig.app.emit(
+            "camera://frame",
+            CameraFrameEvent {
+                frame,
+                camera_id: &self.camera_id,
+            },
+        );
+        None
     }
 
     fn fps(&self) -> f32 {
         let recent = self.recent.lock().unwrap();
-        match (recent.front(), recent.back()) {
+        let arrivals = &recent.arrivals;
+        match (arrivals.front(), arrivals.back()) {
             (Some(a), Some(b))
-                if recent.len() > 1
+                if arrivals.len() > 1
                     && Instant::now().duration_since(*b) < Duration::from_secs(3) =>
             {
-                (recent.len() - 1) as f32 / b.duration_since(*a).as_secs_f32().max(0.001)
+                (arrivals.len() - 1) as f32 / b.duration_since(*a).as_secs_f32().max(0.001)
             }
             _ => 0.0,
         }
@@ -938,14 +1166,8 @@ fn device_ns(ticks: u64, hz: u64) -> Option<u64> {
     (hz > 0 && ticks > 0).then(|| (u128::from(ticks) * 1_000_000_000 / u128::from(hz)) as u64)
 }
 
-/// 模拟 / 样本集的一帧：帧计数与触发计数都是本会话的帧号。
-fn synthetic_frame(
-    cam: u8,
-    session: u64,
-    n: u64,
-    images: Vec<Arc<FrameImage>>,
-    manual: bool,
-) -> Frame {
+/// 内部模拟相机的软触发帧，帧计数与触发计数都取本会话帧号。
+fn synthetic_frame(cam: u8, session: u64, n: u64, images: Vec<Arc<FrameImage>>) -> Frame {
     Frame {
         cam,
         session,
@@ -955,7 +1177,7 @@ fn synthetic_frame(
         lost_packets: 0,
         ts: now_ms(),
         dev_ts: Some(n.saturating_mul(crate::frame_clock::SYNTH_PERIOD_NS)),
-        manual,
+        manual: true,
         images,
         bayer: None,
     }
@@ -967,6 +1189,9 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             return;
         }
         let shared = unsafe { &*(user as *const Shared) };
+        if shared.is_retired() {
+            return;
+        }
         let info = unsafe { &*info };
         let frame_counter = u64::from(info.frame_num);
         let trigger_counter = frame_counter;
@@ -1010,7 +1235,7 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             Ok(_) if data.is_null() => (None, None),
             Ok((kind, len)) => {
                 let data = unsafe { std::slice::from_raw_parts(data, len) };
-                match shared.frame_image(kind, w, h, data) {
+                match shared.frame_image(session, kind, w, h, data) {
                     Ok(captured) => captured,
                     // 图像内存预算满（D-SB-32）：这一帧不拷图、不交付，台账照记
                     Err(_) => return shared.discard_over_budget(frame(Vec::new(), None)),
@@ -1022,6 +1247,7 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             (Some(image), Some(layout)) => match layout.split(image) {
                 Ok(images) => (images, None),
                 Err(error) => {
+                    shared.set_previews(session, std::slice::from_ref(image));
                     shared.unusable(error);
                     (Vec::new(), None)
                 }
@@ -1088,21 +1314,29 @@ impl Drop for CameraSlot {
 }
 
 impl CameraSlot {
-    fn new(rig: &Arc<RigShared>, cam: u8, config: CameraConfig) -> Self {
+    fn new(
+        rig: &Arc<RigShared>,
+        gate: &Arc<crate::gate::Gate>,
+        cam: u8,
+        config: CameraConfig,
+    ) -> Self {
         let slot = Self {
             device: Mutex::new(None),
             simulator: Mutex::new(None),
             synthetic_capture: Mutex::new(None),
             shared: Arc::new(Shared {
                 cam,
+                camera_id: config.id.clone(),
                 rig: rig.clone(),
+                gate: Arc::clone(gate),
+                retired: AtomicBool::new(false),
                 pool: FramePool::with_budget(POOL_KEEP_PER_CAMERA, IMAGE_BUDGET_PER_CAMERA),
                 frames: AtomicU64::new(0),
                 lost_packets: AtomicU64::new(0),
                 dropped: AtomicU64::new(0),
                 budget_dropped: AtomicU64::new(0),
                 color: AtomicBool::new(config.image_mode.color()),
-                recent: Mutex::new(VecDeque::new()),
+                recent: Mutex::default(),
                 preview: Mutex::new(Previews::default()),
                 last_full: Mutex::new(None),
                 identity: Mutex::new(crate::shot_router::Ledgers::default()),
@@ -1140,6 +1374,10 @@ impl CameraSlot {
             slot.new_session();
         }
         slot
+    }
+
+    pub(crate) fn matches_session(&self, session: u64) -> bool {
+        !self.shared.is_retired() && self.shared.session.load(Ordering::SeqCst) == session
     }
 
     pub fn config(&self) -> CameraConfig {
@@ -1414,10 +1652,13 @@ impl CameraSlot {
             session,
             ..Reorder::default()
         };
-        self.shared.session.store(session, Ordering::SeqCst);
+        {
+            let mut preview = self.shared.preview.lock().unwrap();
+            self.shared.session.store(session, Ordering::SeqCst);
+            preview.set(Vec::new());
+        }
         self.shared.manual.store(0, Ordering::SeqCst);
         self.shared.grab.store(false, Ordering::SeqCst);
-        self.shared.preview.lock().unwrap().set(Vec::new());
         self.shared.last_full.lock().unwrap().take();
         *self.shared.identity.lock().unwrap() = crate::shot_router::Ledgers::default();
     }
@@ -1429,12 +1670,7 @@ impl CameraSlot {
         (self.shared.session.load(Ordering::SeqCst), *seq)
     }
 
-    fn trigger_frame(
-        &self,
-        lose_in_transfer: bool,
-        payload: Option<TriggerPayload>,
-        manual: bool,
-    ) -> Result<Option<CaptureTicket>, String> {
+    fn trigger_frame(&self) -> Result<Option<CaptureTicket>, String> {
         let config = self.config();
         if let Err(e) = config.validate() {
             self.state.lock().unwrap().message = e.clone();
@@ -1449,25 +1685,14 @@ impl CameraSlot {
                     frame_counter: n,
                 };
                 let shared = self.shared.clone();
-                if lose_in_transfer {
-                    shared.deliver_in_order(session, n, None);
-                    return Ok(Some(ticket));
-                }
                 tauri::async_runtime::spawn(async move {
                     let started = Instant::now();
-                    let images = tauri::async_runtime::spawn_blocking(move || match payload {
-                        // 三台独立单视角相机各出一幅（D-SB-11）
-                        Some(TriggerPayload::Burst(r)) if config.view_count == 1 => {
-                            Ok(vec![Arc::new(simimage::render_burst(&r))])
-                        }
-                        Some(TriggerPayload::Burst(_)) => Err(format!(
-                            "段配方的相机必须是单视角，模拟相机 {} 配了 {} 个视角",
-                            config.id, config.view_count
-                        )),
-                        _ if config.view_count == 3 => {
+                    let images = tauri::async_runtime::spawn_blocking(move || {
+                        if config.view_count == 3 {
                             simimage::background_views(config.view_count, n)
+                        } else {
+                            Ok(Vec::new())
                         }
-                        _ => Ok(Vec::new()),
                     })
                     .await
                     .map_err(|e| e.to_string())
@@ -1481,7 +1706,7 @@ impl CameraSlot {
                             shared.deliver_in_order(
                                 session,
                                 n,
-                                Some(synthetic_frame(cam, session, n, images, manual)),
+                                Some(synthetic_frame(cam, session, n, images)),
                             );
                         }
                         Err(e) => {
@@ -1522,7 +1747,7 @@ impl CameraSlot {
         }
     }
 
-    fn soft_trigger(&self, payload: Option<TriggerPayload>) -> Result<CaptureRequest, String> {
+    fn soft_trigger(&self) -> Result<CaptureRequest, String> {
         let config = self.config();
         config.validate()?;
         if matches!(config.source, CameraSource::Mvs | CameraSource::Simulator)
@@ -1549,7 +1774,7 @@ impl CameraSlot {
             matches!(config.source, CameraSource::Mvs | CameraSource::Simulator),
             Ordering::SeqCst,
         );
-        match self.trigger_frame(false, payload, true) {
+        match self.trigger_frame() {
             Ok(Some(ticket)) => Ok(CaptureRequest::Exact(ticket)),
             Ok(None) => Ok(CaptureRequest::After {
                 session,
@@ -2025,15 +2250,33 @@ fn apply(
     Ok((warnings, max_fps, configured_frame_rate, format, chunks))
 }
 
+#[derive(Default)]
+struct CameraGeneration {
+    gate: Arc<crate::gate::Gate>,
+    number: u64,
+}
+
+impl CameraGeneration {
+    fn next(&self) -> Self {
+        Self {
+            gate: Arc::default(),
+            number: self.number.wrapping_add(1),
+        }
+    }
+}
+
+struct CameraGroup {
+    slots: Vec<Arc<CameraSlot>>,
+    generation: CameraGeneration,
+}
+
 pub struct CameraRig {
     rig: Arc<RigShared>,
-    slots: RwLock<Vec<Arc<CameraSlot>>>,
+    group: RwLock<CameraGroup>,
     path: PathBuf,
     next_id: Mutex<u32>,
     /// 写 cameras.json 一次一个：连上相机固定序列号的后台保存会和界面的保存同时来
     save_lock: Mutex<()>,
-    /// 增删相机（相机组序号重排）一次 +1：按序号记下的相机就作废了
-    generation: AtomicU64,
     /// 启动时读配置遇到的问题，节拍启动后写进日志
     pub notes: Vec<String>,
 }
@@ -2071,6 +2314,7 @@ impl CameraRig {
         let rig = Arc::new(RigShared {
             app: app.clone(),
             tx,
+            frame_events: Arc::default(),
             capture: AtomicBool::new(false),
             recipe_capture: crate::recipe_capture::RecipeCaptureHost::open(
                 crate::storage::project(app).join("recipe-capture"),
@@ -2084,21 +2328,20 @@ impl CameraRig {
                 },
             )?,
             imaging: Mutex::new(std::mem::take(&mut file.imaging)),
-            gate: Arc::default(),
         });
+        let generation = CameraGeneration::default();
         let slots = file
             .cameras
             .into_iter()
             .enumerate()
-            .map(|(i, c)| Arc::new(CameraSlot::new(&rig, i as u8, c)))
+            .map(|(i, c)| Arc::new(CameraSlot::new(&rig, &generation.gate, i as u8, c)))
             .collect();
         let mut this = Self {
             rig,
-            slots: RwLock::new(slots),
+            group: RwLock::new(CameraGroup { slots, generation }),
             path,
             next_id: Mutex::new(file.next_id),
             save_lock: Mutex::new(()),
-            generation: AtomicU64::new(0),
             notes,
         };
         if assigned {
@@ -2165,20 +2408,31 @@ impl CameraRig {
     }
 
     pub fn generation(&self) -> u64 {
-        self.generation.load(Ordering::SeqCst)
+        self.group.read().unwrap().generation.number
     }
 
     pub fn slots(&self) -> Vec<Arc<CameraSlot>> {
-        self.slots.read().unwrap().clone()
+        self.group.read().unwrap().slots.clone()
     }
 
     /// Line0 门控状态（D-SB-54），收尾按它提前结束。
     pub fn gate(&self) -> Arc<crate::gate::Gate> {
-        self.rig.gate.clone()
+        self.group.read().unwrap().generation.gate.clone()
     }
 
     pub fn slot(&self, cam: usize) -> Option<Arc<CameraSlot>> {
-        self.slots.read().unwrap().get(cam).cloned()
+        self.group.read().unwrap().slots.get(cam).cloned()
+    }
+
+    pub(crate) fn target_slot(
+        &self,
+        cam: u8,
+        id: &str,
+    ) -> Result<(Arc<CameraSlot>, CameraConfig), String> {
+        let slot = self.slot(usize::from(cam)).ok_or("相机不存在")?;
+        let config = slot.config();
+        check_camera_target(&config.id, id)?;
+        Ok((slot, config))
     }
 
     pub fn configs(&self) -> Vec<CameraConfig> {
@@ -2215,22 +2469,6 @@ impl CameraRig {
         self.rig.capture.store(on, Ordering::Relaxed);
     }
 
-    pub fn last_view(&self, cam: u8, view: u8) -> Option<Arc<FrameImage>> {
-        self.slot(cam as usize).and_then(|s| s.last_view(view))
-    }
-
-    pub fn capture_views(
-        &self,
-        cam: u8,
-        payload: Option<TriggerPayload>,
-    ) -> Result<Vec<Arc<FrameImage>>, String> {
-        let cycle = self.rig.app.state::<CycleHost>();
-        let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
-        check_idle(&cycle)?;
-        let slot = self.slot(cam as usize).ok_or("相机不存在")?;
-        self.capture_idle(&slot, payload)
-    }
-
     pub(crate) fn capture_mix_reference(
         &self,
         camera: &str,
@@ -2256,10 +2494,7 @@ impl CameraRig {
             .observed_imaging(Some(session))
             .and_then(|v| v.white_balance)
             .ok_or("当前相机会话没有有效白平衡回读")?;
-        let image = self
-            .capture_idle(&slot, None)?
-            .pop()
-            .ok_or("相机没有返回单帧")?;
+        let image = self.capture_idle(&slot)?.pop().ok_or("相机没有返回单帧")?;
         if !image.is_color()
             || slot.shared.session.load(Ordering::SeqCst) != session
             || slot
@@ -2272,26 +2507,20 @@ impl CameraRig {
         Ok((image, config.serial, white))
     }
 
-    fn capture_idle(
-        &self,
-        slot: &CameraSlot,
-        payload: Option<TriggerPayload>,
-    ) -> Result<Vec<Arc<FrameImage>>, String> {
+    fn capture_idle(&self, slot: &CameraSlot) -> Result<Vec<Arc<FrameImage>>, String> {
         let config = slot.config();
         config.validate()?;
         if !slot.is_ready() {
             return Err(format!("相机未就绪：{}", slot.status().message));
         }
-        let images = if config.source == CameraSource::Sim
-            && !matches!(payload, Some(TriggerPayload::Burst(_)))
-        {
+        let images = if config.source == CameraSource::Sim {
             let images = slot.last_views();
             if images.is_empty() {
                 return Err("模拟相机尚未出图，请先运行一个模拟工件".into());
             }
             images
-        } else if config.source == CameraSource::Sim || config.trigger_source == "Software" {
-            let request = slot.soft_trigger(payload)?;
+        } else if config.trigger_source == "Software" {
+            let request = slot.soft_trigger()?;
             let captured = slot.wait_capture(request, Duration::from_secs(2))?;
             captured.ok_or("2 秒内没有收到本次触发的完整图像；检查触发与相机连接")?
         } else {
@@ -2308,18 +2537,14 @@ impl CameraRig {
         Ok(images)
     }
 
-    pub fn capture_view(
+    pub(crate) fn capture_view(
         &self,
-        cam: u8,
+        slot: &CameraSlot,
         view: u8,
-        payload: Option<TriggerPayload>,
     ) -> Result<Arc<FrameImage>, String> {
-        let slot = self.slot(cam as usize).ok_or("相机不存在")?;
-        if view == 0 || view > slot.config().view_count {
-            return Err(format!("相机没有视角 {view}"));
-        }
-        self.capture_views(cam, payload)?
-            .get(view as usize - 1)
+        let index = view.checked_sub(1).ok_or("图编号超出设备范围")?;
+        self.capture_idle(slot)?
+            .get(usize::from(index))
             .cloned()
             .ok_or_else(|| format!("这一帧缺少视角 {view}"))
     }
@@ -2332,19 +2557,31 @@ impl CameraRig {
             .filter(|s| s.released.load(Ordering::SeqCst))
             .map(|s| s.config().id)
             .collect();
+        let generation = self.group.read().unwrap().generation.next();
         let slots: Vec<Arc<CameraSlot>> = configs
             .into_iter()
             .enumerate()
             .map(|(i, c)| {
                 let keep = c.source == CameraSource::Mvs && released.contains(&c.id);
-                let slot = CameraSlot::new(&self.rig, i as u8, c);
+                let slot = CameraSlot::new(&self.rig, &generation.gate, i as u8, c);
                 slot.released.store(keep, Ordering::SeqCst);
                 Arc::new(slot)
             })
             .collect();
         // 旧相机在锁外释放：关海康相机要一会儿，别让别的线程卡在读相机组上
-        let old = std::mem::replace(&mut *self.slots.write().unwrap(), slots.clone());
-        self.generation.fetch_add(1, Ordering::SeqCst);
+        let old = {
+            let mut group = self.group.write().unwrap();
+            for slot in &group.slots {
+                slot.shared.retired.store(true, Ordering::Release);
+            }
+            std::mem::replace(
+                &mut *group,
+                CameraGroup {
+                    slots: slots.clone(),
+                    generation,
+                },
+            )
+        };
         drop(old);
         for s in &slots {
             supervise(app, s);
@@ -2352,9 +2589,35 @@ impl CameraRig {
     }
 
     pub fn start(app: &AppHandle) {
-        for s in app.state::<CycleHost>().camera.slots() {
+        let cycle = app.state::<CycleHost>();
+        for s in cycle.camera.slots() {
             supervise(app, &s);
         }
+        let frame_events = Arc::clone(&cycle.camera.rig.frame_events);
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut deadline = None;
+            loop {
+                if let Some(next) = deadline {
+                    tokio::select! {
+                        _ = frame_events.notified() => {},
+                        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(next)) => {},
+                    }
+                } else {
+                    frame_events.notified().await;
+                }
+                let slots = {
+                    let Some(cycle) = app.try_state::<CycleHost>() else {
+                        break;
+                    };
+                    cycle.camera.slots()
+                };
+                deadline = slots
+                    .into_iter()
+                    .filter_map(|slot| slot.shared.publish_frame_event())
+                    .min();
+            }
+        });
     }
 }
 
@@ -2371,7 +2634,10 @@ fn watch_gate(slot: std::sync::Weak<CameraSlot>) {
         let mut was: Option<bool> = None;
         loop {
             let Some(s) = slot.upgrade() else { break };
-            let (gate, cam) = (s.shared.rig.gate.clone(), s.shared.cam);
+            if s.shared.is_retired() {
+                break;
+            }
+            let (gate, cam) = (&s.shared.gate, s.shared.cam);
             let config = s.config();
             if config.source == CameraSource::Simulator {
                 drop(s);
@@ -2443,6 +2709,9 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
         let mut next_retry = Instant::now();
         loop {
             let Some(s) = slot.upgrade() else { break };
+            if s.shared.is_retired() {
+                break;
+            }
             let config = s.config();
             if matches!(config.source, CameraSource::Mvs | CameraSource::Simulator)
                 && Instant::now() >= next_retry
@@ -2460,6 +2729,9 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
                     };
                     let attempt = match gate {
                         Some(_gate) => {
+                            if s.shared.is_retired() {
+                                break;
+                            }
                             let config = s.config();
                             let lost = s.shared.disconnected.load(Ordering::SeqCst);
                             let opened = if config.source == CameraSource::Simulator {
@@ -2649,7 +2921,7 @@ async fn camera_save_config_inner(
 
 fn check_camera_target(current_id: &str, requested_id: &str) -> Result<(), String> {
     if current_id != requested_id {
-        return Err("相机组已变化，请刷新配置后重试保存".into());
+        return Err("相机组已变化，请刷新配置后重试".into());
     }
     Ok(())
 }
@@ -2789,30 +3061,28 @@ async fn camera_add_inner(app: AppHandle, mut config: CameraConfig) -> Result<us
 }
 
 #[tauri::command]
-pub async fn camera_remove(app: AppHandle, cam: usize) -> Result<(), String> {
-    let result = camera_remove_inner(app.clone(), cam).await;
+pub async fn camera_remove(app: AppHandle, cam: usize, id: String) -> Result<(), String> {
+    let result = camera_remove_inner(app.clone(), cam, &id).await;
     crate::cycle::log_op(
         &crate::applog::events::OP_CAMERA,
-        serde_json::json!({"action": "remove", "cam": cam}),
+        serde_json::json!({"action": "remove", "cam": cam, "id": id}),
         &result,
     );
     result
 }
 
-async fn camera_remove_inner(app: AppHandle, cam: usize) -> Result<(), String> {
+async fn camera_remove_inner(app: AppHandle, cam: usize, id: &str) -> Result<(), String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
     let _gate = camera_gate(&cycle).await?;
     check_user_editable(&app, None)?;
     check_idle(&cycle)?;
     let mut configs = cycle.camera.configs();
-    if cam >= configs.len() {
-        return Err("相机不存在".into());
-    }
+    let config = configs.get(cam).ok_or("相机不存在")?;
+    check_camera_target(&config.id, id)?;
     if configs.len() == 1 {
         return Err("相机组至少保留 1 台".into());
     }
-    let id = &configs[cam].id;
     let mut users: Vec<String> = cycle
         .recipes
         .list()
@@ -2820,10 +3090,8 @@ async fn camera_remove_inner(app: AppHandle, cam: usize) -> Result<(), String> {
         .filter(|r| r.cameras().iter().any(|camera| camera == id))
         .map(|r| r.id.clone())
         .collect();
-    users.extend(
-        app.state::<crate::workspace::WorkspaceHost>()
-            .camera_users(id),
-    );
+    let workspace = app.state::<crate::workspace::WorkspaceHost>();
+    users.extend(workspace.camera_users(id));
     users.sort();
     users.dedup();
     if !users.is_empty() {
@@ -2834,6 +3102,7 @@ async fn camera_remove_inner(app: AppHandle, cam: usize) -> Result<(), String> {
     }
     configs.remove(cam);
     cycle.camera.rebuild(&app, configs);
+    workspace.forget_station_sample(id);
     let saved = cycle.camera.save();
     let _ = cycle.tx.send(cycle::Input::Refresh);
     let _ = app.emit("camera://changed", ());
@@ -2852,38 +3121,58 @@ pub async fn camera_list_devices() -> Result<Vec<DeviceSummary>, String> {
 pub fn camera_preview(
     cycle: State<'_, CycleHost>,
     cam: usize,
+    id: String,
     view: Option<u8>,
-) -> tauri::ipc::Response {
-    let mut out = Vec::new();
-    if let (Some(slot), Some(index)) = (cycle.camera.slot(cam), view.unwrap_or(1).checked_sub(1)) {
-        out = slot.shared.preview_bytes(index as usize);
+) -> Result<tauri::ipc::Response, String> {
+    let slot = cycle.camera.slot(cam).ok_or("相机不存在")?;
+    check_camera_target(&slot.shared.camera_id, &id)?;
+    let Some(index) = view.unwrap_or(1).checked_sub(1) else {
+        return Ok(tauri::ipc::Response::new(Vec::<u8>::new()));
+    };
+    let session = slot.shared.session.load(Ordering::SeqCst);
+    let bytes = slot.shared.preview_bytes(usize::from(index));
+    if !bytes.is_empty()
+        && (!slot.matches_session(session)
+            || !cycle
+                .camera
+                .slot(cam)
+                .is_some_and(|current| Arc::ptr_eq(&current, &slot)))
+    {
+        return Ok(tauri::ipc::Response::new(Vec::<u8>::new()));
     }
-    tauri::ipc::Response::new(out)
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// 相机操作与接件、配置修改互斥：排队等配置门，3 秒内拿不到才放弃。
-async fn camera_gate(cycle: &CycleHost) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
+pub(crate) async fn camera_gate(
+    cycle: &CycleHost,
+) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
     tokio::time::timeout(Duration::from_secs(3), cycle.config_gate.lock())
         .await
         .map_err(|_| "接件或其他配置操作 3 秒内仍未结束，请稍后重试相机操作".into())
 }
 
 #[tauri::command]
-pub async fn camera_soft_trigger(app: AppHandle, cam: usize) -> Result<(), String> {
-    let result = camera_soft_trigger_inner(app.state::<CycleHost>(), cam).await;
+pub async fn camera_soft_trigger(app: AppHandle, cam: usize, id: String) -> Result<(), String> {
+    let result = camera_soft_trigger_inner(app.state::<CycleHost>(), cam, &id).await;
     crate::cycle::log_op(
         &crate::applog::events::OP_CAMERA,
-        serde_json::json!({"action": "soft_trigger", "cam": cam}),
+        serde_json::json!({"action": "soft_trigger", "cam": cam, "id": id}),
         &result,
     );
     result
 }
 
-async fn camera_soft_trigger_inner(cycle: State<'_, CycleHost>, cam: usize) -> Result<(), String> {
+async fn camera_soft_trigger_inner(
+    cycle: State<'_, CycleHost>,
+    cam: usize,
+    id: &str,
+) -> Result<(), String> {
     let _gate = camera_gate(&cycle).await?;
     check_idle(&cycle)?;
     let slot = cycle.camera.slot(cam).ok_or("相机不存在")?;
-    slot.soft_trigger(None).map(|_| ())
+    check_camera_target(&slot.config().id, id)?;
+    slot.soft_trigger().map(|_| ())
 }
 
 /// 相机页保存曝光与增益：写回 cameras.json，并立即写入已连接的海康相机；未连接时在下次打开时写入。
@@ -2939,23 +3228,24 @@ async fn camera_set_imaging_inner(
 
 /// 把海康相机释放给 MVS 客户端（调焦、光圈）：关闭设备，后台不再自动重连，直到重新连接。
 #[tauri::command]
-pub async fn camera_release(app: AppHandle, cam: usize) -> Result<(), String> {
-    let result = camera_release_inner(app.clone(), cam).await;
+pub async fn camera_release(app: AppHandle, cam: usize, id: String) -> Result<(), String> {
+    let result = camera_release_inner(app.clone(), cam, &id).await;
     crate::cycle::log_op(
         &crate::applog::events::OP_CAMERA,
-        serde_json::json!({"action": "release", "cam": cam}),
+        serde_json::json!({"action": "release", "cam": cam, "id": id}),
         &result,
     );
     result
 }
 
-async fn camera_release_inner(app: AppHandle, cam: usize) -> Result<(), String> {
+async fn camera_release_inner(app: AppHandle, cam: usize, id: &str) -> Result<(), String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
     let _gate = camera_gate(&cycle).await?;
     check_access(&cycle, CameraAccess::Maintenance)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
     let config = slot.config();
+    check_camera_target(&config.id, id)?;
     if config.source != CameraSource::Mvs {
         return Err("只有海康相机可以释放给 MVS 客户端".into());
     }
@@ -2975,22 +3265,23 @@ async fn camera_release_inner(app: AppHandle, cam: usize) -> Result<(), String> 
 
 /// 收回已释放的海康相机并重新打开；MVS 客户端还占着时返回打开失败的原因，后台继续每 2 s 重试。
 #[tauri::command]
-pub async fn camera_reconnect(app: AppHandle, cam: usize) -> Result<String, String> {
-    let result = camera_reconnect_inner(app.clone(), cam).await;
+pub async fn camera_reconnect(app: AppHandle, cam: usize, id: String) -> Result<String, String> {
+    let result = camera_reconnect_inner(app.clone(), cam, &id).await;
     crate::cycle::log_op(
         &crate::applog::events::OP_CAMERA,
-        serde_json::json!({"action": "reconnect", "cam": cam}),
+        serde_json::json!({"action": "reconnect", "cam": cam, "id": id}),
         &result,
     );
     result
 }
 
-async fn camera_reconnect_inner(app: AppHandle, cam: usize) -> Result<String, String> {
+async fn camera_reconnect_inner(app: AppHandle, cam: usize, id: &str) -> Result<String, String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
     let _gate = camera_gate(&cycle).await?;
     check_access(&cycle, CameraAccess::Maintenance)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
+    check_camera_target(&slot.config().id, id)?;
     slot.released.store(false, Ordering::SeqCst);
     let opened = tauri::async_runtime::spawn_blocking(move || slot.open())
         .await
@@ -3001,8 +3292,163 @@ async fn camera_reconnect_inner(app: AppHandle, cam: usize) -> Result<String, St
 }
 
 #[cfg(test)]
+#[test]
+fn lazy_preview_keeps_eager_bytes_without_overwriting_the_next_frame() {
+    let gray = Arc::new(FrameImage::new(
+        961,
+        3,
+        (0..961 * 3).map(|i| (i % 251) as u8).collect(),
+    ));
+    let rgb = Arc::new(FrameImage::rgb(
+        965,
+        4,
+        (0..965 * 4 * 3).map(|i| (i % 239) as u8).collect(),
+    ));
+    let eager = |image: &FrameImage| {
+        make_preview(
+            &image.pixels,
+            image.width as usize,
+            image.height as usize,
+            image.channels,
+        )
+        .bytes()
+    };
+    let mut previews = Previews::default();
+    previews.defer_image(Arc::clone(&gray));
+    let old = Arc::clone(previews.lazy.as_ref().unwrap());
+    assert_eq!(previews.full_size(), Some((961, 3)));
+    assert!(old.thumbnail.get().is_none());
+
+    previews.defer_image(Arc::clone(&rgb));
+    let current = previews.lazy.as_ref().unwrap();
+    assert_eq!(previews.full_size(), Some((965, 4)));
+    assert_eq!(old.bytes(), eager(&gray));
+    assert!(current.thumbnail.get().is_none());
+    assert_eq!(current.bytes(), eager(&rgb));
+    assert_eq!(current.bytes(), eager(&rgb));
+}
+
+#[cfg(test)]
+#[test]
+fn retired_camera_group_cannot_change_the_new_groups_gate_evidence() {
+    let previous = CameraGeneration::default();
+    let old_worker = Arc::clone(&previous.gate);
+    let now = Instant::now();
+    old_worker.edge(0, true, 10, now);
+    old_worker.observe(0, false, now);
+    assert_eq!(old_worker.closed_since(&[0], now), Some(now));
+
+    let new = previous.next();
+    assert_eq!(new.gate.open_count(), 0);
+    assert!(new.gate.closed_since(&[0], now).is_none());
+
+    new.gate.edge(0, true, 20, now);
+    new.gate.observe(0, true, now);
+    old_worker.edge(0, true, 1000, now);
+    old_worker.edge(0, false, 2000, now);
+    old_worker.observe(0, false, now);
+    old_worker.forget(0);
+    assert_eq!(new.gate.open_count(), 1);
+    assert_eq!(new.gate.latest_open(0, now, |_| true), Some((20, 0)));
+    assert!(new.gate.close_clock(0).is_none());
+    assert!(new.gate.closed_since(&[0], now).is_none());
+
+    let closed = now + Duration::from_millis(1);
+    new.gate.observe(0, false, closed);
+    assert_eq!(new.gate.closed_since(&[0], closed), Some(closed));
+}
+
+#[cfg(test)]
+#[test]
+fn camera_frame_cooldown_preserves_other_cameras_and_tail_frames_across_sessions() {
+    let frame = |cam, session, frame_counter| CameraFrameMetadata {
+        cam,
+        session,
+        counter: CounterSource::SdkFrame,
+        frame_counter,
+        trigger_counter: frame_counter,
+        lost_packets: 0,
+        ts: 17,
+        dev_ts: Some(19),
+    };
+    let now = Instant::now();
+    let at = |millis| now + Duration::from_millis(millis);
+    let mut left = RecentFrames::default();
+    let mut right = RecentFrames::default();
+    assert!(left.remember(frame(0, 1, 1), 1));
+    assert_eq!(
+        left.take_ready(1, now),
+        FrameEventPlan::Ready(frame(0, 1, 1))
+    );
+    assert_eq!(left.take_ready(1, now), FrameEventPlan::Empty);
+
+    assert!(left.remember(frame(0, 1, 2), 1));
+    assert!(!left.remember(frame(0, 1, 3), 1));
+    assert_eq!(left.take_ready(1, at(10)), FrameEventPlan::Waiting(at(100)));
+    assert!(right.remember(frame(1, 3, 5), 3));
+    assert_eq!(
+        right.take_ready(3, at(20)),
+        FrameEventPlan::Ready(frame(1, 3, 5))
+    );
+    assert_eq!(right.take_ready(3, at(20)), FrameEventPlan::Empty);
+    assert_eq!(left.take_ready(1, at(99)), FrameEventPlan::Waiting(at(100)));
+    assert_eq!(
+        left.take_ready(1, at(100)),
+        FrameEventPlan::Ready(frame(0, 1, 3))
+    );
+    assert_eq!(left.take_ready(1, at(100)), FrameEventPlan::Empty);
+
+    assert!(left.remember(frame(0, 1, 4), 1));
+    assert_eq!(
+        left.take_ready(1, at(110)),
+        FrameEventPlan::Waiting(at(200))
+    );
+    assert!(left.remember(frame(0, 4, 1), 4));
+    assert!(!left.remember(frame(0, 1, 5), 4));
+    assert_eq!(
+        left.take_ready(4, at(120)),
+        FrameEventPlan::Ready(frame(0, 4, 1))
+    );
+    assert_eq!(left.take_ready(4, at(120)), FrameEventPlan::Empty);
+    assert!(left.remember(frame(0, 4, 2), 4));
+    assert_eq!(left.take_ready(5, at(130)), FrameEventPlan::Empty);
+}
+
+#[cfg(test)]
 mod gray_tests {
     use super::*;
+
+    #[test]
+    fn camera_preview_samples_only_complete_grid_cells_in_pixel_order() {
+        for (width, height, channels, step) in [
+            (960, 2, 1, 1),
+            (959, 3, 3, 1),
+            (961, 5, 1, 2),
+            (961, 5, 3, 2),
+            (1921, 8, 3, 3),
+            (1921, 2, 1, 3),
+        ] {
+            let mut input: Vec<u8> = (0..width * height * channels)
+                .map(|i| (i % 251) as u8)
+                .collect();
+            input.extend([253; 17]);
+            let (preview_width, preview_height) = (width / step, height / step);
+            let mut expected: Vec<u8> = [preview_width, preview_height, width, height, channels]
+                .into_iter()
+                .flat_map(|v| (v as u32).to_le_bytes())
+                .collect();
+            for y in 0..preview_height {
+                for x in 0..preview_width {
+                    let pixel = (y * step * width + x * step) * channels;
+                    expected.extend_from_slice(&input[pixel..pixel + channels]);
+                }
+            }
+            assert_eq!(
+                make_preview(&input, width, height, channels as u8).bytes(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn sdk_frame_length_must_cover_width_height_and_pixel_size() {

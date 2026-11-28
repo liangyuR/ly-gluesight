@@ -1,16 +1,17 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { PointerEventsCheckLevel } from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { createElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
+import ValidationPage from "../src/features/workspace/ValidationPage";
 import { WorkspaceProvider } from "../src/features/workspace/context";
 import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import { SnackbarProvider } from "qing-steel";
 import { workspaceApi } from "../src/features/workspace/api";
 import type { WorkspaceView } from "../src/features/workspace/types";
-import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, deferred, snapshot, type BurstRecipeDoc } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, deferred, workspaceCatalogEntry, type BurstRecipeDoc } from "./fixtures";
 import { stubSvgPointer } from "./svg-pointer";
 // 只替身桌面后端：invoke 按命令名分派到 backend 夹具，其余全是真实模块。
 // 例外：原图解码要用 canvas（jsdom 没有），workspaceApi.image 直接给出解码结果。
@@ -27,14 +28,14 @@ let backend: Record<string, Handler> = {};
 function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = {}) {
   backend = {
     recipe_list: () => ({ recipes: [burstSummary(candidate.workspace.doc as BurstRecipeDoc)], errors: [], unavailable: [] }),
-    workspace_list: () => [candidate.workspace],
+    workspace_catalog: () => [workspaceCatalogEntry(candidate.workspace)],
     workspace_get: () => candidate,
     camera_rig_config: () => [{ id: "CAM-1", name: "拼接设备", source: "sim", viewCount: 3, serial: "DEVICE",
       triggerSource: "Line0", triggerActivation: "LevelHigh", frameRate: 10, triggerDelayUs: 0, debouncerUs: 0, strobe: false, chunk: true }],
     camera_rig_status: () => [{ id: "CAM-1", ready: true }],
     vision_calib_info: () => null,
     plc_get_status: () => ({ state: "connected", message: "PLC 已连接" }),
-    cycle_snapshot: () => snapshot(),
+    cycle_control_state: () => ({ productionBusy: false, plcLocked: false, plcHandshake: null, maintenance: null }),
     history_query: () => ({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } }),
     recipe_capture_get: () => null,
     recipe_capture_round_thumbs: () => new Promise(() => {}),
@@ -62,6 +63,7 @@ function renderWorkspace(path: string) {
   Object.assign(globalThis, { jest: { advanceTimersByTime: (ms: number) => vi.advanceTimersByTime(ms) } });
   const workspace = <MemoryRouter initialEntries={[path]}><SnackbarProvider><WorkspaceProvider><Routes>
     <Route path="/recipe/:recipeId/teach" element={createElement(inRecipe(TeachingPage))} />
+    <Route path="/recipe/:recipeId/validation" element={createElement(inRecipe(ValidationPage))} />
   </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>;
   render(workspace);
   // jsdom 没有样式表，逐级检查 pointer-events 只是空耗
@@ -94,6 +96,71 @@ const savingDoc = (candidate: WorkspaceView, gate?: Promise<void>): Handler => a
   response.workspace.revision = (revision as number) + 1;
   return response;
 };
+
+it("发布检查定位失败位置 → 打开指定相机的示教帧并可返回重新检查", async () => {
+  const candidate = corridorCandidate();
+  mockSite(candidate, { workspace_publish_checks: () => [{
+    name: "测量图", passed: false, detail: "出胶点需要重新标定",
+    teachingTargets: [{ camera: "CAM-1", segment: 3 }],
+  }] });
+  const user = renderWorkspace("/recipe/A/validation?from=overview");
+  const target = await screen.findByRole("link", { name: "去示教 CAM-1 · 第 3 段" });
+  await user.click(target);
+  expect(await screen.findByRole("img", { name: "CAM-1 · 1-3 · 示教帧" })).toBeVisible();
+  const frame = candidate.plan.cameraTeaching[0].segments.find(item => item.segment === 3)!.frame;
+  expect(workspaceApi.image).toHaveBeenLastCalledWith("A", frame.id);
+
+  await user.click(screen.getByRole("button", { name: "返回发布前检查" }));
+  expect(await screen.findByRole("link", { name: "去示教 CAM-1 · 第 3 段" })).toBeVisible();
+  const check = { id: "A", revision: 3, instanceId: candidate.workspace.instanceId };
+  expect(calls("workspace_publish_checks")).toEqual([check, check]);
+});
+
+it("示教保存期间返回发布页 → 等保存完成后只检查最终修订", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate();
+  const firstCheck = { id: "A", revision: 3, instanceId: candidate.workspace.instanceId };
+  const counts = [6, 3, 3];
+  candidate.plan.segments.forEach((segment, index) => { segment.expectedFrames = counts[index]; });
+  const saving = deferred<void>();
+  mockSite(candidate, {
+    workspace_publish_checks: ({ revision }) => revision === 3 ? [{
+      name: "走廊示教", passed: false, detail: "第 1 段相机 CAM-2 待画走廊",
+      teachingTargets: [{ camera: "CAM-2", segment: 1 }],
+    }] : [{ name: "走廊示教", passed: true, detail: "走廊已完成" }],
+    workspace_save_doc: savingDoc(candidate, saving.promise),
+  });
+  const user = renderWorkspace("/recipe/A/validation");
+  await user.click(await screen.findByRole("link", { name: "去示教 CAM-2 · 第 1 段" }));
+  const image = await screen.findByRole("img", { name: CAM2 });
+  await user.click(screen.getByRole("button", { name: "编辑点" }));
+  for (const [clientX, clientY] of [[10, 10], [40, 40]]) {
+    fireEvent.pointerDown(image, { clientX, clientY });
+    fireEvent.pointerUp(image);
+  }
+  await act(() => vi.advanceTimersByTimeAsync(900));
+  expect(screen.getByText("保存中")).toBeVisible();
+  fireEvent.pointerDown(image, { clientX: 60, clientY: 50 });
+  fireEvent.pointerUp(image);
+
+  await user.click(screen.getByRole("button", { name: "返回发布前检查" }));
+  const publish = await screen.findByRole("button", { name: "发布生产配方" });
+  expect(calls("workspace_publish_checks")).toEqual([firstCheck]);
+  expect(publish).toBeDisabled();
+  expect(screen.getByRole("note")).toHaveTextContent("保存后");
+
+  await act(async () => saving.resolve(undefined));
+  expect(calls("workspace_publish_checks")).toEqual([firstCheck]);
+  expect(publish).toBeDisabled();
+  expect(screen.getByRole("note")).toHaveTextContent("保存后");
+
+  await act(() => vi.advanceTimersByTimeAsync(900));
+  await waitFor(() => expect(publish).toBeEnabled());
+  expect(calls("workspace_publish_checks")).toEqual([firstCheck, { ...firstCheck, revision: 5 }]);
+  await user.click(publish);
+  const dialog = within(screen.getByRole("dialog", { name: "发布生产配方" }));
+  expect(dialog.getByRole("button", { name: /确认发布/ })).toBeEnabled();
+});
 
 it("保存期间继续加点 → 不锁编辑、缩放与走廊不重置，保存回来后新点保留并按新修订再保存一次", async () => {
   stubSvgPointer({ pointerEvent: true });
@@ -174,6 +241,112 @@ it("走廊自动保存期间开启逐帧定向 → 保存结果回来开关保�
   expect(saves[1].revision).toBe(saves[0].revision + 1);
 });
 
+it("已标定的出胶点越界 → 重新标定当前相机并恢复定向试测", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate((inspect, view) => {
+    inspect.nozzle = [99.000001, 30];
+    inspect.window = null;
+    inspect.segments = [{ segment: 1, corridor: [[10, 10], [80, 30]] }];
+    view.workspace.doc.segments![0].heading = { toleranceDeg: 5 };
+    view.plan.cameraTeaching[1].segments[0].saved = true;
+  });
+  mockSite(candidate, { workspace_save_doc: savingDoc(candidate) });
+  renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  expect(screen.getByText("出胶点超出示教帧")).toBeVisible();
+  expect(screen.getByRole("button", { name: "试测当前帧" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "全段试测" })).toBeDisabled();
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(calls("workspace_save_doc")).toEqual([]);
+
+  fireEvent.click(screen.getByRole("button", { name: "重新标出胶点" }));
+  expect(screen.getByRole("button", { name: "标出胶点" })).toHaveAttribute("aria-pressed", "true");
+  expect(calls("workspace_save_doc")).toEqual([]);
+  fireEvent.pointerDown(image, { clientX: 33.2, clientY: 26.4 });
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(await screen.findByText("草稿已保存")).toBeVisible();
+  expect(screen.queryByText("出胶点超出示教帧")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "全段试测" })).toBeEnabled();
+  const saves = calls("workspace_save_doc") as { doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(saves.map(({ doc }) => doc.inspect)).toEqual([candidate.workspace.doc.inspect!.map(item => item.camera === "CAM-2"
+    ? { ...item, nozzle: [33.2, 26.4] } : item)]);
+});
+
+it("已保存的走廊有边缘越界点 → 提示并等待用户修复，再保存并恢复试测", async () => {
+  const candidate = corridorCandidate((inspect, view) => {
+    inspect.segments = [{ segment: 1, corridor: [[10, 10], [99.4, 45], [100, 60]] }];
+    view.plan.cameraTeaching[1].segments[0].saved = false;
+  });
+  const save = savingDoc(candidate);
+  mockSite(candidate, { workspace_save_doc: async args => {
+    const next = await save(args) as WorkspaceView;
+    const path = next.workspace.doc.inspect![1].segments![0].corridor;
+    next.plan.cameraTeaching[1].segments[0].saved = path.every(([x, y]) => x >= 0 && x <= 99 && y >= 0 && y <= 59);
+    return next;
+  } });
+  renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
+  await screen.findByRole("img", { name: CAM2 });
+  expect(screen.getByText(/第 2 个点超出 100 × 60 px 的示教帧/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "全段试测" })).toBeDisabled();
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(calls("workspace_save_doc")).toEqual([]);
+
+  fireEvent.click(screen.getByRole("button", { name: "修正边缘点" }));
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(await screen.findByText("段走廊已示教")).toBeVisible();
+  expect(screen.getByRole("button", { name: "全段试测" })).toBeEnabled();
+  expect(screen.queryByText("走廊有越界点")).not.toBeInTheDocument();
+  const [saved] = calls("workspace_save_doc") as { doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(calls("workspace_save_doc")).toHaveLength(1);
+  expect(saved.doc.inspect![1].segments).toEqual([{ segment: 1, corridor: [[10, 10], [99, 45], [99, 59]] }]);
+  expect(saved.doc.inspect![0]).toEqual(candidate.workspace.doc.inspect![0]);
+});
+
+it("走廊加点或拖点到图像右下边缘 → 保存最后一个像素中心的坐标", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate();
+  mockSite(candidate, { workspace_save_doc: savingDoc(candidate) });
+  renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
+  fireEvent.pointerDown(image, { clientX: 10, clientY: 10 });
+  fireEvent.pointerUp(image);
+  fireEvent.pointerDown(image, { clientX: 99.8, clientY: 20 });
+  fireEvent.pointerUp(image);
+  const handle = screen.getByLabelText("中线点 2");
+  expect(handle).toHaveAttribute("cx", "99");
+
+  fireEvent.pointerDown(handle, { clientX: 99, clientY: 20 });
+  fireEvent.pointerMove(image, { clientX: 120, clientY: 80 });
+  fireEvent.pointerUp(image);
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(await screen.findByText("草稿已保存")).toBeVisible();
+  const saves = calls("workspace_save_doc") as { doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(saves.map(save => save.doc.inspect![1].segments)).toEqual([[{ segment: 1, corridor: [[10, 10], [99, 59]] }]]);
+});
+
+it("按点距重排遇到等距拐点 → 保留先出现的点，并按新的点距保存", async () => {
+  const candidate = corridorCandidate(inspect => {
+    inspect.segments = [{ segment: 1, corridor: [[10, 10], [30, 11], [34, 11], [70, 10]] }];
+  });
+  candidate.workspace.instanceId = 37;
+  mockSite(candidate, { workspace_save_doc: savingDoc(candidate) });
+  renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
+  fireEvent.change(screen.getByRole("spinbutton", { name: "走廊点间距" }), { target: { value: "20" } });
+  fireEvent.click(screen.getByRole("button", { name: "应用到当前走廊" }));
+
+  const expected = [[10, 10], [20, 10.5], [30, 11], [43.3, 10.7], [56.7, 10.3], [70, 10]];
+  expect(image.querySelector('[aria-label="中线叠加"] polyline')).toHaveAttribute("points", expected.map(point => point.join(",")).join(" "));
+  fireEvent.click(screen.getByRole("button", { name: "保存走廊" }));
+  expect(await screen.findByText("草稿已保存")).toBeVisible();
+  const saves = calls("workspace_save_doc") as { id: string; revision: number; instanceId: number; doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(saves.map(({ id, revision, instanceId, doc }) => ({ id, revision, instanceId, segments: doc.inspect![1].segments }))).toEqual([{
+    id: "A", revision: 3, instanceId: 37, segments: [{ segment: 1, corridor: expected }],
+  }]);
+});
+
 it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在这一段的示教帧上提取一次", async () => {
   stubSvgPointer({ pointerEvent: true });
   const candidate = corridorCandidate();
@@ -196,8 +369,8 @@ it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引�
   await user.click(screen.getByRole("button", { name: "自动提取走廊" }));
   expect(await screen.findByLabelText("中线点 5")).toBeVisible();
   expect(screen.queryByLabelText("刷选胶路区域")).not.toBeInTheDocument();
-  const [saved] = calls("workspace_save_doc") as { id: string; revision: number; doc: WorkspaceView["workspace"]["doc"] }[];
-  expect([saved.id, saved.revision, saved.doc.inspect![1]]).toEqual(["A", 3, { ...candidate.workspace.doc.inspect![1], segments: [{ segment: 1, corridor: [[10, 10]] }] }]);
+  const [saved] = calls("workspace_save_doc") as { id: string; revision: number; instanceId: number; doc: WorkspaceView["workspace"]["doc"] }[];
+  expect([saved.id, saved.revision, saved.instanceId, saved.doc.inspect![1]]).toEqual(["A", 3, candidate.workspace.instanceId, { ...candidate.workspace.doc.inspect![1], segments: [{ segment: 1, corridor: [[10, 10]] }] }]);
   // 按相机 id 在这一段冻结的示教帧上提取（workspace_extract_corridor）
   expect(calls("workspace_extract_corridor")).toEqual([{ id: "A", revision: 4, camera: "CAM-2", imageId: FRAME2, roi: [0, 0, 100, 60],
     guide: { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 60 }, pointSpacingPx: 10 }]);
@@ -238,16 +411,30 @@ it("段已有示教帧时在帧条上点本段另一帧组 → 按示教件提�
   response.plan!.cameraTeaching[1].segments[0].seq = 3;
   response.workspace.cameraTeaching = response.workspace.cameraTeaching.map(item => item.camera === "CAM-2" && item.segment === 1 ? { camera: "CAM-2", frame, round: "round-1", seq: 3, segment: 1 } : item);
   const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
+  const round = deferred<ReturnType<typeof captureRoundV2>>();
   mockSite(candidate, {
-    recipe_capture_get: ({ roundId }) => captureRoundV2({ recipeId: "A", roundId: roundId as string }),
+    recipe_capture_get: () => round.promise,
     workspace_teach_segment_corridor: () => response,
   });
   const frameImage = vi.spyOn(workspaceApi, "captureFrameImage").mockResolvedValue(picture);
   const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
   await screen.findByRole("img", { name: CAM2 });
-  expect(calls("recipe_capture_get")).toEqual([{ roundId: "round-1" }]);
+  expect(calls("recipe_capture_get")).toEqual([]);
+  await user.click(screen.getByRole("button", { name: "选择相机 CAM-2" }));
+  expect(screen.getByRole("region", { name: "相机参数" })).toBeVisible();
+  expect(calls("recipe_capture_get")).toEqual([]);
+  await user.click(screen.getByRole("button", { name: "选择 CAM-2 1-1 走廊" }));
+  await screen.findByRole("img", { name: CAM2 });
+
   await user.click(await screen.findByRole("button", { name: "CAM-2 帧组 3" }));
   await screen.findByRole("region", { name: "示教帧选择" });
+  expect(calls("recipe_capture_get")).toEqual([{ roundId: "round-1" }]);
+  expect(screen.getByRole("button", { name: "用此帧示教 1-1 CAM-2" })).toBeDisabled();
+  expect(frameImage).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "回到示教帧" }));
+  await user.click(await screen.findByRole("button", { name: "CAM-2 帧组 3" }));
+  expect(calls("recipe_capture_get")).toEqual([{ roundId: "round-1" }]);
+  await act(async () => round.resolve(captureRoundV2({ recipeId: "A", roundId: "round-1" })));
   expect(await screen.findByRole("img", { name: "CAM-2 · 帧组 3 · 候选示教帧" })).toBeVisible();
   await waitFor(() => expect(frameImage.mock.calls.at(-1)?.slice(0, 3)).toEqual(["round-1", "CAM-2", 3]));
   const choose = await screen.findByRole("button", { name: "用此帧示教 1-1 CAM-2" });

@@ -1,14 +1,14 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
-import { useCycle } from "../src/features/cycle/api";
-import { burstRecipe, burstWorkspaceView, captureRoundV2, frameMetrics, pathSegment, snapshot, workspaceState } from "./fixtures";
+import { useProductionBusy } from "../src/features/cycle/control";
+import { burstRecipe, burstWorkspaceView, captureRoundV2, deferred, frameMetrics, pathSegment, workspaceState } from "./fixtures";
 import { stubSvgPointer } from "./svg-pointer";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn() }));
+vi.mock("../src/features/cycle/control", () => ({ useProductionBusy: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn(), captureRoundThumbs: vi.fn(() => new Promise(() => {})), teachPreviewFrame: vi.fn(), teachPreviewSegment: vi.fn(), fitColorModel: vi.fn(), segmentTemplatePreview: vi.fn(), segmentTemplateSave: vi.fn() } }));
 
 let ws: ReturnType<typeof workspaceState>;
@@ -23,7 +23,7 @@ beforeEach(() => {
   ws.data!.workspace.captureReview = confirmedReview();
   vi.mocked(workspaceApi.segmentTemplatePreview).mockResolvedValue({ restructured: false, dropped: [], untaught: [], measurementCleared: false, coverage: null });
   vi.mocked(workspaceApi.segmentTemplateSave).mockImplementation(async () => ws.data!);
-  vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot() });
+  vi.mocked(useProductionBusy).mockReturnValue(false);
   vi.mocked(workspaceApi.image).mockResolvedValue(picture);
   vi.mocked(workspaceApi.captureFrameImage).mockResolvedValue(picture);
   vi.mocked(workspaceApi.captureGet).mockResolvedValue(captureRoundV2({ recipeId: "A" }));
@@ -32,6 +32,26 @@ beforeEach(() => {
 });
 
 describe("走廊示教", () => {
+
+  it("取消全段重新试测 → 保留上次结果并恢复试测入口", async () => {
+    vi.mocked(workspaceApi.teachPreviewSegment).mockResolvedValueOnce({
+      round: "round-1", start: 1, end: 4,
+      frames: Array.from({ length: 4 }, (_, i) => frameMetrics(0, i + 1, { presentRatio: 0 })),
+    });
+    show("/recipe/teach?camera=CAM-1&segment=1");
+    const trial = within(screen.getByRole("region", { name: "本段试测" }));
+    fireEvent.click(trial.getByRole("button", { name: "全段试测" }));
+    const saved = within(await trial.findByLabelText("试测统计"));
+    expect(saved.getByText("无胶 4")).toBeVisible();
+
+    vi.mocked(workspaceApi.teachPreviewSegment).mockRejectedValueOnce("OPERATION_CANCELLED: 任务已取消");
+    fireEvent.click(trial.getByRole("button", { name: "重新试测" }));
+    await waitFor(() => expect(trial.getByRole("status", { name: "全段试测进度" })).toHaveTextContent("已取消，原结果保留"));
+    expect(trial.queryByRole("alert")).not.toBeInTheDocument();
+    expect(saved.getByText("上次试测结果")).toBeVisible();
+    expect(saved.getByText("无胶 4")).toBeVisible();
+    expect(trial.getByRole("button", { name: "重新试测" })).toBeEnabled();
+  });
 
   it("单段没有分段审查记录 → 按实际轮次帧数标记笔首及段尾跳过，无胶统计排除跳过帧", async () => {
     ws = workspaceState(burstWorkspaceView(burstRecipe({ id: "A", segments: [pathSegment(1, "straight", { expectedFrames: 12, skipTail: 1 })], passSkip: { head: 4, tail: 0 } })));
@@ -44,6 +64,7 @@ describe("走廊示教", () => {
     const counts = within(screen.getByLabelText("试测统计"));
     expect(await counts.findByText("无胶 7")).toBeVisible();
     expect(counts.getByText("生产跳过 5")).toBeVisible();
+    expect(workspaceApi.captureGet).not.toHaveBeenCalled();
   });
 
   it("检测段两侧为免检段 → 两侧保护帧合并到生产跳过，段内其余无胶帧仍计数", async () => {
@@ -99,19 +120,37 @@ describe("站距", () => {
 
 describe("出胶点标定", () => {
 
+  it.each([true, false])("逐帧定向为 %s 时，按本段是否使用推算出胶点决定越界提示与试测状态", async heading => {
+    ws.data!.workspace.doc.segments![0].heading = heading ? { toleranceDeg: 5 } : null;
+    ws.data!.workspace.doc.inspect![1].segments = [{ segment: 1, corridor: [[10, 10], [80, 30]] }];
+    ws.data!.plan.cameraTeaching[1].nozzle = { point: [100, 30], calibrated: false, warning: null };
+    ws.frameDirty = heading;
+    show("/recipe/teach?camera=CAM-2&segment=1");
+    await screen.findByRole("img", { name: "CAM-2 · 1-1 · 示教帧" });
+    const trial = screen.getByRole("button", { name: "全段试测" });
+    if (heading) {
+      expect(screen.getByText(/从走廊推算的出胶点/)).toBeVisible();
+      expect(screen.getByRole("button", { name: "标出实际胶点" })).toBeDisabled();
+      expect(trial).toBeDisabled();
+    } else {
+      expect(screen.queryByText("出胶点超出示教帧")).not.toBeInTheDocument();
+      expect(trial).toBeEnabled();
+    }
+  });
+
   // 防的回归（D-SB-47）：标出胶点时点图仍按编辑点给走廊加点；出胶点写到段走廊而不是相机上，别的段用不到
-  it("段开启逐帧定向、选“标出胶点”后点图 → 写入这台相机的出胶点并显示叠加，走廊不加点", async () => {
+  it("在图像右下边缘标出胶点 → 写入这台相机的最后一个像素中心并显示叠加，走廊不加点", async () => {
     ws.data!.workspace.doc.segments![0].heading = { toleranceDeg: 5 };
     ws.data!.workspace.doc.inspect![1].window = { startMm: 2, lengthMm: 4 };
     stubSvgPointer();
     show("/recipe/teach?camera=CAM-2&segment=1");
     const image = await screen.findByRole("img", { name: "CAM-2 · 1-1 · 示教帧" });
     fireEvent.click(screen.getByLabelText("标出胶点"));
-    fireEvent.pointerDown(image, { button: 0, clientX: 40, clientY: 30, pointerId: 1 });
+    fireEvent.pointerDown(image, { button: 0, clientX: 99.8, clientY: 59.9, pointerId: 1 });
     const doc = vi.mocked(ws.setDoc).mock.lastCall![0];
-    expect(doc.inspect!.find(item => item.camera === "CAM-2")!.nozzle).toEqual([40, 30]);
+    expect(doc.inspect!.find(item => item.camera === "CAM-2")!.nozzle).toEqual([99, 59]);
     expect(ws.setCorridorDraft).not.toHaveBeenCalled();
-    ws.data!.workspace.doc.inspect![1].nozzle = [40, 30];
+    ws.data!.workspace.doc.inspect![1].nozzle = [99, 59];
     fireEvent.click(screen.getByLabelText("编辑点"));
     expect(await screen.findByLabelText("出胶点（已标定）")).toBeInTheDocument();
     expect(screen.getByLabelText("测量区间环带")).toBeInTheDocument();
@@ -119,6 +158,13 @@ describe("出胶点标定", () => {
 });
 
 describe("画布模式", () => {
+
+  it("走廊点远离示教帧 → 提示手动修复", async () => {
+    ws.data!.workspace.doc.inspect![1].segments = [{ segment: 1, corridor: [[10, 10], [240, 30]] }];
+    show("/recipe/teach?camera=CAM-2&segment=1");
+    expect(await screen.findByText(/请编辑越界点或重新绘制走廊/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "修正边缘点" })).not.toBeInTheDocument();
+  });
 
   // 防的回归：打开示教帧默认就是“编辑点”，看图时随手一点就给走廊加了点
   it("打开示教帧默认只看 → 点图不加走廊点；选“编辑点”后点图才加点", async () => {
@@ -234,6 +280,39 @@ describe("示教帧选择", () => {
     expect(choose).toHaveAccessibleDescription(expect.stringContaining("缺帧"));
     expect(vi.mocked(workspaceApi.captureFrameImage).mock.calls.map(args => args.slice(0, 3))).not.toContainEqual(["round-1", "CAM-2", 5]);
     expect(workspaceApi.teachSegmentCorridor).not.toHaveBeenCalled();
+  });
+
+  it("选帧读取期间替换候选实例 → 迟到的轮次不用于新候选", async () => {
+    const first = deferred<ReturnType<typeof captureRoundV2>>();
+    const second = deferred<ReturnType<typeof captureRoundV2>>();
+    vi.mocked(workspaceApi.captureGet).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const path = "/recipe/teach?camera=CAM-2&segment=2";
+    const { rerender } = show(path);
+    fireEvent.click(await screen.findByRole("button", { name: "CAM-2 帧组 6" }));
+    await waitFor(() => expect(workspaceApi.captureGet).toHaveBeenCalledTimes(1));
+
+    ws.data = { ...ws.data!, workspace: { ...ws.data!.workspace, instanceId: 2 } };
+    rerender(<MemoryRouter initialEntries={[path]}><TeachingPage /></MemoryRouter>);
+    await waitFor(() => expect(workspaceApi.captureGet).toHaveBeenCalledTimes(2));
+    await act(async () => first.resolve(captureRoundV2({ recipeId: "A" })));
+    expect(workspaceApi.captureFrameImage).not.toHaveBeenCalled();
+    const choose = () => screen.getByRole("button", { name: "用此帧示教 1-2 CAM-2" });
+    expect(choose()).toBeDisabled();
+
+    await act(async () => second.resolve(captureRoundV2({ recipeId: "A" })));
+    expect(await screen.findByRole("img", { name: "CAM-2 · 帧组 6 · 候选示教帧" })).toBeVisible();
+    expect(choose()).toBeEnabled();
+  });
+
+  it("示教轮次读取失败 → 禁止冻结，重试成功后可继续选帧", async () => {
+    vi.mocked(workspaceApi.captureGet).mockRejectedValueOnce("采集文件暂不可读");
+    show("/recipe/teach?camera=CAM-2&segment=2");
+    expect(await screen.findByRole("alert")).toHaveTextContent("采集文件暂不可读");
+    const choose = () => screen.getByRole("button", { name: "用此帧示教 1-2 CAM-2" });
+    expect(choose()).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "重试读取示教件" }));
+    await waitFor(() => expect(choose()).toBeEnabled());
+    expect(workspaceApi.captureGet).toHaveBeenCalledTimes(2);
   });
 });
 

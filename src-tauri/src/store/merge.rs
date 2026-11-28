@@ -9,7 +9,10 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{add_part_mode, add_part_tags, db_err, Store, DB_VERSION, PROJECT_DB_VERSION};
+use super::{
+    add_part_mode, add_part_tags, db_err, delete_history_rows, Store, DB_VERSION,
+    HISTORY_ID_LIMITS, PROJECT_DB_VERSION,
+};
 
 /// 两份配方快照按当前格式读入后相同：旧快照里已退役的字段（如 `planVersion`）不算差异。
 fn same_snapshot(a: &str, b: &str) -> bool {
@@ -207,8 +210,8 @@ impl Store {
     pub fn forget_project(&self, project: &str) -> Result<(), String> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(db_err)?;
+        delete_history_rows(&tx, "DELETE FROM parts WHERE project_id = ?1", [project])?;
         for sql in [
-            "DELETE FROM parts WHERE project_id = ?1",
             "DELETE FROM recipe_snapshots WHERE project_id = ?1",
             "DELETE FROM workspace_instances WHERE project_id = ?1",
             "DELETE FROM project_merges WHERE project_id = ?1",
@@ -219,7 +222,6 @@ impl Store {
         tx.commit().map_err(db_err)
     }
 
-    /// 把项目 `project` 的记录、配方快照与候选实例写成独立的记录库 `target`（10 版，导出项目用）。
     /// 把项目 `project` 的记录导出成记录库子集 `target`；`linked` 里别的项目的真机记录（本项目示教件引用的历史件，按 cycleId）
     /// 一并导出、改归本项目，配方快照随之带上（与本项目同修订号内容不同则拒绝）。返回件数与这些外来记录（编号, 录制目录）。
     pub fn export_project(
@@ -229,44 +231,36 @@ impl Store {
         linked: &std::collections::BTreeSet<String>,
     ) -> Result<(usize, Vec<(i64, Option<String>)>), String> {
         let linked = serde_json::to_string(linked).map_err(|e| e.to_string())?;
-        if target.exists() {
-            return Err(format!("导出记录库 {} 已存在", target.display()));
-        }
-        drop(Store::open_inner(target, project, false)?);
-        let conn = self.conn.lock().unwrap();
-        conn.execute("ATTACH DATABASE ?1 AS dst", [target.to_string_lossy()])
-            .map_err(db_err)?;
-        let result = (|| {
-            conn.execute_batch("BEGIN;").map_err(db_err)?;
-            let count = conn
+        self.export_record_snapshot(target, project, |tx| {
+            let count = tx
                 .execute(
-                    "INSERT INTO dst.parts SELECT * FROM main.parts WHERE project_id = ?1 \
+                    "INSERT INTO main.parts SELECT * FROM src.parts WHERE project_id = ?1 \
                      OR (source = 'real' AND cycle_id IN (SELECT value FROM json_each(?2)))",
                     params![project, linked],
                 )
                 .map_err(db_err)?;
             for sql in [
-                "INSERT INTO dst.part_frames SELECT f.* FROM main.part_frames f WHERE f.part_id IN (SELECT id FROM dst.parts)",
-                "INSERT INTO dst.part_points SELECT f.* FROM main.part_points f WHERE f.part_id IN (SELECT id FROM dst.parts)",
-                "INSERT INTO dst.part_shots SELECT f.* FROM main.part_shots f WHERE f.part_id IN (SELECT id FROM dst.parts)",
+                "INSERT INTO main.part_frames SELECT f.* FROM src.part_frames f WHERE f.part_id IN (SELECT id FROM main.parts)",
+                "INSERT INTO main.part_points SELECT f.* FROM src.part_points f WHERE f.part_id IN (SELECT id FROM main.parts)",
+                "INSERT INTO main.part_shots SELECT f.* FROM src.part_shots f WHERE f.part_id IN (SELECT id FROM main.parts)",
             ] {
-                conn.execute(sql, []).map_err(db_err)?;
+                tx.execute(sql, []).map_err(db_err)?;
             }
             for sql in [
-                "INSERT INTO dst.recipe_snapshots SELECT * FROM main.recipe_snapshots WHERE project_id = ?1",
-                "INSERT INTO dst.workspace_instances SELECT * FROM main.workspace_instances WHERE project_id = ?1",
+                "INSERT INTO main.recipe_snapshots SELECT * FROM src.recipe_snapshots WHERE project_id = ?1",
+                "INSERT INTO main.workspace_instances SELECT * FROM src.workspace_instances WHERE project_id = ?1",
             ] {
-                conn.execute(sql, [project]).map_err(db_err)?;
+                tx.execute(sql, [project]).map_err(db_err)?;
             }
-            let foreign_snapshots = "FROM main.recipe_snapshots s JOIN dst.parts p ON p.project_id = s.project_id AND p.recipe_revision = s.revision_id WHERE p.project_id != ?1";
-            conn.execute(
-                &format!("INSERT INTO dst.recipe_snapshots (project_id, revision_id, recipe_id, version, json) SELECT DISTINCT ?1, s.revision_id, s.recipe_id, s.version, s.json {foreign_snapshots} ON CONFLICT (project_id, revision_id) DO NOTHING"),
+            let foreign_snapshots = "FROM src.recipe_snapshots s JOIN main.parts p ON p.project_id = s.project_id AND p.recipe_revision = s.revision_id WHERE p.project_id != ?1";
+            tx.execute(
+                &format!("INSERT INTO main.recipe_snapshots (project_id, revision_id, recipe_id, version, json) SELECT DISTINCT ?1, s.revision_id, s.recipe_id, s.version, s.json {foreign_snapshots} ON CONFLICT (project_id, revision_id) DO NOTHING"),
                 [project],
             )
             .map_err(db_err)?;
-            let conflict: Option<String> = conn
+            let conflict: Option<String> = tx
                 .query_row(
-                    &format!("SELECT s.revision_id {foreign_snapshots} AND EXISTS (SELECT 1 FROM dst.recipe_snapshots d WHERE d.project_id = ?1 AND d.revision_id = s.revision_id AND (d.json != s.json OR d.recipe_id != s.recipe_id OR d.version != s.version)) LIMIT 1"),
+                    &format!("SELECT s.revision_id {foreign_snapshots} AND EXISTS (SELECT 1 FROM main.recipe_snapshots d WHERE d.project_id = ?1 AND d.revision_id = s.revision_id AND (d.json != s.json OR d.recipe_id != s.recipe_id OR d.version != s.version)) LIMIT 1"),
                     [project],
                     |r| r.get(0),
                 )
@@ -278,8 +272,8 @@ impl Store {
                 ));
             }
             let foreign = {
-                let mut stmt = conn
-                    .prepare("SELECT id, recording_directory FROM dst.parts WHERE project_id != ?1 ORDER BY id")
+                let mut stmt = tx
+                    .prepare("SELECT id, recording_directory FROM main.parts WHERE project_id != ?1 ORDER BY id")
                     .map_err(db_err)?;
                 let rows = stmt
                     .query_map([project], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -287,29 +281,15 @@ impl Store {
                 rows.collect::<Result<Vec<(i64, Option<String>)>, _>>()
                     .map_err(db_err)?
             };
-            conn.execute(
-                "UPDATE dst.parts SET project_id = ?1 WHERE project_id != ?1",
+            tx.execute(
+                "UPDATE main.parts SET project_id = ?1 WHERE project_id != ?1",
                 [project],
             )
             .map_err(db_err)?;
             // 导出子集里的跨项目复测引用没有目标，置空
-            conn.execute("UPDATE dst.parts SET retest_of = NULL WHERE retest_of NOT IN (SELECT id FROM dst.parts)", []).map_err(db_err)?;
-            conn.execute_batch("COMMIT;").map_err(db_err)?;
-            Ok::<_, String>((count, foreign))
-        })();
-        if result.is_err() {
-            let _ = conn.execute_batch("ROLLBACK;");
-        }
-        conn.execute_batch("DETACH DATABASE dst;").map_err(db_err)?;
-        let count = result?;
-        let out = Connection::open(target).map_err(db_err)?;
-        let mode: String = out
-            .query_row("PRAGMA journal_mode = DELETE", [], |r| r.get(0))
-            .map_err(db_err)?;
-        if mode != "delete" {
-            return Err("导出记录库无法退出 WAL 模式".into());
-        }
-        Ok(count)
+            tx.execute("UPDATE main.parts SET retest_of = NULL WHERE retest_of NOT IN (SELECT id FROM main.parts)", []).map_err(db_err)?;
+            Ok((count, foreign))
+        })
     }
 }
 
@@ -445,11 +425,10 @@ pub(super) fn merge_rows(
             .map_err(db_err)?;
         rows.collect::<Result<_, _>>().map_err(db_err)?
     };
-    let main_max: i64 = conn
-        .query_row("SELECT MAX(COALESCE((SELECT MAX(id) FROM main.parts), 0), COALESCE((SELECT MAX(id) FROM main.history_deletions), 0))", [], |r| {
-            r.get(0)
-        })
+    let (occupied, floor): (i64, i64) = conn
+        .query_row(HISTORY_ID_LIMITS, [], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(db_err)?;
+    let main_max = occupied.max(floor);
     let source_max = sources.last().map_or(0, |(id, _)| *id);
     let mut next = if keep_ids {
         main_max.max(source_max) + 1
@@ -485,6 +464,7 @@ pub(super) fn merge_rows(
                 }
                 None => {
                     let keep = keep_ids
+                        && (floor == 0 || *old > floor)
                         && !assigned.contains(old)
                         && !existing_id
                             .query_row([old], |r| r.get::<_, bool>(0))

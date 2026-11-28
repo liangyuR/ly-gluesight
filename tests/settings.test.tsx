@@ -1,19 +1,25 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SnackbarProvider } from "qing-steel";
+import { MemoryRouter } from "react-router-dom";
 import SettingsPage from "../src/pages/SettingsPage";
+import { WindowConnections } from "../src/layout/WindowStatus";
 import type { CycleSettings } from "../src/features/cycle/types";
+import type { EngineStatus } from "../src/lib/api";
+import { deferred } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 
 let saved: CycleSettings;
 let disks: string[];
+let readEngine: () => Promise<EngineStatus>;
 const disksReply = () => ({ reserveBytes: 5 * 1024 ** 3, disks: disks.map((path, i) => ({ path, freeBytes: 100 * 1024 ** 3, writable: true, error: null, current: i === 0 })) });
 
 beforeEach(() => {
+  readEngine = async () => ({ backend: "LyFlow", ready: false, message: "" });
   disks = ["C:\\gs_logs", "D:\\gs_logs"];
   saved = {
     productSource: "plc", manualRecipeId: null, historyDays: 180,
@@ -25,7 +31,7 @@ beforeEach(() => {
       case "cycle_get_settings": return structuredClone(saved);
       case "cycle_save_settings": saved = structuredClone((args as { settings: CycleSettings }).settings); return;
       case "cycle_recipes": return [];
-      case "engine_status": return { backend: "LyFlow", ready: false, message: "" };
+      case "engine_status": return readEngine();
       case "storage_status": return { environment: "development", root: "C:/ProgramData/ly/GlueSight-dev",
         logRoot: "C:/test/gs_logs", runtimeLogDir: "C:/test/gs_logs/runtime/development/instance", visionLogDir: "C:/test/gs_logs/vision/development/instance/project" };
       case "storage_open_directory": return;
@@ -40,6 +46,60 @@ beforeEach(() => {
 function recordSaveButton() {
   return within(screen.getByRole("region", { name: "lyFlow 与帧录制" })).getByRole("button", { name: "保存" });
 }
+
+function renderEngineViews() {
+  return render(<MemoryRouter><SnackbarProvider><WindowConnections /><SettingsPage /></SnackbarProvider></MemoryRouter>);
+}
+
+it("标题栏和设置共享引擎首读 → 重试后同时恢复", async () => {
+  const first = deferred<EngineStatus>();
+  const load = vi.fn<() => Promise<EngineStatus>>().mockReturnValueOnce(first.promise)
+    .mockResolvedValue({ backend: "LyFlow", ready: true, message: "运行库已就绪", version: "2.0.4", path: "C:/test/lyflow" });
+  readEngine = load;
+  renderEngineViews();
+  await act(async () => {});
+  expect(load).toHaveBeenCalledOnce();
+  await act(async () => first.reject(new Error("引擎暂不可读")));
+  expect(screen.getByRole("link", { name: "后端未连接" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "重试引擎状态" }));
+
+  expect(await screen.findByText("LyFlow · 就绪 · 2.0.4")).toBeVisible();
+  expect(screen.getByRole("button", { name: "打开运行库目录：C:/test/lyflow" })).toBeVisible();
+  expect(screen.getByRole("link", { name: "LyFlow · 就绪" })).toHaveAttribute("title", "运行库已就绪");
+  expect(load).toHaveBeenCalledTimes(2);
+});
+
+it("保存时轮询仍在进行 → 保存后的引擎刷新排队且离页释放轮询", async () => {
+  const pendingPoll = deferred<EngineStatus>();
+  const waiting = { backend: "LyFlow", ready: false, message: "旧状态" };
+  const load = vi.fn<() => Promise<EngineStatus>>()
+    .mockResolvedValueOnce(waiting).mockReturnValueOnce(pendingPoll.promise)
+    .mockResolvedValue({ backend: "LyFlow", ready: true, message: "已刷新" });
+  readEngine = load;
+  vi.useFakeTimers();
+  try {
+    const view = renderEngineViews();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(load).toHaveBeenCalledOnce();
+    await act(() => vi.advanceTimersByTimeAsync(6000));
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("旧状态")).toBeVisible();
+
+    fireEvent.click(recordSaveButton());
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(invoke).toHaveBeenCalledWith("cycle_save_settings", expect.anything());
+    expect(load).toHaveBeenCalledTimes(2);
+    await act(async () => pendingPoll.resolve(waiting));
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole("link", { name: "LyFlow · 就绪" })).toHaveAttribute("title", "已刷新");
+
+    view.unmount();
+    await act(() => vi.advanceTimersByTimeAsync(6000));
+    expect(load).toHaveBeenCalledTimes(3);
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 describe("原图保留设置", () => {
 

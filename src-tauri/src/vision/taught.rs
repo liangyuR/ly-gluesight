@@ -180,13 +180,7 @@ fn taught_bbox(points: &[[f64; 2]]) -> Option<[f64; 4]> {
     if q.len() < 2 || !(total > 0.0) {
         return None;
     }
-    let mut targets = Vec::new();
-    let mut t = 0.0;
-    while t < total - 1e-9 {
-        targets.push(t);
-        t += 2.0;
-    }
-    targets.push(total);
+    let last_regular = ((total - 1e-9) / 2.0).ceil() * 2.0 - 2.0;
     let round3 = |v: f64| (v * 1000.0).round() / 1000.0;
     let mut bbox = [
         f64::INFINITY,
@@ -194,28 +188,39 @@ fn taught_bbox(points: &[[f64; 2]]) -> Option<[f64; 4]> {
         f64::NEG_INFINITY,
         f64::NEG_INFINITY,
     ];
-    let mut seg = 0;
-    for t in targets {
-        while seg + 2 < q.len() && arc[seg + 1] < t {
-            seg += 1;
-        }
-        let span = arc[seg + 1] - arc[seg];
-        let f = if span > 1e-12 {
-            ((t - arc[seg]) / span).clamp(0.0, 1.0)
-        } else {
-            0.0
+    let mut next_regular = 0.0;
+    for (edge, range) in q.windows(2).zip(arc.windows(2)) {
+        let (a, b) = (edge[0], edge[1]);
+        let (start, end) = (range[0], range[1]);
+        let span = end - start;
+        let mut include = |t: f64| {
+            let f = if span > 1e-12 {
+                ((t - start) / span).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let x = round3(a[0] + (b[0] - a[0]) * f);
+            let y = round3(a[1] + (b[1] - a[1]) * f);
+            bbox = [
+                bbox[0].min(x),
+                bbox[1].min(y),
+                bbox[2].max(x),
+                bbox[3].max(y),
+            ];
         };
-        let (a, b) = (q[seg], q[seg + 1]);
-        let (x, y) = (
-            round3(a[0] + (b[0] - a[0]) * f),
-            round3(a[1] + (b[1] - a[1]) * f),
-        );
-        bbox = [
-            bbox[0].min(x),
-            bbox[1].min(y),
-            bbox[2].max(x),
-            bbox[3].max(y),
-        ];
+        let last = last_regular.min((end / 2.0).floor() * 2.0);
+        if next_regular <= last {
+            // 舍入后的坐标在线段内仍单调，首尾两个采样点决定该段的极值。
+            include(next_regular);
+            if next_regular < last {
+                include(last);
+            }
+            next_regular = last + 2.0;
+        }
+        if end == total {
+            include(total);
+            break;
+        }
     }
     Some(bbox)
 }
@@ -466,23 +471,28 @@ pub fn corridor_inside(corridor: &[[f32; 2]], size: [u32; 2]) -> bool {
         })
 }
 
-/// 折线上弧长 t（px）处的点。
-fn polyline_at(path: &[[f32; 2]], t: f64) -> [f64; 2] {
-    let mut left = t.max(0.0);
-    for w in path.windows(2) {
-        let (a, b) = (
-            [w[0][0] as f64, w[0][1] as f64],
-            [w[1][0] as f64, w[1][1] as f64],
-        );
-        let l = (b[0] - a[0]).hypot(b[1] - a[1]);
-        if left <= l && l > 0.0 {
-            let f = left / l;
-            return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+fn corridor_stations(path: &[[f32; 2]], count: usize, step: f64) -> Vec<[f64; 2]> {
+    let mut stations = Vec::with_capacity(count);
+    let mut distance = 0.0;
+    let mut start = 0.0;
+    for edge in path.windows(2) {
+        let a = edge[0].map(f64::from);
+        let b = edge[1].map(f64::from);
+        let delta = [b[0] - a[0], b[1] - a[1]];
+        let length = delta[0].hypot(delta[1]);
+        if length == 0.0 {
+            continue;
         }
-        left -= l;
+        let end = start + length;
+        while stations.len() < count && distance <= end {
+            let fraction = ((distance - start) / length).min(1.0);
+            stations.push([a[0] + delta[0] * fraction, a[1] + delta[1] * fraction]);
+            distance = stations.len() as f64 * step;
+        }
+        start = end;
     }
-    path.last()
-        .map_or([0.0, 0.0], |p| [p[0] as f64, p[1] as f64])
+    stations.resize(count, path.last().map_or([0.0; 2], |p| p.map(f64::from)));
+    stations
 }
 
 /// 段配方第 `segment` 段、一台检测相机的走廊测量图：示教帧尺寸为 size。走廊必须完整落在图内（不然 lyFlow 量不到走廊两端）；
@@ -529,9 +539,7 @@ pub fn plan_corridor(
     if n > 200_000 {
         return Err(fail("检测走廊超过 20 万站，请调整走廊长度或站距"));
     }
-    let stations = (0..n)
-        .map(|i| polyline_at(corridor, i as f64 * params.step))
-        .collect();
+    let stations = corridor_stations(corridor, n, params.step);
     let edge = edge_graph(recipe, segment, &inspect.camera, scale)?;
     let color_model = measuring_color_model(inspect, segment).map_err(|e| fail(&e))?;
     let template = if color_model.is_some() {
@@ -604,15 +612,6 @@ pub enum FrameGraph<'a> {
     Heading(&'a HeadingGraph),
 }
 
-impl FrameGraph<'_> {
-    pub fn camera(&self) -> &str {
-        match self {
-            Self::Corridor(c) => &c.camera,
-            Self::Heading(h) => &h.camera,
-        }
-    }
-}
-
 impl<'a> FrameGraph<'a> {
     pub(crate) fn mix_plan(self) -> Option<&'a super::mix::MixPlan> {
         match self {
@@ -648,11 +647,38 @@ impl CorridorSet {
         recipe: &Recipe,
         sizes: &[[u32; 2]],
     ) -> (Self, Vec<UnavailableCorridor>) {
+        Self::build_selected(recipe, sizes, None)
+    }
+
+    pub(crate) fn build_for_frame(
+        recipe: &Recipe,
+        sizes: &[[u32; 2]],
+        camera: usize,
+        segment: u32,
+    ) -> Result<Self, String> {
+        let (set, unavailable) = Self::build_selected(recipe, sizes, Some((camera, segment)));
+        if set.get(camera, segment).is_some() {
+            return Ok(set);
+        }
+        Err(unavailable.into_iter().next().map_or_else(
+            || format!("第 {segment} 段没有这台相机的走廊测量图"),
+            |unavailable| unavailable.reason,
+        ))
+    }
+
+    fn build_selected(
+        recipe: &Recipe,
+        sizes: &[[u32; 2]],
+        selected: Option<(usize, u32)>,
+    ) -> (Self, Vec<UnavailableCorridor>) {
         let cameras = recipe.plan_cameras();
         let mut graphs = BTreeMap::new();
         let mut headings = BTreeMap::new();
         let mut unavailable = Vec::new();
         for segment in &recipe.path_segments {
+            if selected.is_some_and(|(_, index)| index != segment.index) {
+                continue;
+            }
             for camera in crate::plan::segment_cameras(segment, &cameras) {
                 let Some((idx, inspect)) = recipe
                     .inspect
@@ -662,6 +688,9 @@ impl CorridorSet {
                 else {
                     continue;
                 };
+                if selected.is_some_and(|(camera, _)| camera != idx) {
+                    continue;
+                }
                 let skip = |reason: String, untaught: bool| UnavailableCorridor {
                     camera_idx: idx,
                     camera: camera.clone(),

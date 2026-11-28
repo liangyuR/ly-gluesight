@@ -93,6 +93,7 @@ export type CounterSource = "chunkTrigger" | "chunkFrame" | "sdkFrame" | "synthe
 
 export interface Frame {
   cam: number;
+  cameraId: string;
   /** 设备会话号：重开相机后换新号，触发计数可能从头数起 */
   session: number;
   counter: CounterSource;

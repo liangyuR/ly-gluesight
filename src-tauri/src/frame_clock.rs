@@ -61,8 +61,8 @@ pub struct FrameClock {
     tracks: Vec<Track>,
     /// 各门控的槽数
     slots: Vec<u64>,
-    /// [0, frozen) 的门控已冻结
-    frozen: usize,
+    /// 冻结的各门控的累计槽数，长度即已冻结门控数
+    frozen_ends: Vec<u64>,
 }
 
 /// 接件时一台计划相机的编号起点。
@@ -97,13 +97,17 @@ impl FrameClock {
                 })
                 .collect(),
             slots: Vec::new(),
-            frozen: 0,
+            frozen_ends: Vec::new(),
         }
     }
 
-    /// 计划相机 `cam` 时间戳 `ts`（ns）的一帧。`opens` 是这台相机看到的门控开始（锁存的相机时钟，相机组门控序号），升序；
-    /// 轮询读数不新鲜、不能确定有没有漏看边沿时为 None。
-    pub fn stamp(&mut self, cam: usize, ts: u64, opens: Option<&[(u64, u64)]>) -> Stamp {
+    /// 计划相机 `cam` 时间戳 `ts`（ns）的一帧。`lookup` 按条件查找最近登记的开始边沿。
+    pub fn stamp_with_edge(
+        &mut self,
+        cam: usize,
+        ts: u64,
+        lookup: impl FnOnce(&dyn Fn(&(u64, u64)) -> bool) -> Option<(u64, u64)>,
+    ) -> Stamp {
         let Some(track) = self.tracks.get_mut(cam) else {
             return Stamp::Stale;
         };
@@ -126,16 +130,11 @@ impl FrameClock {
         let index =
             |origin: u64| ((ts.saturating_sub(origin)) as f64 / track.period).round() as u64;
         // 门控号取相机组共同的门控开始序号（一台相机漏看一次也与其余相机对齐），从接件时的序号起算
-        let by_edges = opens.and_then(|opens| {
-            opens
-                .iter()
-                .map(|&(o, index)| (o + track.delay, index))
-                .filter(|&(o, index)| {
-                    index >= track.first_gate && o > track.floor && o <= ts + EDGE_SLACK_NS
-                })
-                .last()
-                .map(|(origin, index)| ((index - track.first_gate) as usize, origin))
-        });
+        let by_edges = lookup(&|&(clock, index)| {
+            let origin = clock + track.delay;
+            index >= track.first_gate && origin > track.floor && origin <= ts + EDGE_SLACK_NS
+        })
+        .map(|(clock, index)| ((index - track.first_gate) as usize, clock + track.delay));
         // 按相邻帧间隔推断：间隔是帧周期整数倍为同一门控，否则开新门控
         let infer = |last: Last| {
             let ratio = (ts.saturating_sub(last.ts)) as f64 / track.period;
@@ -173,15 +172,21 @@ impl FrameClock {
             (None, Some(last)) => infer(last),
         };
         let i = index(origin);
-        self.frozen = self.frozen.max(gate);
         if self.slots.len() <= gate {
             self.slots.resize(gate + 1, 0);
         }
-        let stamp = if gate < self.frozen && i + 1 > self.slots[gate] {
+        if gate > self.frozen_ends.len() {
+            let mut end = self.frozen_ends.last().copied().unwrap_or_default();
+            for &slots in &self.slots[self.frozen_ends.len()..gate] {
+                end += slots;
+                self.frozen_ends.push(end);
+            }
+        }
+        let stamp = if gate < self.frozen_ends.len() && i + 1 > self.slots[gate] {
             Stamp::Late
         } else {
             self.slots[gate] = self.slots[gate].max(i + 1);
-            Stamp::Seq(self.slots[..gate].iter().sum::<u64>() + i + 1)
+            Stamp::Seq(Self::slots_before(&self.frozen_ends, gate) + i + 1)
         };
         track.last = Some(Last {
             ts,
@@ -190,6 +195,30 @@ impl FrameClock {
             stamp,
         });
         stamp
+    }
+
+    fn slots_before(frozen_ends: &[u64], gate: usize) -> u64 {
+        gate.checked_sub(1)
+            .map_or(0, |previous| frozen_ends[previous])
+    }
+
+    /// 相机上一帧的门控下标和门控内槽位（从 1 起），仅成功编号时有值。
+    pub fn last_gate_slot(&self, cam: usize) -> Option<(usize, u64)> {
+        let last = self.tracks.get(cam)?.last?;
+        let Stamp::Seq(seq) = last.stamp else {
+            return None;
+        };
+        Some((
+            last.gate,
+            seq - Self::slots_before(&self.frozen_ends, last.gate),
+        ))
+    }
+
+    #[cfg(test)]
+    fn stamp(&mut self, cam: usize, ts: u64, opens: Option<&[(u64, u64)]>) -> Stamp {
+        self.stamp_with_edge(cam, ts, |eligible| {
+            opens?.iter().rev().copied().find(eligible)
+        })
     }
 
     /// 本件各门控的槽数（D-SB-62 的笔结构来源）。
@@ -231,6 +260,51 @@ mod tests {
     /// 门控从相机时钟 `open` 开始，第 i 帧的时间戳（曝光比锁存早 1.5 ms）。
     fn at(open: u64, i: u64) -> u64 {
         open - 1_500_000 + i * T
+    }
+
+    #[test]
+    fn delayed_first_arrival_uses_its_previous_gate_edge() {
+        use std::time::{Duration, Instant};
+
+        let delay_ns = 10_000_000;
+        let first_open = 1_010 * T;
+        let first_arrival = first_open + delay_ns + 2 * T;
+        let second_open = first_arrival + EDGE_SLACK_NS - delay_ns / 2;
+        let now = Instant::now();
+        let gate = crate::gate::Gate::default();
+        gate.edge(0, true, first_open, now - Duration::from_millis(200));
+        gate.edge(0, true, second_open, now);
+        gate.observe(0, true, now);
+        let mut clock = FrameClock::new(&[ClockStart {
+            period_ns: T as f64,
+            floor: 1_000 * T,
+            anchored: false,
+            delay_ns,
+            first_gate: 0,
+        }]);
+        let mut stamp =
+            |ts| clock.stamp_with_edge(0, ts, |eligible| gate.latest_open(0, now, eligible));
+
+        assert_eq!(stamp(first_arrival), Stamp::Seq(3));
+        assert_eq!(stamp(second_open + delay_ns), Stamp::Seq(4));
+    }
+
+    #[test]
+    fn skipped_and_frozen_gates_preserve_the_offsets_of_later_frames() {
+        let mut clock = clock(3, false);
+        let opens = e(&[1_010 * T, 1_020 * T, 1_030 * T, 1_040 * T]);
+        let stamp = |clock: &mut FrameClock, cam, gate: usize, slot| {
+            clock.stamp(cam, at(opens[gate].0, slot), Some(&opens))
+        };
+
+        assert_eq!(stamp(&mut clock, 0, 0, 1), Stamp::Seq(2));
+        assert_eq!(stamp(&mut clock, 0, 2, 0), Stamp::Seq(3));
+        assert_eq!(stamp(&mut clock, 1, 0, 1), Stamp::Seq(2));
+        assert_eq!(stamp(&mut clock, 2, 0, 2), Stamp::Late);
+        assert_eq!(stamp(&mut clock, 0, 2, 1), Stamp::Seq(4));
+        assert_eq!(stamp(&mut clock, 0, 3, 0), Stamp::Seq(5));
+        assert_eq!(stamp(&mut clock, 1, 2, 1), Stamp::Seq(4));
+        assert_eq!(clock.gate_slots(), [2, 0, 2, 1]);
     }
 
     /// 防的回归（D-SB-55）：按 SDK 帧号配组时，相机检测中重开（帧号从 1 重数）只能整件判 ERR；改按时间戳后，

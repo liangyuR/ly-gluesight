@@ -26,6 +26,33 @@ impl Drop for TempDir {
     }
 }
 
+#[test]
+fn export_walk_includes_published_resources_and_skips_release_staging() {
+    let root = TempDir::new("release-staging");
+    let ready = root.0.join("release-1");
+    let pending = root.0.join(".pending-1");
+    std::fs::create_dir(&ready).unwrap();
+    std::fs::create_dir(&pending).unwrap();
+    std::fs::write(ready.join("manifest.json"), b"{}").unwrap();
+    std::fs::write(pending.join("image.pgm"), b"partially written").unwrap();
+
+    let mut entries = Vec::new();
+    walk(
+        &root.0,
+        "project/vision/releases/A",
+        &mut entries,
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        entries,
+        [(
+            "project/vision/releases/A/release-1/manifest.json".into(),
+            ready.join("manifest.json")
+        )]
+    );
+}
+
 /// 本机记录库，当前项目为 `project`。
 fn local_store(data: &Path, project: &str) -> Store {
     Store::open_for(&super::super::records::database(data), project).unwrap()
@@ -575,6 +602,7 @@ fn cancel_after_last_file_keeps_previous_target_and_reports_cancelled() {
             &target,
             vec![("project/a.txt".into(), source.clone())],
             |files| files,
+            || operation.check(),
             || {
                 operation.check()?;
                 operations.cancel("t");
@@ -586,7 +614,139 @@ fn cancel_after_last_file_keeps_previous_target_and_reports_cancelled() {
 
     assert!(result.unwrap_err().starts_with("OPERATION_CANCELLED"));
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous");
-    assert!(!temp.0.join("out.zip.tmp").exists());
+    assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 2);
+}
+
+#[test]
+fn failed_zip_replacement_keeps_the_previous_target() {
+    let temp = TempDir::new("failed-zip-replacement");
+    let source = temp.0.join("source.txt");
+    let target = temp.0.join("out.zip");
+    std::fs::write(&source, b"new package data").unwrap();
+    std::fs::write(&target, b"previous package").unwrap();
+
+    let result = write_zip_with(
+        &target,
+        vec![("source.txt".into(), source)],
+        |files| files,
+        || Ok(()),
+        || Ok(()),
+        || {
+            let staging = std::fs::read_dir(&temp.0)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path.is_dir())
+                .unwrap();
+            std::fs::remove_file(staging.join("archive.zip")).unwrap();
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"previous package");
+    assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 2);
+}
+
+#[test]
+fn exports_to_the_same_target_keep_independent_staged_archives() {
+    let temp = TempDir::new("same-zip-target");
+    let first = temp.0.join("first.txt");
+    let second = temp.0.join("second.txt");
+    let target = temp.0.join("out.zip");
+    std::fs::write(&first, b"first export").unwrap();
+    std::fs::write(&second, b"second export").unwrap();
+
+    write_zip_with(
+        &target,
+        vec![("first.txt".into(), first)],
+        |files| files,
+        || Ok(()),
+        || Ok(()),
+        || {
+            write_zip(&target, vec![("second.txt".into(), second)], |files| files)?;
+            let mut zip = open_zip(&target, "测试包").unwrap();
+            let mut data = Vec::new();
+            zip.by_name("second.txt")
+                .unwrap()
+                .read_to_end(&mut data)
+                .unwrap();
+            assert_eq!(data, b"second export");
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    let mut zip = open_zip(&target, "测试包").unwrap();
+    let mut data = Vec::new();
+    zip.by_name("first.txt")
+        .unwrap()
+        .read_to_end(&mut data)
+        .unwrap();
+    assert_eq!(data, b"first export");
+    assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 3);
+}
+
+#[test]
+fn cancellation_during_a_zip_entry_does_not_complete_that_file() {
+    use crate::operation::{Operation, Operations};
+
+    let temp = TempDir::new("cancel-zip-entry");
+    let package = temp.0.join("files.zip");
+    let staging = temp.0.join("staging");
+    let partial = staging.join("large.bin");
+    let large = vec![0x3c; 3 << 20];
+    let entries = [
+        ("first.json", b"{}".as_slice()),
+        ("large.bin", large.as_slice()),
+        ("last.json", b"{}".as_slice()),
+    ];
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let mut out = ZipWriter::new(File::create(&package).unwrap());
+    let mut files = Vec::new();
+    for (path, bytes) in entries {
+        out.start_file(path, options).unwrap();
+        out.write_all(bytes).unwrap();
+        files.push(PackageFile {
+            path: path.into(),
+            bytes: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+        });
+    }
+    out.start_file(MANIFEST, options).unwrap();
+    serde_json::to_writer(&mut out, &serde_json::json!({ "files": files })).unwrap();
+    out.finish().unwrap();
+    let mut zip = open_zip(&package, "测试包").unwrap();
+    let tasks = Operations::default();
+    let task = "cancel-zip-entry";
+    let operation = Operation::with_events(tasks.clone(), Some(task.into()), |_| {}).unwrap();
+
+    let result = operation.run(|operation| {
+        operation.measuring(files.len())?;
+        extract_listed_with(
+            &mut zip,
+            &files,
+            &staging,
+            |_| true,
+            "测试包",
+            |_| true,
+            || {
+                if std::fs::metadata(&partial).is_ok_and(|file| file.len() > 0) {
+                    assert!(tasks.cancel(task));
+                }
+                operation.check()
+            },
+            || operation.advance_record(false),
+        )
+    });
+
+    assert!(result.unwrap_err().starts_with("OPERATION_CANCELLED:"));
+    assert_eq!(std::fs::read(staging.join("first.json")).unwrap(), b"{}");
+    let written = std::fs::metadata(partial).unwrap().len();
+    assert!(written > 0 && written < large.len() as u64);
+    assert!(!staging.join("last.json").exists());
+    let progress = serde_json::to_value(tasks.status(task).unwrap()).unwrap();
+    assert_eq!(progress["stage"], "cancelled");
+    assert_eq!(progress["completed"], 1);
 }
 
 #[test]

@@ -97,20 +97,35 @@ pub struct ProjectImported {
     pub notes: Vec<String>,
 }
 
-pub(crate) fn copy_hashed(
+const COPY_CHUNK_BYTES: usize = 1 << 20;
+
+pub(crate) fn copy_hashed(from: impl Read, to: impl Write) -> std::io::Result<(u64, String)> {
+    copy_hashed_with(
+        from,
+        to,
+        &mut vec![0; COPY_CHUNK_BYTES],
+        || Ok(()),
+        std::convert::identity,
+    )
+}
+
+fn copy_hashed_with<E>(
     mut from: impl Read,
     mut to: impl Write,
-) -> std::io::Result<(u64, String)> {
+    buffer: &mut [u8],
+    mut check: impl FnMut() -> Result<(), E>,
+    mut io_error: impl FnMut(std::io::Error) -> E,
+) -> Result<(u64, String), E> {
     let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 1 << 20];
     let mut total = 0u64;
     loop {
-        let n = from.read(&mut buffer)?;
+        check()?;
+        let n = from.read(buffer).map_err(&mut io_error)?;
         if n == 0 {
             break;
         }
         hasher.update(&buffer[..n]);
-        to.write_all(&buffer[..n])?;
+        to.write_all(&buffer[..n]).map_err(&mut io_error)?;
         total += n as u64;
     }
     Ok((total, format!("{:x}", hasher.finalize())))
@@ -157,13 +172,20 @@ pub(crate) fn walk(
         .iter()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
+    let release_recipe = relative
+        .strip_prefix("project/vision/releases/")
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'));
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
+        let child = format!("{relative}/{name}");
+        if release_recipe && name.starts_with(crate::release::RELEASE_STAGING_PREFIX) {
+            notes.push(format!("{child} 是发布暂存目录，未导出"));
+            continue;
+        }
         let path = entry.path();
         let kind = std::fs::symlink_metadata(&path)
             .map_err(|e| e.to_string())?
             .file_type();
-        let child = format!("{relative}/{name}");
         if kind.is_symlink() {
             notes.push(format!("{child} 是链接，未导出"));
         } else if kind.is_dir() {
@@ -383,97 +405,102 @@ pub(super) fn copy_original(source: &Path, target: &Path) -> Result<(), String> 
     }
 }
 
-/// 把 `entries`（包内路径，磁盘路径）写成 ZIP：先写 `target.tmp` 再改名；写完文件后由 `manifest` 按各文件的字节数与校验和生成清单，写在包尾。
+/// 把 `entries`（包内路径，磁盘路径）写成 ZIP：在目标同目录暂存后改名；写完文件后由 `manifest` 按各文件的字节数与校验和生成清单，写在包尾。
 pub(crate) fn write_zip<M: Serialize>(
     target: &Path,
     entries: Vec<(String, PathBuf)>,
     manifest: impl FnOnce(Vec<PackageFile>) -> M,
 ) -> Result<M, String> {
-    write_zip_with(target, entries, manifest, || Ok(()), || Ok(()))
+    write_zip_with(target, entries, manifest, || Ok(()), || Ok(()), || Ok(()))
 }
 
-/// 同 [`write_zip`]，每写完一个文件调一次 `progress`；它报错（如任务取消）时停止并删掉未完成的包。
+/// 同 [`write_zip`]，每块读写前调用 `check`，每写完一个文件调用 `progress`；报错时停止并清理本次暂存。
 /// 包写完、替换目标文件前调一次 `commit`（如进入不可取消的保存阶段），它报错时同样删掉包、不动目标文件。
 pub(crate) fn write_zip_with<M: Serialize>(
     target: &Path,
     entries: Vec<(String, PathBuf)>,
     manifest: impl FnOnce(Vec<PackageFile>) -> M,
+    check: impl Fn() -> Result<(), String>,
     mut progress: impl FnMut() -> Result<(), String>,
     commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<M, String> {
-    let mut temporary = target.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
-    let written = File::create(&temporary)
-        .map_err(|e| format!("创建导出文件失败：{e}"))
-        .and_then(|file| {
-            let mut zip = ZipWriter::new(BufWriter::new(file));
-            let mut files = Vec::with_capacity(entries.len());
-            for (name, path) in entries {
-                // 空闲压缩过的录制原图还原成原始 PGM 字节写进包，包里没有 .gsr
-                let restored = compressed(&path)
-                    .then(|| crate::image_file::read_original(&path))
-                    .transpose()?;
-                let file =
-                    File::open(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
-                let length = match &restored {
-                    Some(bytes) => bytes.len() as u64,
-                    None => file.metadata().map_err(|e| e.to_string())?.len(),
-                };
-                let level = if name.ends_with(".pgm") || name.ends_with(".png") {
-                    1
-                } else {
-                    6
-                };
+    check()?;
+    let staging = staging_dir(target.parent().ok_or("导出位置无效")?, "zip-export")?;
+    let temporary = staging.join("archive.zip");
+    let file = File::create_new(&temporary).map_err(|e| {
+        let _ = std::fs::remove_dir(&staging);
+        format!("创建导出文件失败：{e}")
+    })?;
+    let written = (|| {
+        let mut zip = ZipWriter::new(BufWriter::new(file));
+        let mut files = Vec::with_capacity(entries.len());
+        let mut buffer = vec![0; COPY_CHUNK_BYTES];
+        for (name, path) in entries {
+            check()?;
+            // 空闲压缩过的录制原图还原成原始 PGM 字节写进包，包里没有 .gsr
+            let level = if name.ends_with(".pgm") || name.ends_with(".png") {
+                1
+            } else {
+                6
+            };
+            let mut write_entry = |source: &mut dyn Read, length: u64| {
                 let options = SimpleFileOptions::default()
                     .compression_method(CompressionMethod::Deflated)
                     .compression_level(Some(level))
                     .large_file(length >= u32::MAX as u64);
                 zip.start_file(name.as_str(), options)
                     .map_err(|e| e.to_string())?;
-                let (bytes, sha256) = match &restored {
-                    Some(bytes) => copy_hashed(bytes.as_slice(), &mut zip),
-                    None => copy_hashed(BufReader::new(file), &mut zip),
-                }
-                .map_err(|e| format!("写入 {name} 失败：{e}"))?;
-                files.push(PackageFile {
-                    path: name,
-                    bytes,
-                    sha256,
-                });
-                progress()?;
-            }
-            let manifest = manifest(files);
-            zip.start_file(
-                MANIFEST,
-                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
-            )
+                copy_hashed_with(source, &mut zip, &mut buffer, &check, |e| {
+                    format!("写入 {name} 失败：{e}")
+                })
+            };
+            let (bytes, sha256) = if compressed(&path) {
+                let restored = crate::image_file::read_original_checked(&path, &check)?;
+                write_entry(&mut restored.as_slice(), restored.len() as u64)?
+            } else {
+                let file =
+                    File::open(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+                let length = file.metadata().map_err(|e| e.to_string())?.len();
+                write_entry(&mut BufReader::new(file), length)?
+            };
+            files.push(PackageFile {
+                path: name,
+                bytes,
+                sha256,
+            });
+            progress()?;
+        }
+        check()?;
+        let manifest = manifest(files);
+        zip.start_file(
+            MANIFEST,
+            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+        )
+        .map_err(|e| e.to_string())?;
+        zip.write_all(&serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-            zip.write_all(&serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-            zip.finish()
-                .map_err(|e| e.to_string())?
-                .into_inner()
-                .map_err(|e| e.to_string())?
-                .sync_all()
-                .map_err(|e| e.to_string())?;
-            Ok(manifest)
-        });
+        zip.finish()
+            .map_err(|e| e.to_string())?
+            .into_inner()
+            .map_err(|e| e.to_string())?
+            .sync_all()
+            .map_err(|e| e.to_string())?;
+        Ok(manifest)
+    })();
     let manifest = written.and_then(|manifest| {
         commit()?;
-        if target.exists() {
-            std::fs::remove_file(target).map_err(|e| format!("覆盖导出文件失败：{e}"))?;
-        }
-        std::fs::rename(&temporary, target).map_err(|e| e.to_string())?;
+        std::fs::rename(&temporary, target)
+            .map_err(|e| format!("替换导出文件 {} 失败：{e}", target.display()))?;
         Ok(manifest)
     });
     if manifest.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
+    let _ = std::fs::remove_dir(&staging);
     manifest
 }
 
-/// 把项目目录 `root` 导出到 `target`（先写 `.tmp` 再改名）；`records` 有值时带上本项目的检测记录与历史原图。
+/// 把项目目录 `root` 导出到 `target`（在同目录暂存后改名）；`records` 有值时带上本项目的检测记录与历史原图。
 pub fn export_to(
     root: &Path,
     records: Option<&Store>,
@@ -508,6 +535,14 @@ pub(crate) fn manifest_value<R: Read + Seek>(
     zip: &mut ZipArchive<R>,
     label: &str,
 ) -> Result<Value, String> {
+    serde_json::from_str(&manifest_text(zip, label)?)
+        .map_err(|e| format!("{label}清单格式无效：{e}"))
+}
+
+pub(crate) fn manifest_text<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    label: &str,
+) -> Result<String, String> {
     let mut entry = zip
         .by_name(MANIFEST)
         .map_err(|_| format!("不是{label}：缺少 manifest.json"))?;
@@ -520,7 +555,7 @@ pub(crate) fn manifest_value<R: Read + Seek>(
         .take(MANIFEST_MAX_BYTES + 1)
         .read_to_string(&mut text)
         .map_err(|e| format!("{label}清单无法读取：{e}"))?;
-    serde_json::from_str(&text).map_err(|e| format!("{label}清单格式无效：{e}"))
+    Ok(text)
 }
 
 /// 清单里的文件条目：不重复（不区分大小写）、校验和格式有效、路径都通过 `allowed`。
@@ -605,11 +640,20 @@ pub(crate) fn extract_listed<R: Read + Seek>(
     allowed: impl Fn(&str) -> bool,
     label: &str,
 ) -> Result<(), String> {
-    extract_listed_with(zip, files, staging, allowed, label, |_| true, || Ok(()))
+    extract_listed_with(
+        zip,
+        files,
+        staging,
+        allowed,
+        label,
+        |_| true,
+        || Ok(()),
+        || Ok(()),
+    )
 }
 
 /// 同 [`extract_listed`]，但只写出 `wanted` 的条目（其余仍须在清单里、通过 `allowed`，不解出）；
-/// 每处理一个条目调一次 `progress`，它报错（如任务取消）时停止。
+/// 读写每块前调用 `check`，每处理完一个条目调用 `progress`；回调报错时停止。
 pub(crate) fn extract_listed_with<R: Read + Seek>(
     zip: &mut ZipArchive<R>,
     files: &[PackageFile],
@@ -617,10 +661,12 @@ pub(crate) fn extract_listed_with<R: Read + Seek>(
     allowed: impl Fn(&str) -> bool,
     label: &str,
     wanted: impl Fn(&str) -> bool,
+    mut check: impl FnMut() -> Result<(), String>,
     mut progress: impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     let listed: BTreeMap<&str, &PackageFile> = files.iter().map(|f| (f.path.as_str(), f)).collect();
     let mut seen = HashSet::new();
+    let mut buffer = vec![0; COPY_CHUNK_BYTES];
     for index in 0..zip.len() {
         let entry = zip
             .by_index(index)
@@ -655,8 +701,13 @@ pub(crate) fn extract_listed_with<R: Read + Seek>(
         let mut out = BufWriter::new(
             File::create_new(&target).map_err(|e| format!("写入暂存文件 {name} 失败：{e}"))?,
         );
-        let (bytes, sha256) = copy_hashed(entry.take(expected.bytes + 1), &mut out)
-            .map_err(|e| format!("解出 {name} 失败：{e}"))?;
+        let (bytes, sha256) = copy_hashed_with(
+            entry.take(expected.bytes + 1),
+            &mut out,
+            &mut buffer,
+            &mut check,
+            |e| format!("解出 {name} 失败：{e}"),
+        )?;
         out.flush().map_err(|e| e.to_string())?;
         if bytes != expected.bytes || sha256 != expected.sha256.to_ascii_lowercase() {
             return Err(format!("{label}文件 {name} 校验和不符，文件已损坏或被改动"));

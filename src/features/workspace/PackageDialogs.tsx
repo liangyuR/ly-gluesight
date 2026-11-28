@@ -60,7 +60,8 @@ export function PackageExportDialog({ id, onClose }: { id: string; onClose: () =
   </Dialog>;
 }
 
-export function PackageImportDialog({ preview, onClose, onImported, onOpen }: { preview: PackagePreview; onClose: () => void; onImported: (id: string) => Promise<void>; onOpen: (id: string) => void }) {
+export function PackageImportDialog({ preview: initialPreview, onClose, onImported, onOpen }: { preview: PackagePreview; onClose: () => void; onImported: (id: string) => Promise<void>; onOpen: (id: string) => void }) {
+  const [preview] = useState(() => structuredClone(initialPreview));
   const operation = useOperation();
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
@@ -72,7 +73,7 @@ export function PackageImportDialog({ preview, onClose, onImported, onOpen }: { 
     setWorking(true);
     setError("");
     try {
-      const result = await operation.run(taskId => workspaceApi.packageImport(preview.path, taskId)).catch(() => null);
+      const result = await operation.run(taskId => workspaceApi.packageImport(preview.path, preview.target, taskId)).catch(() => null);
       if (!result) return;
       setImported(result);
       await onImported(result.id);

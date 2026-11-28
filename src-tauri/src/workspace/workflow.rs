@@ -13,11 +13,12 @@ pub fn workspace_retry_publish(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
 ) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     let mut w = items.get(&id).ok_or("候选不存在")?.clone();
-    w.retry_publish(revision)?;
+    w.retry_publish(revision, instance_id)?;
     host.save(&w)?;
     items.insert(id, w.clone());
     let _ = app.state::<CycleHost>().tx.send(cycle::Input::Refresh);
@@ -29,11 +30,12 @@ pub fn workspace_abandon_publish(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
 ) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     let mut w = items.get(&id).ok_or("候选不存在")?.clone();
-    w.abandon_publish(revision)?;
+    w.abandon_publish(revision, instance_id)?;
     host.save(&w)?;
     items.insert(id, w.clone());
     view(&app, w)

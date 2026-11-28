@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 use super::{
-    check_identity, pieces, safe_id, state_value, Discarded, PublishState, Workspace, WorkspaceHost,
+    check_identity, ensure_no_workspace_file, pieces, safe_id, state_value, CandidateRevision,
+    Discarded, PublishState, Workspace, WorkspaceHost,
 };
 use crate::burst_judge::FrameState;
 use crate::cycle::CycleHost;
@@ -211,6 +213,7 @@ pub(crate) fn export_candidate(
         target,
         entries,
         |files| PackageManifest { files, ..manifest },
+        || operation.check(),
         || operation.advance(FrameState::Measured),
         || operation.saving(),
     )
@@ -218,8 +221,10 @@ pub(crate) fn export_candidate(
 
 fn read_manifest<R: std::io::Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
-) -> Result<PackageManifest, String> {
-    let value = transfer::manifest_value(zip, LABEL)?;
+) -> Result<(PackageManifest, String), String> {
+    let text = transfer::manifest_text(zip, LABEL)?;
+    let value: Value =
+        serde_json::from_str(&text).map_err(|e| format!("{LABEL}清单格式无效：{e}"))?;
     if value.get("kind").and_then(Value::as_str) != Some(KIND) {
         return Err("不是配方回传包（项目导出包请在项目页导入）".into());
     }
@@ -238,19 +243,15 @@ fn read_manifest<R: std::io::Read + std::io::Seek>(
     if !seen.contains("candidate/workspace.json") {
         return Err("配方回传包缺少候选文件".into());
     }
-    Ok(manifest)
-}
-
-pub(crate) fn inspect(path: &Path) -> Result<PackageManifest, String> {
-    read_manifest(&mut transfer::open_zip(path, LABEL)?)
+    Ok((manifest, format!("{:x}", Sha256::digest(text.as_bytes()))))
 }
 
 const ROUND_JSON_MAX: u64 = 1 << 20;
 
 /// 预览用：清单与包里各采集轮次的 `round.json`（这里不核对校验和，导入解包时核对）。
-fn inspect_rounds(path: &Path) -> Result<(PackageManifest, Vec<Value>), String> {
+fn inspect_rounds(path: &Path) -> Result<(PackageManifest, String, Vec<Value>), String> {
     let mut zip = transfer::open_zip(path, LABEL)?;
-    let manifest = read_manifest(&mut zip)?;
+    let (manifest, manifest_sha256) = read_manifest(&mut zip)?;
     let mut rounds = Vec::new();
     for file in &manifest.files {
         if !(file.path.starts_with("rounds/") && file.path.ends_with("/round.json")) {
@@ -264,7 +265,7 @@ fn inspect_rounds(path: &Path) -> Result<(PackageManifest, Vec<Value>), String> 
             .map_err(|e| format!("{LABEL}条目无法读取：{e}"))?;
         rounds.push(serde_json::from_str(&text).map_err(|e| format!("采集轮次无法读取：{e}"))?);
     }
-    Ok((manifest, rounds))
+    Ok((manifest, manifest_sha256, rounds))
 }
 
 /// 示教件轮次各相机采集时的设备配置与本机当前（`current` 按相机编号，`state_value` 口径）对不上时的提示，不拦导入：
@@ -313,9 +314,13 @@ pub(crate) fn stage(
     package: &Path,
     staging: &Path,
     operation: &Operation,
+    expected_manifest_sha256: Option<&str>,
 ) -> Result<(PackageManifest, Workspace), String> {
     let mut zip = transfer::open_zip(package, LABEL)?;
-    let manifest = read_manifest(&mut zip)?;
+    let (manifest, manifest_sha256) = read_manifest(&mut zip)?;
+    if expected_manifest_sha256.is_some_and(|expected| expected != manifest_sha256) {
+        return Err("配方包已变化，请关闭确认并重新选择配方包".into());
+    }
     let images = manifest.teaching_images;
     operation.measuring(manifest.files.len())?;
     transfer::extract_listed_with(
@@ -325,6 +330,7 @@ pub(crate) fn stage(
         |path| allowed(path, images),
         LABEL,
         |_| true,
+        || operation.check(),
         || operation.advance(FrameState::Measured),
     )?;
     let text = crate::fsio::read_text(&staging.join(CANDIDATE).join("workspace.json"))
@@ -333,6 +339,9 @@ pub(crate) fn stage(
         serde_json::from_str(&text).map_err(|e| format!("回传包里的候选无法读取：{e}"))?;
     if w.doc.id != manifest.recipe_id {
         return Err("回传包里的候选编号与清单不一致".into());
+    }
+    if w.doc.product_code != manifest.product_code {
+        return Err("回传包里的候选型号与清单不一致".into());
     }
     if w.legacy() {
         return Err(pieces::LEGACY.into());
@@ -528,10 +537,18 @@ pub struct LocalCandidate {
     pub pending: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageImportTarget {
+    manifest_sha256: String,
+    candidate: Option<CandidateRevision>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackagePreview {
     pub path: String,
+    pub target: PackageImportTarget,
     pub bytes: u64,
     pub recipe_id: String,
     pub name: String,
@@ -590,16 +607,15 @@ fn blocker_in(
     .err()
 }
 
-fn blocker(app: &AppHandle, manifest: &PackageManifest) -> Option<String> {
-    let production = app.state::<CycleHost>().recipes.list();
-    let host = app.state::<WorkspaceHost>();
-    let items = host.items.lock().unwrap();
-    blocker_in(
-        &items,
-        &production,
-        &manifest.recipe_id,
-        manifest.product_code,
-    )
+fn check_unloaded_candidate(
+    host: &WorkspaceHost,
+    id: &str,
+    candidate: Option<&Workspace>,
+) -> Result<(), String> {
+    if candidate.is_none() {
+        ensure_no_workspace_file(&host.dir(id).join("workspace.json"))?;
+    }
+    Ok(())
 }
 
 /// 本机当前各相机的设备配置（按相机编号，`state_value` 口径）。
@@ -679,7 +695,7 @@ pub async fn workspace_package_pick(
     app: AppHandle,
 ) -> Result<Option<PackagePreview>, String> {
     let exports = crate::storage::root(&app).join("exports");
-    let picked = tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let mut dialog = rfd::FileDialog::new()
             .set_parent(&window)
             .set_title("选择工件配方包")
@@ -687,35 +703,66 @@ pub async fn workspace_package_pick(
         if exports.is_dir() {
             dialog = dialog.set_directory(exports);
         }
-        let Some(path) = dialog.pick_file() else {
-            return Ok(None);
-        };
-        inspect_rounds(&path).map(|inspected| Some((path, inspected)))
+        dialog
+            .pick_file()
+            .map(|path| preview(&app, &path))
+            .transpose()
     })
     .await
-    .map_err(|e| e.to_string())??;
-    let Some((path, (manifest, rounds))) = picked else {
-        return Ok(None);
-    };
-    let candidate = {
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn workspace_package_preview(
+    app: AppHandle,
+    path: String,
+) -> Result<PackagePreview, String> {
+    tauri::async_runtime::spawn_blocking(move || preview(&app, Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn preview(app: &AppHandle, path: &Path) -> Result<PackagePreview, String> {
+    let (manifest, manifest_sha256, rounds) = inspect_rounds(path)?;
+    let (candidate, identity, production_version, blocker) = {
         let host = app.state::<WorkspaceHost>();
         let items = host.items.lock().unwrap();
-        items.get(&manifest.recipe_id).map(|w| LocalCandidate {
+        let current = items.get(&manifest.recipe_id);
+        let production = app.state::<CycleHost>().recipes.list();
+        let candidate = current.map(|w| LocalCandidate {
             revision: w.revision,
             updated_at: w.updated_at,
             pending: w.pending.is_some(),
-        })
+        });
+        let production_version = production
+            .iter()
+            .find(|r| r.id == manifest.recipe_id)
+            .map(|r| r.version);
+        let blocker = blocker_in(
+            &items,
+            &production,
+            &manifest.recipe_id,
+            manifest.product_code,
+        )
+        .or_else(|| check_unloaded_candidate(&host, &manifest.recipe_id, current).err());
+        (
+            candidate,
+            current.map(Workspace::identity),
+            production_version,
+            blocker,
+        )
     };
-    Ok(Some(PackagePreview {
-        bytes: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+    Ok(PackagePreview {
+        bytes: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
         path: path.display().to_string(),
-        production_version: app
-            .state::<CycleHost>()
-            .recipe(&manifest.recipe_id)
-            .map(|r| r.version),
+        target: PackageImportTarget {
+            manifest_sha256,
+            candidate: identity,
+        },
+        production_version,
         candidate,
-        warnings: camera_notes(&rounds, &current_cameras(&app)),
-        blocker: blocker(&app, &manifest),
+        warnings: camera_notes(&rounds, &current_cameras(app)),
+        blocker,
         recipe_id: manifest.recipe_id,
         name: manifest.name,
         product_code: manifest.product_code,
@@ -724,26 +771,31 @@ pub async fn workspace_package_pick(
         app_version: manifest.app_version,
         teaching_piece: manifest.teaching_piece,
         teaching_images: manifest.teaching_images,
-    }))
+    })
 }
 
 #[tauri::command]
 pub async fn workspace_package_import(
     app: AppHandle,
     path: String,
+    target: PackageImportTarget,
     task_id: Option<String>,
 ) -> Result<PackageImported, String> {
     let operation = Operation::start(&app, task_id)?;
-    let cycle = app.state::<CycleHost>();
-    let _config = cycle.config_gate.lock().await;
-    let task = app.clone();
+    let import_guard = app
+        .state::<CycleHost>()
+        .recipe_import_gate
+        .clone()
+        .lock_owned()
+        .await;
     tauri::async_runtime::spawn_blocking(move || {
+        let _import = import_guard;
         operation.run(|operation| {
             let staging = transfer::staging_dir(
-                &crate::storage::root(&task).join("cache"),
+                &crate::storage::root(&app).join("cache"),
                 "recipe-import",
             )?;
-            let result = import(&task, Path::new(&path), &staging, operation);
+            let result = import(&app, Path::new(&path), &target, &staging, operation);
             let _ = std::fs::remove_dir_all(&staging);
             crate::cycle::log_op(
                 &crate::applog::events::OP_RECIPE_PACKAGE,
@@ -760,11 +812,12 @@ pub async fn workspace_package_import(
 fn import(
     app: &AppHandle,
     package: &Path,
+    target: &PackageImportTarget,
     staging: &Path,
     operation: &Operation,
 ) -> Result<PackageImported, String> {
     let project = crate::storage::project(app);
-    let (manifest, mut w) = stage(package, staging, operation)?;
+    let (manifest, mut w) = stage(package, staging, operation, Some(&target.manifest_sha256))?;
     let id = w.doc.id.clone();
     let rounds: Vec<Value> = referenced_rounds(&w)
         .iter()
@@ -774,21 +827,28 @@ fn import(
                 .and_then(|text| serde_json::from_str(&text).ok())
         })
         .collect();
-    let mut notes = camera_notes(&rounds, &current_cameras(app));
-    operation.saving()?;
-    let installed = {
+    let (installed, cameras) = {
         let cycle = app.state::<CycleHost>();
+        let _config = cycle.config_gate.blocking_lock();
+        operation.check()?;
+        let cameras = current_cameras(app);
         let production = cycle.recipes.list();
         let host = app.state::<WorkspaceHost>();
         let mut items = host.items.lock().unwrap();
+        let current = items.get(&id);
+        if target.candidate != current.map(Workspace::identity) {
+            return Err("本机候选已变化，请关闭确认并重新选择配方包".into());
+        }
+        check_unloaded_candidate(&host, &id, current)?;
         if let Some(reason) = blocker_in(&items, &production, &id, w.doc.product_code) {
             return Err(reason);
         }
         let local = Local {
-            has_production: cycle.recipe(&id).is_some(),
+            has_production: production.iter().any(|recipe| recipe.id == id),
             next_version: cycle.recipes.next_version(&id)?,
         };
         rebase(&mut w, &local, Path::new(&manifest.source_root), &project)?;
+        operation.saving()?;
         w.ensure_instance(&app.state::<Store>())?;
         {
             // 替换轮次时旧轮次先移出、新轮次后移入，中间不让清理按缺了引用的快照删掉示教件的来源历史件
@@ -796,8 +856,9 @@ fn import(
             install(&project, staging, &w)?;
         }
         items.insert(id.clone(), w.clone());
-        w
+        (w, cameras)
     };
+    let mut notes = camera_notes(&rounds, &cameras);
     let mut teaching_images = false;
     if let Some(piece) = &installed.teaching_piece {
         let cycle = app.state::<CycleHost>();

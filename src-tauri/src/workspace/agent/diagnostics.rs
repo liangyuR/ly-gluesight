@@ -199,16 +199,14 @@ pub(crate) fn replay_measurements(
     guard: u32,
     passes: crate::passes::PassRules,
 ) -> Value {
-    use crate::segmentation::{frame_corridors, resolve_regions, segment_part, SegInput};
-    let groups = super::super::burst_history::frame_groups(&burst.frames, burst.cameras.len());
-    let total = groups.len() as u64;
-    let outcome = segment_part(
-        &SegInput {
-            groups: &groups,
-            segments: &burst.segments,
-        },
-        passes,
-    );
+    use crate::segmentation::{frame_corridors, resolve_regions, segment_part};
+    let total = burst
+        .frames
+        .iter()
+        .map(|frame| frame.seq)
+        .max()
+        .unwrap_or(0);
+    let outcome = segment_part(&burst.segments, total, passes);
     let regions = resolve_regions(&burst.segments, &outcome, total, 0.5, guard, passes);
     let choice = frame_corridors(&burst.segments, &burst.cameras, &regions, &outcome, total);
     let coverage = crate::segmentation::proportional_coverage(

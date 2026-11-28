@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::{db_err, enum_column, RecordSource, Store};
 
@@ -40,6 +40,54 @@ pub(super) fn normalize_tags(tags: &[String]) -> Result<Vec<String>, String> {
         return Err("每件历史记录最多 8 个 Tag".into());
     }
     Ok(normalized)
+}
+
+pub(super) fn ensure_tag_index(conn: &mut Connection) -> Result<(), String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_err)?;
+    let exists: bool = tx
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'part_tags')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_err)?;
+    if !exists {
+        let labels = |tags: &str| {
+            format!(
+                "json_each(CASE WHEN json_valid({tags}) THEN
+                    CASE WHEN json_type({tags}) = 'array' THEN {tags} ELSE '[]' END
+                    ELSE '[]' END)"
+            )
+        };
+        let saved_tags = labels("p.tags");
+        let new_tags = labels("NEW.tags");
+        tx.execute_batch(&format!(
+            "CREATE TABLE part_tags (
+                part_id INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+                tag TEXT NOT NULL,
+                ts INTEGER NOT NULL,
+                PRIMARY KEY (part_id, tag)
+             ) WITHOUT ROWID;
+             CREATE INDEX part_tags_by_tag ON part_tags(tag, ts, part_id);
+             INSERT OR IGNORE INTO part_tags(part_id, tag, ts)
+                 SELECT p.id, label.value, p.ts FROM parts p CROSS JOIN {saved_tags} AS label
+                 WHERE p.tags <> '[]' AND label.type = 'text';
+             CREATE TRIGGER part_tags_insert AFTER INSERT ON parts WHEN NEW.tags <> '[]' BEGIN
+                 INSERT OR IGNORE INTO part_tags(part_id, tag, ts)
+                    SELECT NEW.id, label.value, NEW.ts FROM {new_tags} AS label WHERE label.type = 'text';
+             END;
+             CREATE TRIGGER part_tags_update AFTER UPDATE OF tags, ts ON parts
+             WHEN OLD.tags IS NOT NEW.tags OR OLD.ts IS NOT NEW.ts BEGIN
+                 DELETE FROM part_tags WHERE part_id = NEW.id;
+                 INSERT OR IGNORE INTO part_tags(part_id, tag, ts)
+                    SELECT NEW.id, label.value, NEW.ts FROM {new_tags} AS label WHERE label.type = 'text';
+             END;"
+        ))
+        .map_err(db_err)?;
+    }
+    tx.commit().map_err(db_err)
 }
 
 impl Store {

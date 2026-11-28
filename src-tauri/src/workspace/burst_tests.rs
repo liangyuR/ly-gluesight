@@ -60,7 +60,7 @@ pub(super) fn configs(doc: &RecipeDoc, config: &str) -> BTreeMap<String, Value> 
         .collect()
 }
 
-/// 测成的一帧，胶中心偏移 x（mm）；相机下标与 seq 由 measure_round 填。
+/// 测成的一帧，胶中心偏移 x（mm）；相机下标与 seq 由整轮测量填入。
 pub(super) fn measured(x: f64) -> FrameMetrics {
     FrameMetrics {
         camera: 0,
@@ -221,7 +221,7 @@ fn saving_expected_frames_or_x_ref_is_ignored_and_kind_change_clears_them() {
 }
 
 /// 存进记录库再读出的一件段配方记录（样例配方 cam1–cam3、4 个帧组）：`saved` 里的相机下标每帧都有原图引用，其余相机没保存原图。
-fn stored_record(saved: &[usize]) -> (std::path::PathBuf, crate::store::PartDetail) {
+pub(super) fn stored_record(saved: &[usize]) -> (std::path::PathBuf, crate::store::PartDetail) {
     use crate::store::{
         burst_fixture, PartMode, PartRecord, PlcDelivery, PlcDeliveryState, RecordSource, Store,
     };
@@ -271,6 +271,116 @@ fn stored_record(saved: &[usize]) -> (std::path::PathBuf, crate::store::PartDeta
         .unwrap();
     let detail = store.detail(id).unwrap();
     (dir, detail)
+}
+
+#[test]
+fn rules_comparison_uses_frame_identity_and_keeps_unmeasured_tail_and_station_data() {
+    use crate::burst_judge::{MeasurementEvidence, StationEvidence, StationEvidenceState};
+
+    let (dir, mut detail) = stored_record(&[]);
+    let _ = std::fs::remove_dir_all(dir);
+    let recipe = crate::store::burst_fixture::recipe();
+    let burst = detail.burst.as_mut().unwrap();
+    let measured_frame = burst
+        .frames
+        .iter_mut()
+        .find(|frame| (frame.camera, frame.seq) == (1, 2))
+        .unwrap();
+    let saved = Arc::make_mut(measured_frame.metrics.as_mut().unwrap());
+    saved.camera = 2;
+    saved.seq = 9;
+    saved.widths = vec![Some(3.875), Some(4.25)];
+    saved.measurement_evidence = Some(MeasurementEvidence {
+        version: 1,
+        stations: [1.0, 2.0]
+            .into_iter()
+            .map(|x| StationEvidence {
+                state: StationEvidenceState::Exact,
+                position: Some([x, 3.0]),
+                ..Default::default()
+            })
+            .collect(),
+        exact_stations: 2,
+        present_ratio: Some(1.0),
+        ..Default::default()
+    });
+    let expected = FrameMetrics {
+        camera: 1,
+        seq: 2,
+        ..saved.clone()
+    };
+    let tail_states = [
+        FrameState::Missing,
+        FrameState::Unmeasured,
+        FrameState::NotInspected,
+    ];
+    for frame in burst.frames.iter_mut().filter(|frame| frame.seq == 4) {
+        frame.status = tail_states[frame.camera];
+        frame.metrics = None;
+    }
+
+    let (judgement, metrics, _) =
+        super::burst_history::judge_stored_comparison(&recipe, &recipe.plan_cameras(), burst);
+    assert_eq!(judgement.group_count, 4);
+    assert!(judgement.flags.incomplete);
+    assert_eq!(
+        metrics
+            .iter()
+            .find(|frame| (frame.camera, frame.seq) == (1, 2)),
+        Some(&expected)
+    );
+    assert_eq!(
+        metrics
+            .iter()
+            .filter(|frame| frame.seq == 4)
+            .map(|frame| (frame.camera, frame.state, frame.widths.is_empty()))
+            .collect::<Vec<_>>(),
+        [
+            (0, FrameState::Missing, true),
+            (1, FrameState::Unmeasured, true),
+            (2, FrameState::NotInspected, true)
+        ]
+    );
+}
+
+#[test]
+fn remeasurement_keeps_complete_groups_in_unordered_frames_and_reports_empty_groups() {
+    let recipe = crate::store::burst_fixture::recipe();
+    let arrived = |camera, seq| FrameMetrics {
+        camera,
+        seq,
+        ..measured(0.0)
+    };
+    let metrics = [
+        arrived(2, 3),
+        arrived(1, 1),
+        arrived(0, 3),
+        arrived(2, 1),
+        arrived(1, 1),
+        super::burst::frame_without_metrics(0, 4, FrameState::Missing, None),
+        arrived(6, 3),
+        arrived(0, 1),
+        arrived(1, 3),
+    ];
+    let judgement = super::burst_history::judge_frames(
+        &recipe.path_segments,
+        recipe.boundary_guard,
+        recipe.expected_total(),
+        &recipe.plan_cameras(),
+        &metrics,
+        &[],
+        recipe.pass_rules(&[]),
+    );
+
+    assert_eq!(judgement.group_count, 4);
+    assert_eq!(
+        judgement
+            .regions
+            .iter()
+            .flat_map(|region| region.incomplete_groups.iter().copied())
+            .collect::<Vec<_>>(),
+        [2, 4]
+    );
 }
 
 /// 计划相机按 `cameras` 顺序的候选；样例配方里没有的相机编号照 cam1 的参数新建（记录里也就没有它的原图）。
@@ -328,6 +438,51 @@ fn candidate_with_other_camera_order_measures_each_camera_from_its_own_record_fr
         .filter(|f| f.camera == 2)
         .all(|f| f.status == FrameState::Missing && f.raw_file.is_none()));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn raw_comparison_requires_retained_images_from_a_candidate_camera() {
+    use crate::store::RecordingState;
+
+    let (dir, mut detail) = stored_record(&[1]);
+    let _ = std::fs::remove_dir_all(dir);
+    detail.recording.state = RecordingState::Complete;
+    detail.recording.available = true;
+    let mut w = super::pieces_tests::measured_teaching(&[Straight], 0.0);
+    w.doc.inspect[1].camera = "camX".into();
+    w.doc.inspect[1].segments.clear();
+    w.doc.inspect.reverse();
+    let raw = |detail: &crate::store::PartDetail| {
+        super::burst_history::compare_options(detail, None, Some(&w), None).raw
+    };
+
+    let unrelated = raw(&detail);
+    assert!(!unrelated.available);
+    assert!(
+        unrelated
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("没有保存原图")),
+        "{unrelated:?}"
+    );
+
+    let frame = detail
+        .burst
+        .as_mut()
+        .unwrap()
+        .frames
+        .iter_mut()
+        .find(|f| f.camera == 2)
+        .unwrap();
+    frame.raw_file = Some("rec/cam3_s000001.pgm".into());
+    let available = raw(&detail);
+    assert!(available.available);
+    let note = available.note.unwrap();
+    assert!(note.contains("记录里没有相机 camX"));
+    assert!(note.contains("第 1 段相机 camX：尚未示教检测走廊"));
+
+    detail.recording.state = RecordingState::NotRetained;
+    assert!(!raw(&detail).available);
 }
 
 /// 防的回归：彩色录制拿到相机配成灰度的机器上示教，冻结帧按本机配置记成灰度，试测与发布时按通道数拒掉这张彩色原图。

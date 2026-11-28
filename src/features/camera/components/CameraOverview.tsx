@@ -2,13 +2,14 @@ import { useState, type MouseEvent, type ReactNode } from "react";
 import { Activity, ChevronRight, Clock, Lock, Plus, RefreshCw, Unplug } from "lucide-react";
 import { Alert, Button, Card, IconButton, StatusBadge } from "qing-steel";
 import { usePreviewCanvas } from "../api";
-import type { CameraConfig, CameraStatus, Frame } from "../types";
+import { useCameraFrame, type CameraFrameSource } from "../frames";
+import type { CameraConfig, CameraStatus } from "../types";
 import { ago, cameraColor, cameraHealth, clock, count, sourceText, StateBadge, triggerSummary, useNow } from "./health";
 
 interface Props {
   configs: CameraConfig[];
   statuses: CameraStatus[];
-  lastFrame: Record<number, Frame>;
+  frames: CameraFrameSource;
   /** 只读（检测中、离线、浏览器）时的原因；为空可编辑 */
   lockedReason: string;
   canReconnect: boolean;
@@ -18,13 +19,13 @@ interface Props {
   onOpen: (i: number) => void;
   onRefresh: () => void;
   onAdd?: () => void;
-  onReconnect: (i: number) => Promise<string>;
+  onReconnect: (i: number, id: string) => Promise<string>;
   footer?: ReactNode;
 }
 
-export default function CameraOverview({ configs, statuses, lastFrame, lockedReason, canReconnect, loading, adding, error, onOpen, onRefresh, onAdd, onReconnect, footer }: Props) {
+export default function CameraOverview({ configs, statuses, frames, lockedReason, canReconnect, loading, adding, error, onOpen, onRefresh, onAdd, onReconnect, footer }: Props) {
   const now = useNow(1000);
-  const status = (i: number) => statuses.find(s => s.cam === i) ?? null;
+  const status = (i: number) => statuses.find(s => s.cam === i && s.id === configs[i]?.id) ?? null;
   const health = configs.map((c, i) => cameraHealth(c, status(i)));
   const tally = (label: string) => health.filter(h => h.label === label).length;
   const connected = tally("已连接"), unbound = tally("未绑定"), down = health.filter(h => h.tone === "fault").length, released = tally("已释放给 MVS");
@@ -46,7 +47,7 @@ export default function CameraOverview({ configs, statuses, lastFrame, lockedRea
     </div>
     {error && <Alert tone="ng">{error}</Alert>}
     <div className="cg-grid">
-      {configs.map((c, i) => <CameraCard key={c.id} index={i} config={c} status={status(i)} frame={lastFrame[i]} now={now} locked={!!lockedReason} canReconnect={canReconnect} onOpen={() => onOpen(i)} onReconnect={() => onReconnect(i)} />)}
+      {configs.map((c, i) => <CameraCard key={c.id} index={i} config={c} status={status(i)} frames={frames} now={now} locked={!!lockedReason} canReconnect={canReconnect} onOpen={() => onOpen(i)} onReconnect={() => onReconnect(i, c.id)} />)}
     </div>
     <Alert>相机按各自设定帧率采集，帧序号配组不代表曝光同步。整轮帧数差异与缺帧请查看采集结果。</Alert>
     {footer}
@@ -55,10 +56,11 @@ export default function CameraOverview({ configs, statuses, lastFrame, lockedRea
 
 const cardClickIgnored = "button, a, input, select, label, .cg-card-sub, .mono, .cg-stat b";
 
-function CameraCard({ index, config, status, frame, now, locked, canReconnect, onOpen, onReconnect }: { index: number; config: CameraConfig; status: CameraStatus | null; frame: Frame | undefined; now: number; locked: boolean; canReconnect: boolean; onOpen: () => void; onReconnect: () => Promise<string> }) {
+function CameraCard({ index, config, status, frames, now, locked, canReconnect, onOpen, onReconnect }: { index: number; config: CameraConfig; status: CameraStatus | null; frames: CameraFrameSource; now: number; locked: boolean; canReconnect: boolean; onOpen: () => void; onReconnect: () => Promise<string> }) {
+  const frame = useCameraFrame(frames, index, config.id);
   const health = cameraHealth(config, status);
-  const scope = JSON.stringify([config.id, config.source, config.serial, config.viewCount]);
-  const { img, canvas } = usePreviewCanvas(index, frame?.frameCounter, 500, scope, 1);
+  const scope = JSON.stringify([config.source, config.serial, config.viewCount, frame?.session]);
+  const { img, canvas } = usePreviewCanvas(index, config.id, frame?.frameCounter, 500, scope, 1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const reconnect = async () => {

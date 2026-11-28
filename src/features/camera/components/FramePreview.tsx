@@ -2,14 +2,16 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Activity, Clock, Unplug, Zap } from "lucide-react";
 import { Alert, Button, Card, Heading, SegmentedControl, Stack, StatusBadge } from "qing-steel";
 import { cameraApi, usePreviewCanvas } from "../api";
-import type { CameraConfig, CameraStatus, Frame } from "../types";
+import { useCameraFrame, type CameraFrameSource } from "../frames";
+import type { CameraConfig, CameraStatus } from "../types";
 import { ago, clock, count, useNow } from "./health";
 
-export default function FramePreview({ cam, status, lastFrame, config, blockedReason, actions }: { cam: number; status: CameraStatus | null; lastFrame: Frame | undefined; config: CameraConfig | null; blockedReason?: string; actions?: ReactNode }) {
+export default function FramePreview({ cam, status, frames, config, blockedReason, actions }: { cam: number; status: CameraStatus | null; frames: CameraFrameSource; config: CameraConfig | null; blockedReason?: string; actions?: ReactNode }) {
+  const lastFrame = useCameraFrame(frames, cam, config?.id ?? null);
   const scope=JSON.stringify([cam,config?.id,config?.source,config?.serial,config?.triggerSource,config?.frameRate,lastFrame?.session,config?.viewCount]);
   const [selectedView, setSelectedView] = useState({scope, view: 1});
   const view = selectedView.scope === scope && selectedView.view <= (config?.viewCount ?? 1) ? selectedView.view : 1;
-  const { img, canvas } = usePreviewCanvas(cam, lastFrame?.frameCounter,250,scope,view);
+  const { img, canvas } = usePreviewCanvas(cam, config?.id ?? null, lastFrame?.frameCounter,250,scope,view);
   const [error, setError] = useState("");
   const [busy,setBusy]=useState(false);
   const pending=useRef(false),serial=useRef(0),mounted=useRef(true);
@@ -25,11 +27,11 @@ export default function FramePreview({ cam, status, lastFrame, config, blockedRe
   const reason = blockedReason || (!status?.ready ? (status?.message || "相机未就绪") : "");
   const canTrigger = !reason && supported && software;
   const soft = async () => {
-    if(pending.current||!canTrigger)return;
+    if(!config||pending.current||!canTrigger)return;
     const request=++serial.current;
     pending.current=true;setBusy(true);
     setError("");
-    try{await cameraApi.softTrigger(cam);}
+    try{await cameraApi.softTrigger(cam, config.id);}
     catch(e){if(mounted.current&&currentScope.current===scope&&serial.current===request)setError(String(e));}
     finally{if(mounted.current&&currentScope.current===scope&&serial.current===request){pending.current=false;setBusy(false);}}
   };

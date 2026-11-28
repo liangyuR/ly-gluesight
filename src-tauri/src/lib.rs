@@ -19,6 +19,7 @@ mod gate;
 mod handshake;
 mod history;
 mod history_fixture;
+mod history_metadata;
 mod history_package;
 mod image_file;
 mod inspection;
@@ -297,6 +298,7 @@ pub fn run() {
             plc::plc_check_address,
             plc::plc_s7_phase1_template,
             cycle::cycle_snapshot,
+            cycle::cycle_control_state,
             cycle::cycle_recipes,
             cycle::cycle_layout,
             cycle::cycle_get_settings,
@@ -329,6 +331,7 @@ pub fn run() {
             history::history_delete,
             history::history_detail,
             history::history_overview,
+            history::history_id_by_cycle,
             history::history_frame_detail,
             history::history_neighbors,
             history::history_rejudge,
@@ -336,11 +339,14 @@ pub fn run() {
             history_package::history_package_target,
             history_package::history_package_export,
             history_package::history_package_pick,
+            history_package::history_package_preview,
             history_package::history_package_import,
             history::reveal_path,
             vision::vision_calib_info,
             vision::vision_calibrate,
             workspace::workspace_list,
+            workspace::workspace_catalog,
+            workspace::workspace_candidate_doc,
             recipe_capture::recipe_capture_get,
             recipe_capture::recipe_capture_list,
             recipe_capture::recipe_capture_frame_image,
@@ -399,6 +405,7 @@ pub fn run() {
             workspace::package::workspace_package_target,
             workspace::package::workspace_package_export,
             workspace::package::workspace_package_pick,
+            workspace::package::workspace_package_preview,
             workspace::package::workspace_package_import,
             workspace::workspace_confirm_skip,
             workspace::workspace_calibration_skip_suggest,

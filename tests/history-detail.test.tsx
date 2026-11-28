@@ -1,28 +1,41 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import HistoryDetailPage from "../src/pages/HistoryDetailPage";
 import { historyApi } from "../src/features/history/api";
 import { workspaceApi } from "../src/features/workspace/api";
+import { HistoryTrials } from "../src/features/workspace/HistoryTrials";
+import { subscribe } from "../src/features/plc";
 import { burstImageApi } from "../src/features/workspace/burstImages";
 import { useWorkspace } from "../src/features/workspace/context";
-import { burstJudgement, burstPartDetail, burstWorkspaceView, frameMetrics, workspaceState } from "./fixtures";
-import type { Comparison } from "../src/features/workspace/types";
+import { scheduleFrameRead } from "../src/features/workspace/previewCache";
+import * as desktop from "../src/lib/desktop";
+import { burstJudgement, burstPartDetail, burstWorkspaceView, deferred, frameMetrics, workspaceState } from "./fixtures";
+import type { CompareOptions, Comparison } from "../src/features/workspace/types";
 import type { HistoryDetailState } from "../src/features/history/types";
 
 vi.mock("../src/features/history/api", () => ({ historyApi: { overview: vi.fn(), frameDetail: vi.fn(), neighbors: vi.fn() } }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
-  comparisonSummaries: vi.fn(), comparisonGet: vi.fn(), compare: vi.fn(), compareOriginal: vi.fn(), recordFrameView: vi.fn(), historyFrameView: vi.fn(), historyCompareOptions: vi.fn(),
+  comparisonSummaries: vi.fn(), comparisonGet: vi.fn(), compare: vi.fn(), compareOriginal: vi.fn(), recordFrameView: vi.fn(), historyFrameView: vi.fn(), historyCompareOptions: vi.fn(), historyCandidates: vi.fn(),
 } }));
 vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), record: vi.fn() } }));
+vi.mock("../src/features/plc", async importOriginal => {
+  const actual = await importOriginal<typeof import("../src/features/plc")>();
+  return { ...actual, subscribe: vi.fn(actual.subscribe) };
+});
 let ws: ReturnType<typeof workspaceState>;
 let detail: ReturnType<typeof burstPartDetail>;
 type Entry = string | { pathname: string; state?: HistoryDetailState };
 function element(entry: Entry = "/history/1"){return <MemoryRouter initialEntries={[entry]}><Routes><Route path="/history/:id" element={<HistoryDetailPage />} />
-  <Route path="/history" element={<p>历史列表页</p>} /><Route path="/recipe/calibration" element={<p>试测页</p>} /></Routes></MemoryRouter>;}
+  <Route path="/history" element={<p>历史列表页</p>} /><Route path="/recipe/:recipeId/calibration" element={<HistoryTrials recipeId="S" />} /></Routes></MemoryRouter>;}
 function show(entry?: Entry) { return render(element(entry)); }
+async function emitHistoryUpdate() {
+  const subscription = vi.mocked(subscribe).mock.calls.filter(([event]) => event === "history://updated").at(-1);
+  expect(subscription).toBeDefined();
+  await act(async () => { subscription![1](detail.summary.cycleId); });
+}
 function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",cycleId:"cycle-1",bundleId:"bundle-A",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,
   originalVerdict:"NG_GAP",judgement:{...detail.judgement,verdict:"OK",reason:"候选合格"},measurements:[],createdAt:1,burst:null};}
 beforeEach(() => {
@@ -64,6 +77,76 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.getAllByText(/合成联调 · PC 混胶报警 · 偏黄/).length).toBeGreaterThan(0);
   });
 
+  it("带定位和候选的历史链接 → 首次加载直接读取目标帧组和候选", async () => {
+    const candidate = { id: "B", revision: 4, version: 3, name: "复测候选" };
+    const yes = { available: true, reason: null };
+    vi.mocked(workspaceApi.historyCompareOptions).mockResolvedValue({ candidate, choices: [candidate], original: yes, rules: yes, raw: yes });
+    vi.mocked(workspaceApi.historyFrameView).mockImplementation(async (_, camera, seq) => ({
+      segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5,
+      edges: [[[10, seq + 10], [20, seq + 10]]], partEdges: [], metrics: frameMetrics(camera, seq),
+    }));
+
+    show("/history/1?camera=2&seq=5&candidate=B&view=original");
+
+    expect(await screen.findByLabelText("复测配方", { selector: "select" })).toHaveValue("B");
+    const image = await screen.findByRole("img", { name: "原始 SN SN-101 · CAM-3 · 帧组 5" });
+    const lines = await within(image).findByLabelText("测量横线");
+    expect(lines.querySelector("line")).toHaveAttribute("y1", "15");
+    expect(await screen.findByText(/CAM-3 · 帧组 5 逐站胶宽/)).toBeVisible();
+
+    expect(new Set(vi.mocked(burstImageApi.record).mock.calls.map(([, , seq]) => seq))).toEqual(new Set([5]));
+    expect(new Set(vi.mocked(workspaceApi.historyFrameView).mock.calls.map(([, , seq]) => seq))).toEqual(new Set([5]));
+    expect(new Set(vi.mocked(historyApi.frameDetail).mock.calls.map(([, camera, seq]) => `${camera}:${seq}`))).toEqual(new Set(["2:5"]));
+    expect(new Set(vi.mocked(workspaceApi.historyCompareOptions).mock.calls.map(([, id]) => id))).toEqual(new Set(["B"]));
+  });
+
+  it("历史详情快速翻帧 → 跳过过期逐站读取，原图队列忙时仍显示目标帧指标", async () => {
+    const actual = await vi.importActual<typeof import("../src/features/history/api")>("../src/features/history/api");
+    vi.mocked(historyApi.frameDetail).mockImplementation(actual.historyApi.frameDetail);
+    const burst = detail.burst!;
+    const detailFor = (camera: number, seq: number) => ({ ...detail, burst: { ...burst,
+      frames: burst.frames.filter(frame => frame.camera === camera && frame.seq === seq).map(frame => ({
+        ...frame, metrics: frameMetrics(camera, seq, { widthMin: seq + 10, widthMean: seq + 11, widthMax: seq + 12 }),
+      })),
+    } });
+    let finishFirst!: (value: typeof detail) => void;
+    const first = new Promise<typeof detail>(resolve => { finishFirst = resolve; });
+    const requested: number[] = [];
+    const desktopCall = desktop.desktopCall;
+    vi.spyOn(desktop, "desktopCall").mockImplementation(async (command, args) => {
+      if (command !== "history_frame_detail") return desktopCall(command, args);
+      const { camera, seq } = args as { camera: number; seq: number };
+      requested.push(seq);
+      return seq === 1 ? first : detailFor(camera, seq);
+    });
+
+    let releaseImages!: () => void;
+    const blockedImage = new Promise<void>(resolve => { releaseImages = resolve; });
+    const imageReads = [scheduleFrameRead(() => blockedImage), scheduleFrameRead(() => blockedImage)];
+    try {
+      show();
+      const user = userEvent.setup();
+      await waitFor(() => expect(requested).toEqual([1]));
+      for (const seq of [3, 4, 6]) {
+        await user.click(screen.getByRole("button", { name: `帧组 ${seq} · CAM-1 · OK` }));
+      }
+      expect(screen.getByRole("button", { name: "帧组 6 · CAM-1 · OK", pressed: true })).toBeVisible();
+      expect(requested).toEqual([1]);
+      expect(screen.getByText("正在读取逐站指标…")).toBeVisible();
+
+      await act(async () => { finishFirst(detailFor(0, 1)); });
+      expect(await screen.findByText(/CAM-1 · 帧组 6 逐站胶宽/)).toBeVisible();
+      expect(screen.getByText("16.00 / 18.00 / 17.00 mm")).toBeVisible();
+      expect(requested).toEqual([1, 6]);
+    } finally {
+      await act(async () => {
+        finishFirst(detailFor(0, 1));
+        releaseImages();
+        await Promise.all(imageReads);
+      });
+    }
+  });
+
   it("对照有生产跳过区域 → 帧格、详情和区域显示跳过，切回原始记录恢复真实NG", async () => {
     const burst = detail.burst!;
     burst.frameVerdicts = burst.frameVerdicts.map(v => v.camera === 0 && v.seq === 1 ? { ...v, verdict: "NG_GAP" } : v);
@@ -92,6 +175,134 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.queryByText(/不参与判定，原图与测量数据仅供诊断/)).toBeNull();
   });
 
+  it("对照相机重排且少一台 → 逐帧追溯与显示切换仍按相机身份定位", async () => {
+    const burst = detail.burst!;
+    const cameras = ["CAM-3", "CAM-1"];
+    const frames = burst.frames.flatMap(frame => {
+      const camera = cameras.indexOf(burst.cameras[frame.camera]);
+      return camera >= 0 && frame.metrics ? [{ ...frame.metrics, camera }] : [];
+    });
+    vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([{ ...comparison(), source: "raw", burst: {
+      segments: burst.segments, cameras, expectedTotal: burst.expectedTotal, judgement: burst.judgement, frames,
+    } } as Comparison]);
+
+    show("/history/1?comparison=compare-1");
+    const user = userEvent.setup();
+    const display = await screen.findByLabelText("显示结果", { selector: "select" });
+    const trace = within(screen.getByRole("table", { name: "逐帧追溯" }));
+    const cam1 = /^帧组 4 · CAM-1 ·/;
+    await user.click(screen.getByRole("button", { name: cam1 }));
+    expect(trace.getByRole("button", { name: "追溯 CAM-1 帧组 4" })).toHaveAttribute("aria-pressed", "true");
+    expect(trace.getByRole("button", { name: "追溯 CAM-2 帧组 4" })).toHaveAttribute("aria-pressed", "false");
+
+    await user.selectOptions(display, "original");
+    expect(screen.getByRole("button", { name: cam1, pressed: true })).toBeVisible();
+    await user.selectOptions(display, "comparison");
+    expect(screen.getByRole("button", { name: cam1, pressed: true })).toBeVisible();
+
+    await user.click(trace.getByRole("button", { name: "查看 CAM-2 帧组 6 原图" }));
+    expect(display).toHaveValue("original");
+    expect(trace.getByRole("button", { name: "追溯 CAM-2 帧组 6", pressed: true })).toBeVisible();
+    expect(await screen.findByRole("img", { name: "原始 SN SN-101 · CAM-2 · 帧组 6" })).toBeVisible();
+    expect(await screen.findByText(/CAM-2 · 帧组 6 逐站胶宽/)).toBeVisible();
+    await user.selectOptions(display, "comparison");
+    expect(screen.getByText("候选原图复测整件判定")).toBeVisible();
+    expect(screen.getByRole("button", { name: /^帧组 6 · CAM-3 ·/, pressed: true })).toBeVisible();
+  });
+
+  it("键盘查看追溯原图 → 等待读图时就定位到相机，返回时恢复追溯焦点", async () => {
+    const image = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
+    let finishImage!: (value: typeof image) => void;
+    const pending = new Promise<typeof image>(resolve => { finishImage = resolve; });
+    vi.mocked(burstImageApi.record).mockImplementation(async (_, camera, seq) => camera === 1 && seq === 6 ? pending : image);
+    render(<main className="main-body">{element()}</main>);
+    const user = userEvent.setup();
+    const row = await screen.findByRole("button", { name: "追溯 CAM-2 帧组 6" });
+    row.focus();
+    await user.keyboard("{Enter}");
+    expect(row).toHaveFocus();
+
+    const tile = screen.getByRole("group", { name: "CAM-2 · 帧组 6 原图" });
+    const content = screen.getByRole("main");
+    content.scrollTop = 600;
+    vi.spyOn(content, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 54, 1000, 720));
+    vi.spyOn(tile, "getBoundingClientRect").mockReturnValue(new DOMRect(10, -360, 280, 240));
+    const openerName = "查看 CAM-2 帧组 6 原图";
+    const opener = screen.getByRole("button", { name: openerName });
+    opener.focus();
+    await user.keyboard("{Enter}");
+    expect(tile).toHaveFocus();
+    expect(content.scrollTop).toBeLessThan(600);
+    expect(within(tile).getByText("正在读取原图…")).toBeVisible();
+
+    await act(async () => { finishImage(image); });
+    expect(within(tile).getByRole("img", { name: "原始 SN SN-101 · CAM-2 · 帧组 6" })).toBeVisible();
+    expect(tile).toHaveFocus();
+    await user.tab();
+    expect(within(tile).getByRole("button", { name: "返回逐帧追溯" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(opener).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    const cameraFilter = screen.getByLabelText("相机筛选", { selector: "select" });
+    await user.selectOptions(cameraFilter, "0");
+    expect(screen.queryByRole("button", { name: openerName })).not.toBeInTheDocument();
+    await user.click(within(tile).getByRole("button", { name: "返回逐帧追溯" }));
+    expect(screen.getByRole("group", { name: "逐帧追溯筛选" })).toHaveFocus();
+    expect(cameraFilter).toHaveValue("0");
+  });
+
+  it("查看原图途中翻到下一页 → 返回定位到原逐帧追溯行和查看按钮", async () => {
+    const burst = detail.burst!;
+    burst.cameras = ["CAM-1"];
+    burst.cameraFrames = [51];
+    burst.judgement.groupCount = 51;
+    burst.judgement.regions[0].region.lastSeq = 51;
+    const frame = burst.frames[0];
+    burst.frames = Array.from({ length: 51 }, (_, index) => {
+      const seq = index + 1;
+      return { ...frame, seq, frameCounter: seq, triggerCounter: seq, metrics: frameMetrics(0, seq), rawFile: `frames/CAM-1/${seq}.pgm` };
+    });
+    burst.frameVerdicts = burst.frames.map(({ seq }) => ({ camera: 0, seq, verdict: "OK" }));
+
+    show("/history/1?seq=50&view=original");
+    const user = userEvent.setup();
+    const openerName = "查看 CAM-1 帧组 50 原图";
+    await user.click(await screen.findByRole("button", { name: openerName }));
+    const tile = screen.getByRole("group", { name: "CAM-1 · 帧组 50 原图" });
+    expect(tile).toHaveFocus();
+    await user.keyboard("{ArrowRight}");
+    expect(await screen.findByRole("button", { name: "查看 CAM-1 帧组 51 原图" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: openerName })).not.toBeInTheDocument();
+
+    const currentTile = screen.getByRole("group", { name: "CAM-1 · 帧组 51 原图" });
+    await user.click(within(currentTile).getByRole("button", { name: "返回逐帧追溯" }));
+    const returned = await screen.findByRole("button", { name: openerName });
+    await waitFor(() => expect(returned).toHaveFocus());
+    expect(screen.getByText("第 1 / 2 页")).toBeVisible();
+    expect(screen.getByRole("group", { name: "CAM-1 · 帧组 51 原图" })).toBeVisible();
+  });
+
+  it("在稀疏帧组的原图上按左右键 → 跳过空洞并在首尾停住", async () => {
+    const burst = detail.burst!;
+    const sequences = new Set([2, 5, 11]);
+    burst.frames = burst.frames.filter(frame => sequences.has(frame.seq));
+    burst.frameVerdicts = burst.frameVerdicts.filter(frame => sequences.has(frame.seq));
+
+    show();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "查看 CAM-3 帧组 2 原图" }));
+    expect(screen.getByRole("group", { name: "CAM-3 · 帧组 2 原图" })).toHaveFocus();
+
+    const steps = [["ArrowLeft", 2], ["ArrowRight", 5], ["ArrowRight", 11], ["ArrowRight", 11],
+      ["ArrowLeft", 5], ["ArrowLeft", 2], ["ArrowLeft", 2]] as const;
+    for (const [key, seq] of steps) {
+      await user.keyboard(`{${key}}`);
+      expect(document.activeElement).toHaveAccessibleName(`CAM-3 · 帧组 ${seq} 原图`);
+    }
+    expect(await screen.findByRole("img", { name: "原始 SN SN-101 · CAM-3 · 帧组 2" })).toBeVisible();
+  });
+
   it("加载旧对照期间重新复算 → 迟到的旧对照不能覆盖新结果", async () => {
     const old = { ...comparison(), judgement: { ...comparison().judgement, reason: "旧对照结果" } };
     vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([old]);
@@ -109,11 +320,65 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.queryByText("旧对照结果")).toBeNull();
   });
 
-  // 防的回归：从试测“看详情”进来，返回按钮写死回历史列表，操作员要重新找到试测页
-  it("从试测进入历史详情 → 返回试测页", async () => {
-    show({ pathname: "/history/1", state: { returnTo: { path: "/recipe/calibration", label: "返回试测" } } });
-    await userEvent.click(await screen.findByRole("button", { name: "返回试测" }));
-    expect(screen.getByText("试测页")).toBeVisible();
+  it("取消历史复测 → 保留已保存对照并允许重跑，只显示取消状态", async () => {
+    const saved = { ...comparison(), judgement: { ...detail.judgement, reason: "上一份已保存的对照" } };
+    const pending = deferred<Comparison>();
+    vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([saved]);
+    vi.mocked(workspaceApi.comparisonGet).mockResolvedValue(saved);
+    show(`/history/1?comparison=${saved.id}`);
+
+    expect(await screen.findByText(saved.judgement.reason)).toBeVisible();
+    const picker = screen.getByRole("combobox", { name: "已保存对照结果" });
+    expect(picker).toHaveTextContent("规则重判 · A 修订 7");
+    const rule = screen.getByRole("button", { name: "按候选规则重判" });
+    await waitFor(() => expect(rule).toBeEnabled());
+    vi.mocked(workspaceApi.compare).mockReturnValueOnce(pending.promise);
+    await userEvent.click(rule);
+    expect(rule).toBeDisabled();
+
+    await act(async () => { pending.reject("OPERATION_CANCELLED: 任务已取消"); });
+    expect(screen.getByRole("status", { name: "历史复算进度" })).toHaveTextContent("已取消，原结果保留");
+    expect(screen.queryByText("操作未完成")).not.toBeInTheDocument();
+    expect(screen.getByText(saved.judgement.reason)).toBeVisible();
+    expect(picker).toHaveTextContent("规则重判 · A 修订 7");
+    expect(rule).toBeEnabled();
+  });
+
+  it("从跨项目试测的对照返回 → 只为原候选实例恢复范围和结果", async () => {
+    const saved = { ...comparison(), candidateId: "S", candidateRevision: ws.data!.workspace.revision };
+    detail.summary = { ...detail.summary, recipeId: "OTHER", projectId: "line-b" };
+    const { id, cycleId, ts, sn, verdict, recipeId, projectId } = detail.summary;
+    const row = { recordId: id, cycleId, ts, sn, verdict, mode: "production" as const, groupCount: 12, cameras: [], complete: true,
+      recipeId, projectId, reasons: [], warnings: [], durationMs: null,
+      measuredFps: null, setFps: null, importedRound: null, usage: null, fixture: null };
+    vi.mocked(workspaceApi.historyCandidates).mockImplementation(async (_, query) => query.ownRecipe
+      ? { total: 0, items: [] } : { total: 1, items: [row] });
+    vi.mocked(workspaceApi.compare).mockClear().mockResolvedValue(saved);
+    vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([saved]);
+    const user = userEvent.setup();
+    show("/recipe/S/calibration");
+    await user.click(screen.getByRole("checkbox", { name: /显示全部历史件/ }));
+    await user.click(await screen.findByRole("button", { name: /^触发测试/ }));
+    await user.click(await screen.findByRole("link", { name: "看详情" }));
+    const back = await screen.findByRole("button", { name: "返回试测" });
+    ws.data!.workspace.revision++;
+    await user.click(back);
+
+    expect(screen.getByRole("checkbox", { name: /显示全部历史件/ })).toBeChecked();
+    const resumed = await screen.findByRole("listitem", { name: /SN-101/ });
+    expect(resumed).toHaveTextContent("候选合格");
+    expect(resumed).toHaveTextContent(`试测修订 ${saved.candidateRevision}`);
+    const link = within(resumed).getByRole("link", { name: "看详情" });
+    expect(link).toHaveAttribute("href", "/history/1?comparison=compare-1");
+    expect(link).toHaveFocus();
+
+    await user.click(link);
+    const backAfterRecreate = await screen.findByRole("button", { name: "返回试测" });
+    ws.data!.workspace.instanceId++;
+    await user.click(backAfterRecreate);
+    expect(screen.getByRole("checkbox", { name: /显示全部历史件/ })).not.toBeChecked();
+    expect(await screen.findByText("本配方还没有历史件。")).toBeVisible();
+    expect(workspaceApi.compare).toHaveBeenCalledTimes(1);
   });
 
   // 防的回归：区域 NG 时帧组条把整段的帧都涂红；格子只按本帧结论着色，区域结论放在段条上
@@ -142,6 +407,31 @@ describe("历史详情（段配方记录）", () => {
     expect(row).toHaveTextContent(/段 1–3 · 未分段.*OK.*NG · 胶宽超差.*结论.*不同/);
   });
 
+  it("打开指定对照链接 → 先显示判定并请求对应帧的叠图", async () => {
+    const burst = detail.burst!;
+    const target: Comparison = { ...comparison(), source: "raw", burst: {
+      segments: burst.segments, cameras: burst.cameras, expectedTotal: burst.expectedTotal, judgement: burst.judgement,
+      frames: burst.frames.flatMap(frame => frame.metrics ? [frame.metrics] : []),
+    } };
+    const inventory = deferred<Comparison[]>();
+    const newer = { ...comparison(), id: "compare-new", judgement: { ...detail.judgement, reason: "列表等待期间的新复测" } };
+    vi.mocked(workspaceApi.comparisonGet).mockResolvedValue(target);
+    vi.mocked(workspaceApi.comparisonSummaries).mockReturnValue(inventory.promise);
+    vi.mocked(workspaceApi.compare).mockResolvedValue(newer);
+    show("/history/1?comparison=compare-1&seq=2");
+
+    expect(await screen.findByText("候选原图复测整件判定")).toBeVisible();
+    await waitFor(() => expect(workspaceApi.recordFrameView).toHaveBeenCalledWith(detail.summary.id, target.id, 0, 2, expect.any(AbortSignal)));
+    expect(workspaceApi.historyFrameView).not.toHaveBeenCalled();
+
+    await userEvent.click(await screen.findByRole("button", { name: "按候选规则重判" }));
+    expect(await screen.findByText("列表等待期间的新复测")).toBeVisible();
+    await act(async () => inventory.resolve([target, { ...comparison(), id: "compare-2" }]));
+    const picker = screen.getByLabelText<HTMLSelectElement>("已保存对照结果", { selector: "select" });
+    expect(picker).toHaveValue(newer.id);
+    expect(Array.from(picker.options, option => option.value)).toEqual(["", newer.id, target.id, "compare-2"]);
+  });
+
   it("从试测“看详情”带对照进入 → 帧组与整件判定按对照的逐帧指标显示，原图上的测站与胶宽折线联动，可切回原始记录", async () => {
     const burst = detail.burst!;
     const edge = (y: number): [[number, number], [number, number]] => [[10, y], [20, y]];
@@ -154,6 +444,8 @@ describe("历史详情（段配方记录）", () => {
     expect(await screen.findByText("候选原图复测整件判定")).toBeVisible();
     expect(screen.getByText("12.00 mm")).toBeVisible();
     await waitFor(() => expect(workspaceApi.recordFrameView).toHaveBeenCalledWith(detail.summary.id, "compare-1", 0, 1, expect.any(AbortSignal)));
+    expect(workspaceApi.historyFrameView).not.toHaveBeenCalled();
+    expect(historyApi.frameDetail).not.toHaveBeenCalled();
     // 只有选中相机的原图能悬停测站；悬停第 2 站的测量线 → 胶宽折线标出第 2 站，原图上这条线加粗
     const hit = await waitFor(() => { const lines = document.querySelectorAll('[data-station="1"]'); expect(lines).toHaveLength(1); return lines[0]; });
     await userEvent.hover(hit);
@@ -199,6 +491,102 @@ describe("历史详情（段配方记录）", () => {
     await waitFor(() => expect(workspaceApi.compare).toHaveBeenCalledWith("B", 4, detail.summary.id, true, expect.any(String)));
   });
 
+  it("读取所选候选的复测选项失败 → 保留候选列表并可重试恢复重判", async () => {
+    const recorded = { id: "S", revision: 9, version: 2, name: "段配方" };
+    const other = { id: "B", revision: 4, version: 1, name: "别的型号" };
+    const available = { available: true, reason: null };
+    const initial: CompareOptions = { candidate: recorded, choices: [recorded, other], original: available, rules: available, raw: available };
+    const read = vi.mocked(workspaceApi.historyCompareOptions);
+    read.mockResolvedValue(initial);
+    const user = userEvent.setup();
+    show();
+    const picker = await screen.findByLabelText("复测配方", { selector: "select" });
+    const rule = () => screen.getByRole("button", { name: "按候选规则重判" });
+    expect(rule()).toBeEnabled();
+
+    read.mockRejectedValueOnce(new Error("暂时无法读取记录库"));
+    await user.selectOptions(picker, other.id);
+    expect(await screen.findByText("复测选项读取失败")).toBeVisible();
+    expect(rule()).toBeDisabled();
+    expect(picker).toBeEnabled();
+    expect(picker).toHaveTextContent("段配方");
+
+    const retry = deferred<CompareOptions>();
+    read.mockReturnValueOnce(retry.promise);
+    await user.click(screen.getByRole("button", { name: "重试读取复测选项" }));
+    expect(read).toHaveBeenLastCalledWith(detail.summary.id, other.id);
+    expect(rule()).toBeDisabled();
+    expect(screen.getByText("正在读取复测选项…")).toBeVisible();
+    await act(async () => { retry.resolve({ ...initial, candidate: other }); });
+    expect(screen.queryByText("复测选项读取失败")).not.toBeInTheDocument();
+    expect(picker).toHaveValue(other.id);
+    expect(rule()).toBeEnabled();
+  });
+
+  it("同件录制新增首张原图 → 刷新复测选项，随后只更新回写时间时保留选项", async () => {
+    const candidate = { id: "S", revision: 9, version: 2, name: "段配方" };
+    const available = { available: true, reason: null };
+    const options: CompareOptions = { candidate, choices: [candidate], original: available, rules: available,
+      raw: { available: false, reason: "候选相机还没有保存原图" } };
+    const read = vi.mocked(workspaceApi.historyCompareOptions);
+    detail = { ...detail, burst: { ...detail.burst!, frames: detail.burst!.frames.map(frame => ({ ...frame, rawFile: null })) },
+      recording: { ...detail.recording, state: "incomplete", available: false } };
+    vi.mocked(historyApi.overview).mockResolvedValue(detail);
+    read.mockResolvedValue(options);
+    show();
+    expect(await screen.findByText("候选相机还没有保存原图", { exact: false })).toBeVisible();
+    const raw = () => screen.getByRole("button", { name: "从原图复测整件" });
+    expect(raw()).toBeDisabled();
+
+    detail = { ...detail, burst: { ...detail.burst!, frames: detail.burst!.frames.map(frame => frame.camera === 0 && frame.seq === 1
+      ? { ...frame, rawFile: "frames/CAM-1/00001.pgm" } : frame) } };
+    vi.mocked(historyApi.overview).mockResolvedValue(detail);
+    read.mockResolvedValue({ ...options, raw: available });
+    await emitHistoryUpdate();
+    await waitFor(() => expect(raw()).toBeEnabled());
+    expect(read).toHaveBeenCalledTimes(2);
+
+    const previousReads = vi.mocked(historyApi.overview).mock.calls.length;
+    detail = structuredClone(detail);
+    detail.summary.delivery.updatedAt = 37;
+    vi.mocked(historyApi.overview).mockResolvedValue(detail);
+    await emitHistoryUpdate();
+    expect(historyApi.overview).toHaveBeenCalledTimes(previousReads + 1);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(raw()).toBeEnabled();
+  });
+
+  it("对照运行中录制状态触发选项刷新 → 同一候选的已完成对照仍显示", async () => {
+    const candidate = { id: "S", revision: 9, version: 2, name: "段配方" };
+    const available = { available: true, reason: null };
+    const options: CompareOptions = { candidate, choices: [candidate], original: available, rules: available, raw: available };
+    const refreshed = deferred<CompareOptions>();
+    const pending = deferred<Comparison>();
+    const read = vi.mocked(workspaceApi.historyCompareOptions);
+    read.mockResolvedValueOnce(options).mockReturnValue(refreshed.promise);
+    vi.mocked(workspaceApi.compare).mockReturnValueOnce(pending.promise);
+    const result: Comparison = { ...comparison(), candidateId: candidate.id, candidateRevision: candidate.revision,
+      judgement: { ...comparison().judgement, reason: "落盘更新期间完成的规则重判" } };
+    show();
+    const rule = await screen.findByRole("button", { name: "按候选规则重判" });
+    await waitFor(() => expect(rule).toBeEnabled());
+    await userEvent.click(rule);
+    await waitFor(() => expect(workspaceApi.compare).toHaveBeenLastCalledWith(candidate.id, candidate.revision, detail.summary.id, false, expect.any(String)));
+
+    detail = { ...detail, recording: { ...detail.recording, state: "incomplete", available: false } };
+    vi.mocked(historyApi.overview).mockResolvedValue(detail);
+    await emitHistoryUpdate();
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("正在读取复测选项…")).toBeVisible();
+    await act(async () => { pending.resolve(result); });
+    expect(await screen.findByText(result.judgement.reason)).toBeVisible();
+    expect(screen.getByText("正在读取复测选项…")).toBeVisible();
+
+    await act(async () => { refreshed.resolve(options); });
+    expect(screen.getByText(result.judgement.reason)).toBeVisible();
+    expect(screen.getByLabelText("已保存对照结果", { selector: "select" })).toHaveValue(result.id);
+  });
+
   // 防的回归（D-SB-57）：有段没测的原图复测被当成整件结论，操作员以为没测的段也合格
   it("原图复测有段没测时，复测前写明哪些段不测，结果里列出没测的段", async () => {
     const yes = { available: true, reason: null };
@@ -211,6 +599,7 @@ describe("历史详情（段配方记录）", () => {
     expect(await screen.findByText(/从原图复测：这些段没有可用走廊，复测时不测/)).toBeVisible();
     expect(within(await screen.findByRole("list", { name: "没测的段" })).getByRole("listitem")).toHaveTextContent("第 2 段相机 CAM-2：尚未示教检测走廊");
     expect(screen.getByRole("button", { name: "从原图复测整件" })).toBeEnabled();
+    expect(await screen.findByText(/CAM-1 · 帧组 1 逐站胶宽/)).toBeVisible();
   });
 
   // 防的回归：原始记录只有选了候选对照才有辅助线，现场多配方并行时看不到；原始记录按记录自己的发布包取叠图
@@ -233,5 +622,41 @@ describe("历史详情（段配方记录）", () => {
     expect(burstImageApi.record).toHaveBeenCalledWith(detail.summary.id, 0, 5, expect.any(AbortSignal));
     expect(vi.mocked(burstImageApi.record).mock.calls.some(([id, camera, seq]) => id === detail.summary.id && camera === 1 && seq === 5)).toBe(false);
     expect(workspaceApi.recordFrameView).not.toHaveBeenCalled();
+  });
+
+  it("各相机原图就绪后才读取叠图 → 慢图和失败图不请求，旧图迟到不复算", async () => {
+    const image = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
+    let finishOld!: (value: typeof image) => void;
+    const oldImage = new Promise<typeof image>(resolve => { finishOld = resolve; });
+    vi.mocked(burstImageApi.record).mockImplementation(async (_, camera, seq) => {
+      if (seq === 1 && camera === 0) return oldImage;
+      if (seq === 1 && camera === 1) throw new Error("模拟录制原图读取失败");
+      return image;
+    });
+    vi.mocked(workspaceApi.historyFrameView).mockImplementation(async (_, camera, seq) => ({
+      segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5,
+      edges: [[[10, seq + 10], [20, seq + 10]]], partEdges: [], metrics: frameMetrics(camera, seq),
+    }));
+    const firstGroupOverlays = () => new Set(vi.mocked(workspaceApi.historyFrameView).mock.calls
+      .filter(([, , seq]) => seq === 1).map(([, camera]) => camera));
+
+    show();
+    const ready = await screen.findByRole("img", { name: "原始 SN SN-101 · CAM-3 · 帧组 1" });
+    expect(await within(ready).findByLabelText("测量横线")).toBeVisible();
+    expect(within(screen.getByRole("group", { name: "CAM-1 · 帧组 1 原图" })).getByText("正在读取原图…")).toBeVisible();
+    const failed = within(screen.getByRole("group", { name: "CAM-2 · 帧组 1 原图" }));
+    expect(await failed.findByText("原图不可用")).toBeVisible();
+    expect(failed.getByText("模拟录制原图读取失败")).toBeVisible();
+    expect(firstGroupOverlays()).toEqual(new Set([2]));
+
+    await userEvent.click(screen.getByRole("button", { name: "帧组 6 · CAM-1 · OK" }));
+    const current = await screen.findByRole("img", { name: "原始 SN SN-101 · CAM-1 · 帧组 6" });
+    const lines = await within(current).findByLabelText("测量横线");
+    expect(lines.querySelector("line")).toHaveAttribute("y1", "16");
+
+    await act(async () => { finishOld(image); });
+    expect(firstGroupOverlays()).toEqual(new Set([2]));
+    expect(current).toBeVisible();
+    expect(lines.querySelector("line")).toHaveAttribute("y1", "16");
   });
 });

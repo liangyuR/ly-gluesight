@@ -1,16 +1,16 @@
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { useHorizontalWindow } from "../../../lib/useHorizontalWindow";
 import type { FrameGroupView, RegionResult } from "../../plan/types";
 import { groupCellColor, groupCellState, groupCellText, productionSkippedRegion, regionKindLabel, verdictPlanTone, type PlanTone } from "../../plan/vis";
 import { verdictLabel } from "../../history/meta";
+import { countSkippedGroups, firstGroupAtOrAfter } from "../frameGroups";
 import "./burst.css";
 
 const bandColor: Record<PlanTone, string> = { ok: "var(--ok)", warn: "var(--warn)", ng: "var(--ng)", info: "var(--primary)", neutral: "var(--outline-variant)" };
 
 /** 段条：帧组上方按区域着色的色带，颜色取区域结论；跳过的区域不判定，为浅灰。 */
 function RegionBand({ regions, seq }: { regions: RegionResult[]; seq: number }) {
-  const index = regions.findIndex(r => r.region.firstSeq <= seq && seq <= r.region.lastSeq);
-  const r = regions[index];
+  const r = regions.find(r => r.region.firstSeq <= seq && seq <= r.region.lastSeq);
   if (!r) return <span className="fg-band" aria-hidden="true" />;
   const skipped = r.region.kind.type === "skipped";
   const text = `${regionKindLabel(r.region.kind)} · ${skipped ? "生产跳过 · 不参与判定" : verdictLabel[r.verdict]}${r.reason ? "：" + r.reason : ""}`;
@@ -38,7 +38,8 @@ export default memo(function FrameGroupStrip({ groups, cameras, regions, selecte
   onSelectCell?: (seq: number, camera: number) => void;
   label?: string;
 }) {
-  const selectedIndex = groups.findIndex(group => group.seq === selected);
+  const match = selected == null ? -1 : firstGroupAtOrAfter(groups, selected);
+  const selectedIndex = match >= 0 && groups[match]?.seq === selected ? match : -1;
   const window = useHorizontalWindow<HTMLOListElement>(groups.length, 34, selectedIndex);
   const root = useRef<HTMLDivElement>(null), restoreFocus = useRef(false);
   useEffect(() => {
@@ -46,7 +47,7 @@ export default memo(function FrameGroupStrip({ groups, cameras, regions, selecte
     if (restoreFocus.current && cell) { cell.focus({ preventScroll: true }); restoreFocus.current = false; }
   }, [selected, selectedCamera, window.start, window.end]);
   const banded = !!regions?.length;
-  const skippedCount = groups.filter(group => productionSkippedRegion(regions, group.seq)).length;
+  const skippedCount = useMemo(() => countSkippedGroups(groups, regions), [groups, regions]);
   return <><div ref={root} className={"fg-strip" + (banded ? " banded" : "")} role="group" aria-label={label} onKeyDown={event => {
     if (!onSelect && !onSelectCell) return;
     const delta = { ArrowLeft: -1, ArrowRight: 1, Home: -Infinity, End: Infinity }[event.key];
@@ -63,25 +64,29 @@ export default memo(function FrameGroupStrip({ groups, cameras, regions, selecte
     <div className="fg-cams" aria-hidden="true">{cameras.map(camera => <span key={camera} title={camera}>{camera}</span>)}</div>
     <ol className="fg-groups" ref={window.ref} onScroll={window.onScroll}>
       {window.start > 0 && <li aria-hidden="true" style={{ width: window.start * 34 - 4 }} />}
-      {groups.slice(window.start, window.end).map(group => <li key={group.seq}>
-        {banded && <RegionBand regions={regions!} seq={group.seq} />}
-        {onSelectCell ? <div className={"fg-group fg-individual" + (group.seq === selected ? " selected" : "") + (group.incomplete ? " incomplete" : "")}>
-          <button type="button" className="fg-seq fg-seq-button" aria-label={`选择帧组 ${group.seq}`} onClick={() => onSelect ? onSelect(group.seq) : onSelectCell(group.seq, selectedCamera ?? 0)}>{group.seq}</button>
-          {cameras.map((camera, c) => {
-            const state = groupCellState(group, c, regions);
-            return <button key={camera} type="button" className="fg-cell fg-cell-button" data-state={state} aria-label={`帧组 ${group.seq} · ${camera} · ${groupCellText[state]}`} aria-pressed={group.seq === selected && c === selectedCamera} title={`${camera} · ${groupCellText[state]}`} style={{ background: groupCellColor[state] }} onClick={() => onSelectCell(group.seq, c)} />;
-          })}
-        </div> : <button type="button"
-          className={"fg-group" + (group.seq === selected ? " selected" : "") + (group.incomplete ? " incomplete" : "")}
-          aria-pressed={group.seq === selected} aria-label={`帧组 ${group.seq}${group.incomplete ? " · 不完整" : ""}`}
-          onClick={() => onSelect?.(group.seq)}>
-          <span className="fg-seq">{group.seq}</span>
-          {cameras.map((camera, c) => {
-            const state = groupCellState(group, c, regions);
-            return <i key={camera} role="img" className="fg-cell" data-state={state} aria-label={`${camera} · ${groupCellText[state]}`} title={`${camera} · ${groupCellText[state]}`} style={{ background: groupCellColor[state] }} />;
-          })}
-        </button>}
-      </li>)}
+      {groups.slice(window.start, window.end).map(group => {
+        const skipped = productionSkippedRegion(regions, group.seq);
+        const cellState = (camera: number) => skipped ? "productionSkipped" : groupCellState(group, camera);
+        return <li key={group.seq}>
+          {banded && <RegionBand regions={regions!} seq={group.seq} />}
+          {onSelectCell ? <div className={"fg-group fg-individual" + (group.seq === selected ? " selected" : "") + (group.incomplete ? " incomplete" : "")}>
+            <button type="button" className="fg-seq fg-seq-button" aria-label={`选择帧组 ${group.seq}`} onClick={() => onSelect ? onSelect(group.seq) : onSelectCell(group.seq, selectedCamera ?? 0)}>{group.seq}</button>
+            {cameras.map((camera, c) => {
+              const state = cellState(c);
+              return <button key={camera} type="button" className="fg-cell fg-cell-button" data-state={state} aria-label={`帧组 ${group.seq} · ${camera} · ${groupCellText[state]}`} aria-pressed={group.seq === selected && c === selectedCamera} title={`${camera} · ${groupCellText[state]}`} style={{ background: groupCellColor[state] }} onClick={() => onSelectCell(group.seq, c)} />;
+            })}
+          </div> : <button type="button"
+            className={"fg-group" + (group.seq === selected ? " selected" : "") + (group.incomplete ? " incomplete" : "")}
+            aria-pressed={group.seq === selected} aria-label={`帧组 ${group.seq}${group.incomplete ? " · 不完整" : ""}`}
+            onClick={() => onSelect?.(group.seq)}>
+            <span className="fg-seq">{group.seq}</span>
+            {cameras.map((camera, c) => {
+              const state = cellState(c);
+              return <i key={camera} role="img" className="fg-cell" data-state={state} aria-label={`${camera} · ${groupCellText[state]}`} title={`${camera} · ${groupCellText[state]}`} style={{ background: groupCellColor[state] }} />;
+            })}
+          </button>}
+        </li>;
+      })}
       {window.end < groups.length && <li aria-hidden="true" style={{ width: (groups.length - window.end) * 34 - 4 }} />}
     </ol>
   </div>{skippedCount > 0 && <p className="muted" role="note">生产跳过 {skippedCount} 帧组 · 不参与判定</p>}</>;

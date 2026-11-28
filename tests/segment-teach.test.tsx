@@ -5,11 +5,11 @@ import { beforeEach, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
-import { useCycle } from "../src/features/cycle/api";
+import { useProductionBusy } from "../src/features/cycle/control";
 import type { WorkspaceView } from "../src/features/workspace/types";
-import { burstRecipe, burstWorkspaceView, deferred, pathSegment, snapshot, workspaceState } from "./fixtures";
+import { burstRecipe, burstWorkspaceView, deferred, pathSegment, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn() }));
+vi.mock("../src/features/cycle/control", () => ({ useProductionBusy: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({
   workspaceApi: { image: vi.fn(), captureGet: vi.fn(), captureRoundThumbs: vi.fn(), captureFrameImage: vi.fn(), segmentTemplateSave: vi.fn(), segmentTemplatePreview: vi.fn() },
 }));
@@ -28,7 +28,7 @@ function twoPasses(segments = burstRecipe().segments): WorkspaceView {
 
 beforeEach(() => {
   vi.mocked(useWorkspace).mockImplementation(() => ws);
-  vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot() });
+  vi.mocked(useProductionBusy).mockReturnValue(false);
   vi.mocked(workspaceApi.image).mockReturnValue(deferred<never>().promise);
   vi.mocked(workspaceApi.captureGet).mockResolvedValue(null);
   vi.mocked(workspaceApi.captureRoundThumbs).mockReturnValue(deferred<never>().promise);

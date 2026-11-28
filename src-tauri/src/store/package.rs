@@ -1,9 +1,10 @@
 //! 历史件导出包的记录库部分：按件导出子集，按件并入本机记录库（docs/architecture/history-package.md）。
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::Transaction;
 
 use super::merge::{has_table, merge_rows, prepare_source, Merged};
 use super::{
@@ -58,54 +59,73 @@ impl Store {
         rows.collect::<Result<_, _>>().map_err(db_err)
     }
 
-    /// 把记录 `ids`（调用方保证同属一个项目）连同帧记录与所用配方快照写成独立记录库 `target`（10 版）；
+    /// 把记录 `ids`（调用方保证同属一个项目）连同帧记录与所用配方快照写成独立记录库 `target`；
     /// 指向子集外的复测引用置空。
     pub fn export_parts(&self, ids: &[i64], target: &Path) -> Result<(), String> {
-        if target.exists() {
-            return Err(format!("导出记录库 {} 已存在", target.display()));
-        }
-        drop(Store::open_inner(target, &self.project, false)?);
         let list = serde_json::to_string(ids).map_err(|e| e.to_string())?;
-        let conn = self.conn.lock().unwrap();
-        conn.execute("ATTACH DATABASE ?1 AS dst", [target.to_string_lossy()])
-            .map_err(db_err)?;
-        let result = (|| {
-            conn.execute_batch("BEGIN;").map_err(db_err)?;
-            let count = conn
+        self.export_record_snapshot(target, &self.project, |tx| {
+            let count = tx
                 .execute(
-                    "INSERT INTO dst.parts SELECT * FROM main.parts WHERE id IN (SELECT value FROM json_each(?1))",
+                    "INSERT INTO main.parts SELECT * FROM src.parts WHERE id IN (SELECT value FROM json_each(?1))",
                     [&list],
                 )
                 .map_err(db_err)?;
             if count != ids.len() {
                 return Err("要导出的记录有的已不存在".into());
             }
-            conn.execute(
-                "INSERT INTO dst.part_frames SELECT * FROM main.part_frames WHERE part_id IN (SELECT value FROM json_each(?1))",
-                [&list],
+            tx.execute(
+                "INSERT INTO main.part_frames SELECT * FROM src.part_frames WHERE part_id IN (SELECT id FROM main.parts)",
+                [],
             )
             .map_err(db_err)?;
-            conn.execute_batch(
-                "INSERT INTO dst.recipe_snapshots SELECT s.* FROM main.recipe_snapshots s \
-                     WHERE EXISTS (SELECT 1 FROM dst.parts p WHERE p.project_id = s.project_id AND p.recipe_revision = s.revision_id);
-                 UPDATE dst.parts SET retest_of = NULL WHERE retest_of NOT IN (SELECT id FROM dst.parts);
-                 COMMIT;",
+            tx.execute_batch(
+                "INSERT INTO main.recipe_snapshots SELECT s.* FROM src.recipe_snapshots s \
+                     WHERE EXISTS (SELECT 1 FROM main.parts p WHERE p.project_id = s.project_id AND p.recipe_revision = s.revision_id);
+                 UPDATE main.parts SET retest_of = NULL WHERE retest_of NOT IN (SELECT id FROM main.parts);",
             )
             .map_err(db_err)
-        })();
-        if result.is_err() {
-            let _ = conn.execute_batch("ROLLBACK;");
+        })
+    }
+
+    pub(super) fn export_record_snapshot<T>(
+        &self,
+        target: &Path,
+        project: &str,
+        copy: impl FnOnce(&Transaction<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if target.exists() {
+            return Err(format!("导出记录库 {} 已存在", target.display()));
         }
-        conn.execute_batch("DETACH DATABASE dst;").map_err(db_err)?;
-        result?;
-        let out = Connection::open(target).map_err(db_err)?;
-        let mode: String = out
-            .query_row("PRAGMA journal_mode = DELETE", [], |r| r.get(0))
+        let path = std::path::absolute(&self.path).map_err(|error| error.to_string())?;
+        let mut source = String::from("file:");
+        // 编码原生路径，保留 UNC 前缀并避免 SQLite 把文件名字符解析成 URI 参数。
+        for &byte in path.as_os_str().as_encoded_bytes() {
+            if byte == 0 {
+                return Err("记录库路径包含无效字符".into());
+            }
+            write!(source, "%{byte:02X}").unwrap();
+        }
+        source.push_str("?mode=ro");
+        let mut conn = Store::open_inner(target, project, false)?
+            .conn
+            .into_inner()
+            .unwrap();
+        conn.execute("ATTACH DATABASE ?1 AS src", [source])
+            .map_err(db_err)?;
+        if !conn.is_readonly(c"src").map_err(db_err)? {
+            return Err("导出时无法只读打开来源记录库".into());
+        }
+        let tx = conn.transaction().map_err(db_err)?;
+        let result = copy(&tx)?;
+        tx.commit().map_err(db_err)?;
+        conn.execute_batch("DETACH DATABASE src;").map_err(db_err)?;
+        let mode: String = conn
+            .query_row("PRAGMA main.journal_mode = DELETE", [], |r| r.get(0))
             .map_err(db_err)?;
         if mode != "delete" {
             return Err("导出记录库无法退出 WAL 模式".into());
         }
-        Ok(())
+        Ok(result)
     }
 
     /// 把导出包里的记录库 `source`（10 版）并入项目 `project`，一个事务：本机已有同一 cycleId 的件跳过，其余重新编号；

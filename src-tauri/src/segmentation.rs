@@ -55,7 +55,7 @@ impl Segmenter for Proportional {
     }
 }
 
-fn proportional_for_count(segments: &[PathSegment], total: u64) -> SegOutcome {
+pub(crate) fn proportional_for_count(segments: &[PathSegment], total: u64) -> SegOutcome {
     let Some(counts) = segments
         .iter()
         .map(|s| s.expected_frames.map(u64::from))
@@ -127,9 +127,9 @@ fn by_passes(segments: &[PathSegment], passes: PassRules) -> Option<SegOutcome> 
 
 /// 本件的分段（生产、复测与历史重判共用）：本件笔数与示教件一致时按笔换算边界（D-SB-62），笔数不一致时比例边界一律不可信
 /// （整件按未分段判），没有笔结构时按 [`Proportional`]。
-pub fn segment_part(input: &SegInput, passes: PassRules) -> SegOutcome {
-    by_passes(input.segments, passes).unwrap_or_else(|| {
-        let mut outcome = Proportional.segment(input);
+pub fn segment_part(segments: &[PathSegment], total: u64, passes: PassRules) -> SegOutcome {
+    by_passes(segments, passes).unwrap_or_else(|| {
+        let mut outcome = proportional_for_count(segments, total);
         if let (true, SegOutcome::Boundaries(boundaries)) = (passes.mismatch(), &mut outcome) {
             boundaries.iter_mut().for_each(|b| b.confidence = 0.0);
         }
@@ -190,6 +190,10 @@ pub struct Region {
 }
 
 impl Region {
+    pub(crate) fn has_ordered_frame_range(&self) -> bool {
+        self.first_seq <= self.last_seq
+    }
+
     /// 区域帧数 = 帧组数 = last_seq − first_seq + 1（与标定同一口径）。
     pub fn frame_count(&self) -> u32 {
         u32::try_from((self.last_seq + 1).saturating_sub(self.first_seq)).unwrap_or(u32::MAX)
@@ -198,7 +202,7 @@ impl Region {
 
 /// 判定需要的走廊（D-SB-45）：按计划相机、seq（1..=total）给出该用第几段（`PathSegment.index`）的走廊测量，None 为不测。
 /// 可信的直线 / 弯道区域：本段检测相机用本段走廊。过渡区：帧按比例边界落在哪一段，该段检测相机用该段走廊，只检测最近边界
-/// 另一侧那一段的相机用那一段的走廊；多个过渡区合并（中间的段被取空）时同样按帧所在段与最近的边界取，不跨到更远的段。跳过区域不测。其余未分段区域（置信度不足、算法待定）：用到达时的预测段与它的检测相机（`plan::arrival_corridor`）。
+/// 另一侧那一段的相机用那一段的走廊；多个过渡区合并（中间的段被取空）时同样按帧所在段与最近的边界取，不跨到更远的段。跳过区域不测。其余未分段区域（置信度不足、算法待定）：用到达时的预测段与它的检测相机。
 pub fn frame_corridors(
     segments: &[PathSegment],
     cameras: &[String],
@@ -213,6 +217,7 @@ pub fn frame_corridors(
             .map(|b| b.frame_seq),
         SegOutcome::Unsegmented => None,
     };
+    let arrival = std::cell::OnceCell::new();
     let mut out = vec![vec![None; total as usize]; cameras.len()];
     for region in regions {
         for seq in region.first_seq.max(1)..=region.last_seq.min(total) {
@@ -258,9 +263,9 @@ pub fn frame_corridors(
                             .chain(neighbor.map(|n| covered[n]))
                             .find(|&s| detects(s))
                     }
-                    RegionKind::Unsegmented { .. } => {
-                        crate::plan::arrival_corridor(segments, cameras, c, seq)
-                    }
+                    RegionKind::Unsegmented { .. } => arrival
+                        .get_or_init(|| crate::plan::ArrivalRouting::new(segments, cameras))
+                        .corridor(c, seq),
                 };
             }
         }
@@ -987,6 +992,24 @@ mod tests {
     }
 
     #[test]
+    fn unsegmented_remeasurement_uses_arrival_corridors() {
+        let mut segments = calibrated(&[S, C], &[2, 1]);
+        let cameras = ["camA", "camB", "camC"].map(String::from);
+        segments[1].cameras = vec![cameras[1].clone()];
+        let outcome = SegOutcome::Unsegmented;
+        let regions = resolve_regions(&segments, &outcome, 4, 0.5, 0, PassRules::NONE);
+
+        assert_eq!(
+            frame_corridors(&segments, &cameras, &regions, &outcome, 4),
+            [
+                [Some(1), Some(1), None, None],
+                [Some(1), Some(1), Some(2), Some(2)],
+                [Some(1), Some(1), None, None],
+            ]
+        );
+    }
+
+    #[test]
     fn coverage_exclusions_and_skipped_ends_preserve_production_counts_and_reduce_offset_availability(
     ) {
         let mut segments = calibrated(&[S, C], &[8, 4]);
@@ -1210,25 +1233,12 @@ mod tests {
 
     fn by_pass(segments: &[PathSegment], part: &[u32], taught: &[u32], head: u32) -> Vec<Region> {
         let total: u64 = part.iter().map(|&n| u64::from(n)).sum();
-        let groups: Vec<FrameGroup> = (1..=total)
-            .map(|seq| FrameGroup {
-                seq,
-                present: vec![true; 3],
-                incomplete: false,
-            })
-            .collect();
         let passes = PassRules {
             part,
             taught: Some(taught),
             skip: crate::passes::PassSkip { head, tail: 0 },
         };
-        let outcome = segment_part(
-            &SegInput {
-                groups: &groups,
-                segments,
-            },
-            passes,
-        );
+        let outcome = segment_part(segments, total, passes);
         resolve_regions(segments, &outcome, total, 0.5, 2, passes)
     }
 

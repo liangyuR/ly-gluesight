@@ -1,9 +1,10 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight, Scale, ScanEye, SplitSquareHorizontal } from "lucide-react";
 import { Alert, Button, Card, Chip, IconButton, Select, Stack, StatusBadge, Text } from "qing-steel";
 import FrameGroupStrip from "../../cycle/components/FrameGroupStrip";
 import RegionResultPanel from "../../cycle/components/RegionResultPanel";
+import { firstGroupAtOrAfter } from "../../cycle/frameGroups";
 // 图表库按需加载：只有打开带逐站数据的历史详情时才进来
 const WidthProfile = lazy(() => import("../../plan/WidthProfile").then(m => ({ default: m.WidthProfile })));
 import type { CalibrationFrameView, FrameGroupView, FrameRecord, PartDetailBurst } from "../../plan/types";
@@ -12,11 +13,12 @@ import { burstImageApi } from "../../workspace/burstImages";
 import { workspaceApi } from "../../workspace/api";
 import { FrameViewer, KV, Panel } from "../../workspace/components";
 import { useWorkspace } from "../../workspace/context";
-import type { CompareCandidate, CompareOptions, Comparison, ComparisonSummary, FrameImage } from "../../workspace/types";
+import type { CompareOptions, Comparison, ComparisonSummary, FrameImage } from "../../workspace/types";
 import { OperationStatus, useOperation } from "../../workspace/operation";
 import { recipeHref } from "../../workspace/recipeRoutes";
 import type { SegmentLocateState } from "../../workspace/segmentLocate";
 import { historyApi } from "../api";
+import { focusInHistory } from "../focus";
 import { errorText } from "../../../lib/errors";
 import { displayReason, formatTime, partVerdict, triggerModeLabel, verdictLabel } from "../meta";
 import { burstSideOf, comparisonBurst, regionDiffs } from "../replay";
@@ -27,6 +29,7 @@ import { historyReturnContext, historyReturnSearch } from "../returnContext";
 import MixSummary from "../../plan/MixSummary";
 import { evidenceOverlay, MeasurementEvidenceSummary } from "../../plan/measurementEvidence";
 
+const HistoryRegionResultPanel = memo(RegionResultPanel);
 const comparisonLabel = { rules: "规则重判", raw: "候选原图复测", original: "原发布包重现" };
 const recordingReason = { off: "录制关闭，本件未保存原图", notRetained: "按录制策略本件未保存原图", pending: "原图仍在落盘", incomplete: "原图不完整", failed: "原图录制失败", complete: "原图已按保留策略清理或无法核验" };
 const frameStateName = { measured: "已测", missing: "缺帧", error: "测量失败", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测" };
@@ -87,16 +90,18 @@ function useFrameOverlay(historyId: number, comparison: Comparison | null, camer
 }
 
 /** 一台相机一帧的原图格：叠出测量所用的走廊、搜索带与胶边（原始记录按原发布包，对照按对照的配方）；点格子选中这台相机。 */
-function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, frame, skipped, selected, onSelect, station, onStation }: {
+function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, frame, skipped, selected, onSelect, station, onStation, anchor, onReturnToTrace }: {
   /** 显示对照结果时为该对照，显示原始记录时为 null；recordCamera 是这台相机在记录里的下标（读原图用，记录里没有为 null） */
   detail: PartDetail; comparison: Comparison | null; camera: number; recordCamera: number | null; cameraName: string; seq: number; frame: FrameRecord | null; selected: boolean; onSelect: () => void;
   /** 选中相机这一帧与胶宽折线联动的测站（0 起） */
   station: number | null; onStation: (station: number | null) => void;
   skipped: boolean;
+  anchor?: Ref<HTMLDivElement>;
+  onReturnToTrace?: () => void;
 }) {
   const s = detail.summary;
   const image = useFrameImage(s.id, recordCamera ?? -1, seq, !!frame?.rawFile && recordCamera != null);
-  const traced = useFrameOverlay(s.id, comparison, camera, seq, !!frame?.rawFile && frame.status !== "notInspected" && frame.status !== "missing");
+  const traced = useFrameOverlay(s.id, comparison, camera, seq, !!image.image && frame !== null && frame.status !== "notInspected" && frame.status !== "missing");
   const lit = selected ? station : null;
   // 联动的测站画在最后、加粗换色，免得被相邻测站盖住
   const lines = (traced.view?.edges ?? []).flatMap((edge, i) => edge ? [{ from: edge[0], to: edge[1], station: i,
@@ -107,7 +112,9 @@ function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, 
   const unavailable = recordCamera == null ? "记录里没有这台相机的原图" : !frame ? "没有这一帧的记录"
     : frame.status === "missing" ? "这台相机本帧组缺帧，没有原图（检测不完整，不影响 OK/NG）"
       : frame.rawFile ? "" : `本帧原图未保存或已按保留策略清理；完整指标仍可在下方查看。${detail.recording.state === "complete" ? "" : recordingReason[detail.recording.state]}`;
-  return <div className={"hist-frame-tile" + (selected ? " selected" : "")} onClickCapture={onSelect}>
+  return <div className={"hist-frame-tile" + (selected ? " selected" : "")} onClickCapture={onSelect}
+    ref={anchor} role="group" tabIndex={-1} aria-label={`${cameraName} · 帧组 ${seq} 原图`}>
+    {onReturnToTrace && <Button size="sm" variant="text" className="hist-frame-trace-return" onClick={onReturnToTrace}>返回逐帧追溯</Button>}
     <FrameViewer image={image.image} loading={image.loading} error={image.error || unavailable} label={`原始 SN ${s.sn} · ${cameraName} · 帧组 ${seq}`} overlay={overlay}
       caption={<>{cameraName} · 帧组 {seq}{skipped ? " · 生产跳过" : frame ? ` · ${frameStateName[frame.status]}` : ""}</>} />
     {traced.error && <p className="muted hint">叠图：{traced.error}</p>}
@@ -118,11 +125,12 @@ function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, 
  * 历史详情：按区域展示整件的段布置与区域结论、帧组条、按 (相机, seq) 选的原图与每相机帧表。
  * 只处理 PartDetail.burst 非空的记录。
  */
-export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, onBack, backLabel = "返回历史列表", foreignProject = "", actions }: {
+export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, partState, onBack, backLabel = "返回历史列表", foreignProject = "", actions }: {
   detail: PartDetail;
   burst: PartDetailBurst;
   neighbors: { older: number | null; newer: number | null };
   onOpen: (target: number | null) => void;
+  partState: HistoryDetailState;
   onBack: () => void;
   /** 返回按钮的说明：从历史列表进来为“返回历史列表”，从试测进来为“返回试测” */
   backLabel?: string;
@@ -137,13 +145,25 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const wanted = search.get("comparison");
   const s = detail.summary;
   const verdict = partVerdict(s);
+  const originalGroups = useMemo(() => historyGroups(burst), [burst]);
+  const [entry] = useState(() => historyReturnContext(search, originalGroups.map(group => group.seq)));
   const [comparison, setComparison] = useState<Comparison | null>(null);
-  const [showOriginal, setShowOriginal] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(entry.original);
+  const [settled, setSettled] = useState(false);
+  const waitingForComparison = !!wanted && !showOriginal && !settled && !comparison;
   const compared = useMemo(() => comparison?.burst ? comparisonBurst(burst, comparison.burst) : null, [burst, comparison]);
+  const comparedBurst = comparison?.burst;
+  const diffs = useMemo(() => comparedBurst && burst.judgement.regions.length ? regionDiffs(burstSideOf(burst), comparedBurst) : null, [burst, comparedBurst]);
   const shown = compared && !showOriginal ? compared : burst, j = shown.judgement;
-  const groups = useMemo(() => historyGroups(shown), [shown]);
-  const lastSeq = groups.at(-1)?.seq ?? 1;
-  const [selection, setSelection] = useState({ camera: 0, seq: groups[0]?.seq ?? 1 });
+  const groups = useMemo(() => shown === burst ? originalGroups : historyGroups(shown), [shown, burst, originalGroups]);
+  const [selection, setSelection] = useState({ camera: entry.camera, seq: entry.seq });
+  const selectGroup = useCallback((seq: number) => setSelection(prev => ({ ...prev, seq })), []);
+  const shownCamera = useRef<string | undefined>(undefined);
+  shownCamera.current = shown.cameras[selection.camera];
+  const selectCameraIn = (cameras: string[]) => {
+    const camera = Math.max(0, cameras.indexOf(shownCamera.current ?? ""));
+    setSelection(prev => prev.camera === camera ? prev : { ...prev, camera });
+  };
   const [station, setStation] = useState<number | null>(null);
   useEffect(() => { setStation(null); }, [selection.camera, selection.seq, comparison?.id, showOriginal]);
   const [saved, setSaved] = useState<ComparisonSummary[]>([]);
@@ -152,23 +172,39 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
   const pending = useRef(false), serial = useRef(0), alive = useRef(true);
-  const [options, setOptions] = useState<CompareOptions | null>(null);
   // 选来复测的候选：任意本机候选都行（D-SB-58）；null 为记录所属配方的候选
-  const [chosen, setChosen] = useState<string | null>(null);
-  // 可选候选单独留着：换候选时重新查选项，选择框不随之消失
-  const [choices, setChoices] = useState<CompareCandidate[]>([]);
+  const [chosen, setChosen] = useState(entry.candidate);
+  const [loadedOptions, setLoadedOptions] = useState<{ request: symbol; candidateScope: string; value: CompareOptions } | null>(null);
+  const [optionError, setOptionError] = useState<{ request: symbol; message: string } | null>(null);
+  const [optionAttempt, setOptionAttempt] = useState(0);
+  const wantedCandidate = chosen ?? s.recipeId;
+  const edited = ws.data?.workspace.doc.id === wantedCandidate ? ws.data.workspace : null;
+  const candidateScope = JSON.stringify([s.id, chosen, wantedCandidate, edited?.revision, edited?.instanceId]);
+  const rawCoverage = useMemo(() => {
+    const cameras = new Set<number>();
+    let complete = true;
+    for (const frame of burst.frames) {
+      if (frame.rawFile != null) cameras.add(frame.camera);
+      else if (frame.status !== "missing") complete = false;
+    }
+    return { cameras: [...cameras].sort((a, b) => a - b), complete };
+  }, [burst.frames]);
+  const optionKey = JSON.stringify([
+    candidateScope, s.projectId, s.bundleId, burst.cameras, burst.frames.length > 0,
+    burst.judgement.verdict, burst.judgement.regions.length > 0, detail.recording.state,
+    detail.recording.available && rawCoverage.complete, rawCoverage.cameras, optionAttempt,
+  ]);
+  const optionRequest = useMemo(() => Symbol(optionKey), [optionKey]);
+  const options = loadedOptions?.request === optionRequest ? loadedOptions.value : null;
+  const failedOptions = optionError?.request === optionRequest ? optionError : null;
+  const choices = loadedOptions?.value.choices ?? [];
   const candidate = options?.candidate ?? null;
-  const scope = `${s.id}:${candidate?.id ?? ""}:${candidate?.revision ?? ""}`;
-  const current = useRef({ scope, historyId: s.id });
-  current.current = { scope, historyId: s.id };
+  const scopedCandidate = loadedOptions?.candidateScope === candidateScope ? loadedOptions.value.candidate : null;
+  const displayedCandidate = chosen ?? scopedCandidate?.id ?? choices.find(choice => choice.id === wantedCandidate)?.id ?? "";
+  const scope = JSON.stringify([candidateScope, scopedCandidate?.id, scopedCandidate?.revision]);
+  const current = useRef({ scope, historyId: s.id, optionRequest });
+  useLayoutEffect(() => { current.current = { scope, historyId: s.id, optionRequest }; }, [scope, s.id, optionRequest]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; serial.current++; }; }, []);
-  // 换件时回到第一帧组；从分段与示教页返回时地址带着离开时的相机、帧组与显示哪份结果
-  useEffect(() => {
-    const back = historyReturnContext(search, groups.map(g => g.seq));
-    setSelection({ camera: back.camera, seq: back.seq });
-    setComparison(null); setShowOriginal(back.original); setError("");
-    setChosen(back.candidate); setChoices([]);
-  }, [s.id]);
 
   const frames = useMemo(() => new Map(shown.frames.map(frame => [`${frame.camera}:${frame.seq}`, frame])), [shown.frames]);
   const summaryFrame = frames.get(`${selection.camera}:${selection.seq}`) ?? null;
@@ -176,17 +212,43 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const frameKey = `${s.id}:${selection.camera}:${selection.seq}`;
   const [frameDetail, setFrameDetail] = useState<{ key: string; frame: FrameRecord | null; error: string } | null>(null);
   useEffect(() => {
-    if (!originalShown || !summaryFrame?.metrics) return;
-    let live = true;
-    void historyApi.frameDetail(s.id, selection.camera, selection.seq)
-      .then(value => live && setFrameDetail({ key: frameKey, frame: value.burst?.frames.find(frame => frame.camera === selection.camera && frame.seq === selection.seq) ?? null, error: "" }))
-      .catch(error => live && setFrameDetail({ key: frameKey, frame: null, error: errorText(error) }));
-    return () => { live = false; };
-  }, [frameKey, originalShown, burst]);
+    if (waitingForComparison || !originalShown || !summaryFrame?.metrics) return;
+    const request = new AbortController();
+    void historyApi.frameDetail(s.id, selection.camera, selection.seq, request.signal)
+      .then(value => {
+        if (request.signal.aborted) return;
+        const frame = value.burst?.frames.find(frame => frame.camera === selection.camera && frame.seq === selection.seq) ?? null;
+        setFrameDetail({ key: frameKey, frame, error: "" });
+      })
+      .catch(error => {
+        if (!request.signal.aborted) setFrameDetail({ key: frameKey, frame: null, error: errorText(error) });
+      });
+    return () => request.abort();
+  }, [frameKey, originalShown, burst, waitingForComparison]);
   const frame = originalShown && frameDetail?.key === frameKey ? frameDetail.frame ?? summaryFrame : summaryFrame;
   const frameLoading = originalShown && !!summaryFrame?.metrics && frameDetail?.key !== frameKey;
-  const selectFrame = useCallback((camera: number, seq: number) => setSelection({ camera, seq }), []);
-  const step = (delta: number) => setSelection(prev => ({ ...prev, seq: Math.min(lastSeq, Math.max(groups[0]?.seq ?? 1, prev.seq + delta)) }));
+  const imageAnchor = useRef<HTMLDivElement>(null);
+  const [traceJump, setTraceJump] = useState<{ camera: number; seq: number; target: "image" | "trace" } | null>(null);
+  const restored = useRef("");
+  const selectTraceFrame = useCallback((camera: number, seq: number, revealImage = false) => {
+    setTraceJump(revealImage ? { camera, seq, target: "image" } : null);
+    if (revealImage) restored.current = location.key;
+    setShowOriginal(true);
+    setSelection({ camera, seq });
+  }, [location.key]);
+  useLayoutEffect(() => {
+    if (traceJump?.target === "image" && imageAnchor.current) focusInHistory(imageAnchor.current);
+  }, [traceJump]);
+  const returnToTrace = () => setTraceJump(jump => jump && { ...jump, target: "trace" });
+  const traceCamera = originalShown ? selection.camera : shown.recordCameras?.[selection.camera];
+  const traceSelection = useMemo(() => traceCamera == null ? null : { camera: traceCamera, seq: selection.seq }, [traceCamera, selection.seq]);
+  const step = (direction: -1 | 1) => setSelection(prev => {
+    let index = firstGroupAtOrAfter(groups, prev.seq);
+    if (direction === -1) index--;
+    else if (groups[index]?.seq === prev.seq) index++;
+    const next = groups[Math.min(groups.length - 1, Math.max(0, index))];
+    return next && next.seq !== prev.seq ? { ...prev, seq: next.seq } : prev;
+  });
   const stepRef = useRef(step);
   stepRef.current = step;
   const neighborRef = useRef({ neighbors, onOpen });
@@ -203,33 +265,53 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   }, []);
 
   // 地址里要的对照读完（或没有、读不到）才算页面成形，从分段与示教页返回时据此恢复滚动位置
-  const [settled, setSettled] = useState(false);
   useEffect(() => {
     let live = true;
     const mine = ++serial.current;
+    const initialChoice = comparisonRequest.current;
+    const active = () => live && mine === serial.current;
     setSaved([]);
-    // 列出这件记录所有候选的对照（不只记录所属配方的）
-    void workspaceApi.comparisonSummaries(s.id).then(async v => {
-      if (!live || mine !== serial.current) return;
-      setSaved(v);
-      const target = wanted && v.find(c => c.id === wanted);
-      if (target) {
-        const result = await workspaceApi.comparisonGet(s.id, target.id);
-        if (live && mine === serial.current) setComparison(previous => previous ?? result);
+    const load = async () => {
+      if (wanted) {
+        try {
+          const result = await workspaceApi.comparisonGet(s.id, wanted);
+          if (active() && comparisonRequest.current === initialChoice) {
+            setComparison(previous => previous ?? result);
+            setSaved([comparisonSummary(result)]);
+          }
+        } catch (e) {
+          if (active() && comparisonRequest.current === initialChoice) setError(errorText(e));
+        }
       }
-    }).catch(e => live && mine === serial.current && setError(errorText(e))).finally(() => live && setSettled(true));
+      if (!live) return;
+      setSettled(true);
+      try {
+        const summaries = await workspaceApi.comparisonSummaries(s.id);
+        if (live) {
+          const ids = new Set(summaries.map(summary => summary.id));
+          setSaved(previous => [...previous.filter(summary => !ids.has(summary.id)), ...summaries]);
+        }
+      } catch (e) {
+        if (active()) setError(errorText(e));
+      }
+    };
+    void load();
     return () => { live = false; };
   }, [s.id, s.recipeId, ws.data?.workspace.revision, wanted]);
 
-  // 复测能不能做以记录与所选候选为准（任意候选都行），与工作台打开的配方无关；所选候选改了（修订变化）重新查
-  const wantedCandidate = chosen ?? s.recipeId;
-  const editedRevision = ws.data?.workspace.doc.id === wantedCandidate ? ws.data.workspace.revision : null;
   useEffect(() => {
     let live = true;
-    setOptions(null);
-    void workspaceApi.historyCompareOptions(s.id, chosen).then(v => { if (live) { setOptions(v); setChoices(v.choices); } }).catch(e => live && setError(errorText(e)));
+    const active = () => live && current.current.optionRequest === optionRequest;
+    void workspaceApi.historyCompareOptions(s.id, chosen).then(value => {
+      if (active()) {
+        setLoadedOptions({ request: optionRequest, candidateScope, value });
+        setOptionError(null);
+      }
+    }).catch(cause => {
+      if (active()) setOptionError({ request: optionRequest, message: errorText(cause) });
+    });
     return () => { live = false; };
-  }, [s.id, chosen, editedRevision]);
+  }, [s.id, chosen, candidateScope, optionRequest]);
   // 工作台正在编辑所选候选且有没保存的改动时先保存：对照按候选已保存的修订做
   const editing = !!candidate && ws.data?.workspace.doc.id === candidate.id;
   const unsaved = editing && (ws.dirty || ws.frameDirty) ? "先保存候选配置和走廊示教，再执行对照。" : editing && ws.busy ? "候选正在保存，稍后再对照。" : "";
@@ -238,21 +320,26 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const rawReason = options ? candidateBlock || (options.raw.available ? "" : options.raw.reason ?? "") : "";
   const originalReason = options && !options.original.available ? options.original.reason ?? "" : "";
 
+  const displayComparison = (result: Comparison) => {
+    selectCameraIn(result.burst?.frames.length ? result.burst.cameras : burst.cameras);
+    setComparison(result);
+    setShowOriginal(false);
+  };
   const chooseComparison = async (id: string) => {
     const request = ++comparisonRequest.current;
-    if (!id) { setComparison(null); setLoadingComparison(""); return; }
+    if (!id) { selectCameraIn(burst.cameras); setComparison(null); setLoadingComparison(""); return; }
     setLoadingComparison(id); setError("");
     try {
       const result = await workspaceApi.comparisonGet(s.id, id);
-      if (alive.current && request === comparisonRequest.current && current.current.historyId === s.id) { setComparison(result); setShowOriginal(false); }
+      if (alive.current && request === comparisonRequest.current && current.current.historyId === s.id) displayComparison(result);
     } catch (e) { if (alive.current && request === comparisonRequest.current) setError(errorText(e)); }
     finally { if (alive.current && request === comparisonRequest.current) setLoadingComparison(""); }
   };
   const compare = async (run: (taskId: string) => Promise<Comparison>, guard: () => boolean) => {
     if (pending.current) return;
     pending.current = true; serial.current++; comparisonRequest.current++; setLoadingComparison(""); setWorking(true); setError("");
-    try { const result = await operation.run(run); if (guard()) { setComparison(result); setShowOriginal(false); setSaved(v => [comparisonSummary(result), ...v.filter(c => c.id !== result.id)].slice(0, 100)); } }
-    catch (e) { if (guard()) setError(errorText(e)); }
+    try { const result = await operation.run(run); if (guard()) { displayComparison(result); setSaved(v => [comparisonSummary(result), ...v.filter(c => c.id !== result.id)].slice(0, 100)); } }
+    catch (e) { if (guard() && operation.snapshot()?.progress.stage !== "cancelled") setError(errorText(e)); }
     finally { pending.current = false; if (alive.current) setWorking(false); }
   };
   const runCompare = (fromRaw: boolean) => {
@@ -273,7 +360,6 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   // 从分段与示教页返回：对照读完后回到离开时的滚动位置。原图、胶宽折线陆续加载还会撑高页面，约 1 秒内反复回到原位置，
   // 操作员一动滚轮或点击就停；回到过或被打断后这次进入不再恢复
   const restoreTop = (location.state as HistoryDetailState | null)?.scrollTop;
-  const restored = useRef("");
   useEffect(() => {
     const body = document.querySelector(".main-body");
     if (!settled || restoreTop == null || !body || restored.current === location.key) return;
@@ -281,7 +367,11 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     const events = ["wheel", "pointerdown", "keydown", "touchstart"] as const;
     let frame = 0, left = 60;
     const done = () => { restored.current = key; cancelAnimationFrame(frame); };
-    const keep = () => { body.scrollTop = restoreTop; if (--left > 0) frame = requestAnimationFrame(keep); else done(); };
+    const keep = () => {
+      if (restored.current === key) return;
+      body.scrollTop = restoreTop;
+      if (--left > 0) frame = requestAnimationFrame(keep); else done();
+    };
     events.forEach(name => body.addEventListener(name, done, { passive: true }));
     frame = requestAnimationFrame(keep);
     return () => { cancelAnimationFrame(frame); events.forEach(name => body.removeEventListener(name, done)); };
@@ -289,7 +379,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
 
   // 到分段与示教页调整分段的配方：选着候选对照时是那次对照的候选，否则是选来复测的候选；只有候选能改分段
   const segmentTarget = (comparison && comparison.source !== "original" ? comparison.candidateId : null) ?? candidate?.id ?? null;
-  const segmentBlock = !options ? "正在读取候选…" : !segmentTarget ? (s.recipeId ? `本机没有配方 ${s.recipeId} 的候选，先在“复测配方”里选一个候选` : "本机没有候选")
+  const segmentBlock = !options ? (failedOptions ? "复测选项读取失败，请重试" : "正在读取候选…") : !segmentTarget ? (s.recipeId ? `本机没有配方 ${s.recipeId} 的候选，先在“复测配方”里选一个候选` : "本机没有候选")
     : !choices.some(c => c.id === segmentTarget) ? `对照所用的候选 ${segmentTarget} 已不在本机` : "";
   const openSegments = () => {
     if (!segmentTarget || segmentBlock) return;
@@ -309,7 +399,6 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const staleCandidate = comparedWith && comparedWith.revision !== comparison?.candidateRevision ? comparedWith : null;
 
   const flags = flagBadges(burst.judgement.flags);
-  const diffs = comparison?.burst ? regionDiffs(burstSideOf(burst), comparison.burst) : null;
   const region = frame?.region != null ? j.regions[frame.region] : null;
   const skipped = productionSkippedRegion(j.regions, selection.seq);
   const metrics = frame?.metrics;
@@ -338,14 +427,18 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     <Panel title="复测与候选对照" help="对照结果另存，原始判定保留">
       <div className="wp-actions">
         <Chip>{"原始发布 v" + (s.recipeVersion ?? "—")}</Chip>
-        {choices.length > 0 ? <Select label="复测配方" aria-label="复测配方" disabled={working || !options} value={chosen ?? candidate?.id ?? ""} onValueChange={id => setChosen(id || null)}
-          options={[...(chosen ?? candidate ? [] : [{ value: "", label: "选择候选" }]), ...choices.map(c => ({ value: c.id, label: `${c.id} · ${c.name} · v${c.version} 修订 ${c.revision}${c.id === s.recipeId ? "（本件配方）" : ""}` }))]} />
-          : <StatusBadge>候选 {!options ? "…" : "本机没有候选"}</StatusBadge>}
+        {choices.length > 0 ? <Select label="复测配方" aria-label="复测配方" disabled={working} value={displayedCandidate} onValueChange={id => setChosen(id || null)}
+          options={[...(displayedCandidate ? [] : [{ value: "", label: "选择候选" }]), ...choices.map(c => ({ value: c.id, label: `${c.id} · ${c.name} · v${c.version} 修订 ${c.revision}${c.id === s.recipeId ? "（本件配方）" : ""}` }))]} />
+          : options && <StatusBadge>本机没有候选</StatusBadge>}
         <span className="spacer" />
         <Button leadingIcon={<ScanEye size={15} />} disabled={working || !options || !!originalReason} title={originalReason || undefined} onClick={runOriginal}>按原发布包重现</Button>
         <Button leadingIcon={<Scale size={15} />} disabled={working || !options || !!rulesReason} title={rulesReason || undefined} onClick={() => runCompare(false)}>按候选规则重判</Button>
         <Button variant="filled" leadingIcon={<ScanEye size={15} />} disabled={working || !options || !!rawReason} title={rawReason || undefined} onClick={() => runCompare(true)}>从原图复测整件</Button>
       </div>
+      {failedOptions ? <Alert tone="warn" title="复测选项读取失败"
+        action={<Button size="sm" onClick={() => setOptionAttempt(attempt => attempt + 1)}>重试读取复测选项</Button>}>
+        {failedOptions.message}
+      </Alert> : !options && <Text muted role="status">正在读取复测选项…</Text>}
       {options && (originalReason || rulesReason || rawReason) && <ul className="compare-reasons" aria-label="不能复测的原因">
         {originalReason && <li><b>按原发布包重现</b>：{originalReason}</li>}
         {rulesReason && rulesReason === rawReason ? <li><b>按候选规则重判、从原图复测</b>：{rulesReason}</li> : <>
@@ -356,7 +449,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       {options && !rawReason && options.raw.note && <Text as="p" muted className="compare-note">从原图复测：{options.raw.note}</Text>}
       {editing && ws.error && <Alert tone="warn">{ws.error}</Alert>}
       <OperationStatus operation={operation} label="历史复算" />
-      {loadingComparison && <Text muted role="status">正在读取对照结果…</Text>}
+      {(loadingComparison || waitingForComparison) && <Text muted role="status">正在读取对照结果…</Text>}
       {!!saved.length && <Select label="已保存的对照结果" aria-label="已保存对照结果" disabled={working} value={loadingComparison || comparison?.id || ""} onValueChange={id => void chooseComparison(id)}
         options={[{ value: "", label: "选择记录" }, ...saved.map(c => ({ value: c.id, label: formatTime(c.createdAt) + " · " + comparisonLabel[c.source] + (c.source === "original" ? "" : " · " + c.candidateId + " 修订 " + c.candidateRevision) + " · " + verdictLabel[c.judgement.verdict] }))]} />}
     </Panel>
@@ -376,18 +469,23 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     </Panel>}
     <div className="detail-grid burst">
       <Panel title="帧组与原图" detail={viewing ? `显示${viewing}结果` : compared ? "显示原始记录" : undefined} help="点击小方块选择相机与帧组查看原图，左右方向键切换帧组。格子颜色只表示本帧；上方色带是所在段的结论，胶宽不均、整段胶偏等整段性问题看色带。灰色为检测不完整，浅灰为本段不检测或未判定。选了带逐帧指标的对照时，可切换显示对照结果或原始记录。" actions={<>
-        {compared && <Select aria-label="显示结果" value={showOriginal ? "original" : "comparison"} onValueChange={value => setShowOriginal(value === "original")}
+        {compared && <Select aria-label="显示结果" value={showOriginal ? "original" : "comparison"} onValueChange={value => {
+          const original = value === "original";
+          selectCameraIn(original ? burst.cameras : compared.cameras);
+          setShowOriginal(original);
+        }}
           options={[{ value: "comparison", label: "对照结果" }, { value: "original", label: "原始记录" }]} />}
         <Button size="sm" leadingIcon={<SplitSquareHorizontal size={15} />} disabled={!!segmentBlock} title={segmentBlock || `到候选 ${segmentTarget} 的分段与示教页调整段边界，定位到帧组 ${selection.seq} 的对应位置；改完可返回本件`} onClick={openSegments}>调整分段</Button>
         <Select aria-label="历史相机选择" value={String(selection.camera)} onValueChange={value => setSelection(prev => ({ ...prev, camera: Number(value) }))}
           options={shown.cameras.map((name, c) => ({ value: String(c), label: name }))} />
       </>}>
-        <FrameGroupStrip groups={groups} cameras={shown.cameras} regions={j.regions} selected={selection.seq} selectedCamera={selection.camera} onSelect={seq => setSelection(prev => ({ ...prev, seq }))} onSelectCell={(seq, camera) => setSelection({ seq, camera })} />
-        <div className="wp-stack">
+        <FrameGroupStrip groups={groups} cameras={shown.cameras} regions={j.regions} selected={selection.seq} selectedCamera={selection.camera} onSelect={selectGroup} onSelectCell={(seq, camera) => setSelection({ seq, camera })} />
+        {!waitingForComparison && <div className="wp-stack">
           <div className="hist-frame-tiles" aria-label={`帧组 ${selection.seq} 各相机原图`}>
             {shown.cameras.map((name, c) => <FrameTile key={c} detail={detail} comparison={viewing ? comparison : null} camera={c} recordCamera={shown.recordCameras ? shown.recordCameras[c] : c} cameraName={name} seq={selection.seq}
               frame={c === selection.camera ? frame : frames.get(`${c}:${selection.seq}`) ?? null} selected={c === selection.camera} onSelect={() => setSelection(prev => ({ ...prev, camera: c }))}
-              station={station} onStation={setStation} skipped={!!skipped} />)}
+              station={station} onStation={setStation} skipped={!!skipped} anchor={c === selection.camera ? imageAnchor : undefined}
+              onReturnToTrace={c === selection.camera && traceJump?.target === "image" ? returnToTrace : undefined} />)}
           </div>
           {skipped && <Text as="p" muted role="note">生产跳过 · {regionKindLabel(skipped.region.kind)} · 不参与判定，原图与测量数据仅供诊断。</Text>}
           <div className="wp-runtime-strip">
@@ -413,24 +511,25 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
               </Suspense>
             </div>
             : <Text as="p" muted>这一帧没有逐站胶宽数据（未测、缺帧或本段不检测）。</Text>}
-        </div>
+        </div>}
       </Panel>
       <Panel title={viewing ? `${viewing}整件判定` : "原始整件判定"} className="side">
         <p className="reason-box">{displayReason(j.reason)}</p>
-        <RegionResultPanel key={viewing && comparison ? `comparison:${comparison.id}` : "record"}
+        <HistoryRegionResultPanel key={viewing && comparison ? `comparison:${comparison.id}` : "record"}
           judgement={j} segments={shown.segments} cameras={shown.cameras} expectedTotal={shown.expectedTotal}
-          onSelectGroup={seq => setSelection(prev => ({ ...prev, seq }))} />
+          onSelectGroup={selectGroup} />
         <div className="kv2">
           <span>记录号</span><b>#{s.id}</b>
           <span>配方修订</span><b>{s.recipeRevision ?? "—"}</b>
           <span>软件版本</span><b>{detail.softwareVersion}</b>
           <span>收尾耗时</span><b>{s.drainMs ?? "—"} ms</b>
           <span>触发计数（参考）</span><b>{burst.deviceTriggers ?? "—"}</b>
-          <span>复检自</span><b>{s.retestOf ? <Link to={"/history/" + s.retestOf}>#{s.retestOf}</Link> : "—"}</b>
-          <span>后续复检</span><b>{detail.retests.length ? detail.retests.map(r => <Link key={r} to={"/history/" + r}>#{r} </Link>) : "—"}</b>
+          <span>复检自</span><b>{s.retestOf ? <Link to={"/history/" + s.retestOf} state={partState}>#{s.retestOf}</Link> : "—"}</b>
+          <span>后续复检</span><b>{detail.retests.length ? detail.retests.map(r => <Link key={r} to={"/history/" + r} state={partState}>#{r} </Link>) : "—"}</b>
         </div>
       </Panel>
-      <BurstPartTrace detail={detail} burst={burst} selected={selection} onSelect={selectFrame} />
+      <BurstPartTrace detail={detail} burst={burst} selected={traceSelection} onSelect={selectTraceFrame}
+        focusFrame={traceJump?.target === "trace" ? traceJump : undefined} />
     </div>
   </div>;
 }

@@ -1,5 +1,6 @@
 import type { FrameCellStatus, FrameGroupView, OffsetUnjudged, PartViewBurst, PathSegment, Region, UncheckedItem, Uninspected } from "../plan/types";
 import type { ResultView, Verdict } from "./types";
+import { findFrameGroup, firstGroupAtOrAfter } from "./frameGroups";
 
 export type IncompleteFrameStatus = Extract<FrameCellStatus, "missing" | "error" | "unmeasured" | "outOfCorridor">;
 
@@ -59,24 +60,12 @@ function applicableCameras(region: Region, segment: PathSegment | undefined, cam
   return cameras.flatMap((name, i) => !segment.cameras.length || segment.cameras.includes(name) ? [i] : []);
 }
 
-// 在线快照按帧号升序生成，正常情况下从 1 连续编号。
-function firstGroupAtOrAfter(groups: readonly FrameGroupView[], seq: number) {
-  let low = 0, high = groups.length;
-  while (low < high) {
-    const mid = low + Math.floor((high - low) / 2);
-    if (groups[mid].seq < seq) low = mid + 1;
-    else high = mid;
-  }
-  return low;
-}
-
 function incompleteGroupEvidence(sequences: readonly number[], groups: readonly FrameGroupView[], relevant: readonly number[], names: readonly string[]) {
   const findings = new Map<string, CameraCoverageEvidence>();
-  const dense = groups.at(-1)?.seq === groups.length;
   let firstSeq: number | null = null;
   for (const seq of sequences) {
-    const group = groups[dense ? seq - 1 : firstGroupAtOrAfter(groups, seq)];
-    if (group?.seq !== seq) continue;
+    const group = findFrameGroup(groups, seq);
+    if (!group) continue;
     firstSeq ??= seq;
     for (const camera of relevant) {
       const status = group.cells[camera]?.status;

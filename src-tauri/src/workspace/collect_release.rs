@@ -20,6 +20,7 @@ pub(super) fn collect_checks(doc: &RecipeDoc, production: Option<&Recipe>) -> Ve
     let mut checks = vec![Check {
         advisory: false,
         name: "计划相机".into(),
+        teaching_targets: Vec::new(),
         passed: distinct,
         detail: if distinct {
             format!("{} 共用一个触发", cameras.join("、"))
@@ -34,6 +35,7 @@ pub(super) fn collect_checks(doc: &RecipeDoc, production: Option<&Recipe>) -> Ve
     checks.push(Check {
         advisory: false,
         name: "段".into(),
+        teaching_targets: Vec::new(),
         passed: !doc.segments.is_empty(),
         detail: if doc.segments.is_empty() {
             "至少需要一段，可先放一个直线段占位".into()
@@ -45,6 +47,7 @@ pub(super) fn collect_checks(doc: &RecipeDoc, production: Option<&Recipe>) -> Ve
     checks.push(Check {
         advisory: false,
         name: "生产版本".into(),
+        teaching_targets: Vec::new(),
         passed: formal.is_none(),
         detail: match (formal, production) {
             (Some(r), _) => format!("已有正式版 v{}。{COLLECT_AFTER_FORMAL}", r.version),
@@ -66,10 +69,12 @@ pub fn workspace_collect_checks(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
 ) -> Result<Vec<Check>, String> {
     let host = app.state::<WorkspaceHost>();
     let items = host.items.lock().unwrap();
     let w = items.get(&id).ok_or("候选配置不存在")?;
+    w.expect_instance(instance_id)?;
     if w.revision != revision {
         return Err("候选配置已更新，请重新加载后操作".into());
     }
@@ -82,10 +87,12 @@ pub fn workspace_publish_collect(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
 ) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     let w = items.get_mut(&id).ok_or("候选配置不存在")?;
+    w.expect_instance(instance_id)?;
     w.expect(revision)?;
     let checks = current_checks(&app, w);
     if let Some(failed) = checks.iter().find(|c| !c.passed) {

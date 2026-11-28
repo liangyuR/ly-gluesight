@@ -30,7 +30,7 @@ export interface FrozenImage {
   exposureUs: number | null; gainDb: number | null; historyId: number | null;
 }
 /** 发布前检查的一项；advisory 为只提醒、不拦发布的项（如有段在示教帧上没测成）。 */
-export interface Check { name: string; passed: boolean; detail: string; advisory?: boolean }
+export interface Check { name: string; passed: boolean; detail: string; advisory?: boolean; teachingTargets?: { camera: string; segment?: number }[] }
 export interface Validation {
   revision: number; passed: boolean; checkedAt: number; environmentTag: unknown;
   checks: Check[];
@@ -44,6 +44,7 @@ export interface Release {
 }
 export interface Workspace {
   doc: RecipeDoc; revision: number;
+  instanceId: number;
   pending: Release | null;
   captureId?: string | null;
   publish: PublishState; updatedAt: number;
@@ -60,6 +61,21 @@ export interface Workspace {
   navigationStructureRevision?: number;
   /** 换示教件的逐笔对照（RB-11）；没有对照时缺省，发布时清空 */
   passAlignment?: PassAlignment;
+}
+export interface WorkspaceRecipeReference {
+  id: string;
+  name: string;
+  productCode: number;
+  cameras: string[];
+}
+export interface WorkspaceCatalogEntry extends WorkspaceRecipeReference, Pick<Workspace, "instanceId" | "revision" | "flow" | "publish"> {
+  pending: WorkspaceRecipeReference | null;
+  hasTeachingPiece: boolean;
+  segmentRecipe: boolean;
+}
+export interface WorkspaceDeleteTarget {
+  candidate: Pick<Workspace, "instanceId" | "revision"> | null;
+  productionRevisionId: string | null;
 }
 /** 逐笔对照里一笔的变化：对上的两笔为不变或改动，没对上的旧笔为删除、新笔为新增。 */
 export type PassChange = "same" | "changed" | "added" | "removed";
@@ -90,12 +106,17 @@ export interface TeachingPiece {
 
 /** 工件配方（回传包：候选与示教件轮次记录，不带示教件原图）的导出结果、导入预览与导入结果 */
 export interface PackageExported { path: string; bytes: number; files: number }
+export interface PackageImportTarget {
+  manifestSha256: string;
+  candidate: Pick<Workspace, "instanceId" | "revision"> | null;
+}
 export interface PackagePreview {
   path: string; bytes: number; recipeId: string; name: string; productCode: number; sourceProjectName: string;
   exportedAt: number; appVersion: string; teachingPiece: TeachingPiece | null;
   /** 包里带示教件原图（以前导出的包） */
   teachingImages: boolean;
   productionVersion: number | null; candidate: { revision: number; updatedAt: number; pending: boolean } | null;
+  target: PackageImportTarget;
   /** 不拦导入的提示（如相机设备配置与示教件采集时不一致） */
   warnings: string[];
   blocker: string | null;

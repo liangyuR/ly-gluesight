@@ -3,6 +3,23 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<(), String> {
+    let retired: bool = conn
+        .query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM sqlite_schema WHERE type='table' AND name='retired_recordings'
+             ) AND (
+                 SELECT count(*) FROM sqlite_schema WHERE type='trigger' AND tbl_name='parts'
+                 AND name IN ('production_source_insert', 'production_source_update')
+             ) = 2
+             AND NOT EXISTS (SELECT 1 FROM parts WHERE source < 'real')
+             AND NOT EXISTS (SELECT 1 FROM parts WHERE source > 'real')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_err)?;
+    if retired {
+        return Ok(());
+    }
     conn.execute_batch("BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS retired_recordings (
             project_id TEXT NOT NULL, directory TEXT PRIMARY KEY, cycle_id TEXT

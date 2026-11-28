@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use ly_plc::{HistorySample, LogEntry, LogPage, LogQuery};
-use rusqlite::{named_params, params, Connection, OpenFlags};
+use ly_plc::{HistorySample, LogPage, LogQuery};
+use rusqlite::{named_params, params, Connection};
 use serde::{Deserialize, Serialize};
 
+use super::log_snapshot::{open, row_to_entry, LOG_FIELDS};
 use super::PlcHost;
 
 #[derive(Deserialize)]
@@ -195,10 +196,6 @@ pub struct GroupPage {
     items: Vec<Group>,
 }
 
-fn open(path: &Path) -> Result<Connection, String> {
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())
-}
-
 fn groups(conn: &Connection, query: GroupQuery) -> rusqlite::Result<GroupPage> {
     let _snapshot = conn.unchecked_transaction()?;
     let end = query.end.unwrap_or(i64::MAX);
@@ -284,7 +281,7 @@ fn groups(conn: &Connection, query: GroupQuery) -> rusqlite::Result<GroupPage> {
 pub async fn plc_query_log_groups(plc: &PlcHost, query: GroupQuery) -> Result<GroupPage, String> {
     let path = plc.log_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        groups(&open(&path)?, query).map_err(|e| e.to_string())
+        groups(&open(&path).map_err(|e| e.to_string())?, query).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -305,7 +302,7 @@ impl Reader {
         {
             return Err("日志范围无效".into());
         }
-        let conn = open(path)?;
+        let conn = open(path).map_err(|e| e.to_string())?;
         conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
         Ok(Self {
             conn,
@@ -337,23 +334,11 @@ impl Reader {
             .query_row(&format!("SELECT count(*) {filter}"), args, |r| r.get(0))?;
         let limit = q.limit.unwrap_or(100).clamp(1, 1000);
         let offset = q.offset.unwrap_or(0);
-        let mut stmt = self.conn.prepare(&format!("SELECT log.id, ts, level, category, point_id,
-            point_name, message, old_value, new_value, context {filter} ORDER BY ts, log.id LIMIT {limit} OFFSET {offset}"))?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT log.id, {LOG_FIELDS} {filter} ORDER BY ts, log.id LIMIT {limit} OFFSET {offset}"
+        ))?;
         let items = stmt
-            .query_map(args, |r| {
-                Ok(LogEntry {
-                    id: r.get(0)?,
-                    ts: r.get(1)?,
-                    level: r.get(2)?,
-                    category: r.get(3)?,
-                    point_id: r.get(4)?,
-                    point_name: r.get(5)?,
-                    message: r.get(6)?,
-                    old_value: r.get(7)?,
-                    new_value: r.get(8)?,
-                    context: r.get(9)?,
-                })
-            })?
+            .query_map(args, row_to_entry)?
             .collect::<rusqlite::Result<_>>()?;
         Ok(LogPage { total, items })
     }

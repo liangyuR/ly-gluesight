@@ -241,7 +241,7 @@ fn production_recipe_item(f: &Facts) -> ReadinessItem {
                     "配方 {id} 不能开工：{}",
                     r.reason.as_deref().unwrap_or("原因未知")
                 ),
-                Some(CREATE.into()),
+                (r.target != Some(Target::Camera)).then(|| CREATE.into()),
                 r.target,
             ),
             Some(RecipeOption {
@@ -281,10 +281,11 @@ fn production_recipe_item(f: &Facts) -> ReadinessItem {
                     r.reason.as_deref().unwrap_or("原因未知")
                 ),
             };
+            let target = first.and_then(|r| r.target).or(Some(Target::Workspace));
             blocked(
                 detail,
-                Some(CREATE.into()),
-                first.and_then(|r| r.target).or(Some(Target::Workspace)),
+                (target != Some(Target::Camera)).then(|| CREATE.into()),
+                target,
             )
         }
         Product::Plc if runnable.iter().all(|r| r.waiting.is_some()) => item(
@@ -507,6 +508,7 @@ static BUNDLE_CHECKS: LazyLock<BundleChecks> = LazyLock::new(BundleChecks::defau
 /// 已发布版本能否在当前站点运行，生产预热进度与预热后不测的段（只读查询，不触发预热）：返回（等待原因, 部分段不测的说明）。
 fn production_state(
     app: &AppHandle,
+    host: &CycleHost,
     recipe: &Recipe,
 ) -> Result<(Option<String>, Option<String>), (String, Target)> {
     use crate::production::Warmup;
@@ -519,9 +521,17 @@ fn production_state(
         .map_err(workspace)?;
     crate::production::site_admits(manifest.validation_site).map_err(workspace)?;
     match crate::production::warmup(app, recipe) {
-        Warmup::Ready => crate::production::coverage(app, recipe)
-            .map(|note| (None, note))
-            .map_err(workspace),
+        Warmup::Ready => {
+            let Some(prepared) = crate::production::prepared_recipe(app, recipe) else {
+                return Ok((Some("等待生产预热".into()), None));
+            };
+            prepared
+                .check_configured_acquisition(&host.camera.configs())
+                .map_err(|error| (error, Target::Camera))?;
+            crate::production::coverage(&prepared)
+                .map(|note| (None, note))
+                .map_err(workspace)
+        }
         Warmup::Pending => Ok((Some("等待生产预热".into()), None)),
         Warmup::Preparing => Ok((Some("发布资源与图像引擎预热中".into()), None)),
         Warmup::Retryable(error) => Err((error, Target::Settings)),
@@ -538,7 +548,7 @@ fn recipe_problem(
     let workspace = |e: String| (e, Target::Workspace);
     let production = run_kind(recipe, maintenance).map_err(workspace)? == RunKind::Production;
     let (waiting, note) = if production {
-        production_state(app, recipe)?
+        production_state(app, host, recipe)?
     } else {
         (None, None)
     };
@@ -576,7 +586,20 @@ pub fn gather(app: &AppHandle) -> Readiness {
     let host = host(app);
     let settings = host.settings();
     let maintenance = settings.maintenance.is_some();
-    let snapshot = host.shared.lock().unwrap().snapshot.clone();
+    let (measurement_workers, phase, fault, handshake) = {
+        let shared = host.shared.lock().unwrap();
+        shared
+            .snapshot
+            .as_deref()
+            .map_or((None, Phase::Idle, None, None), |snapshot| {
+                (
+                    Some(snapshot.measurement_workers),
+                    snapshot.phase,
+                    snapshot.fault.clone(),
+                    snapshot.plc_handshake.clone(),
+                )
+            })
+    };
     let library = host.recipes.list();
     let checked: Vec<(RecipeOption, Option<Vec<u8>>)> = library
         .iter()
@@ -645,7 +668,7 @@ pub fn gather(app: &AppHandle) -> Readiness {
             Err(status.message)
         }
     };
-    let workers = match snapshot.as_ref().map(|s| &s.measurement_workers) {
+    let workers = match measurement_workers {
         Some(w) if w.capacity > 0 && w.timed_out >= w.capacity => Err(format!(
             "测量工作线程全部超时未返回（{} / {}），来件不能检测",
             w.timed_out, w.capacity
@@ -665,21 +688,16 @@ pub fn gather(app: &AppHandle) -> Readiness {
         Err(error) => Check::Blocked(format!("持久追溯异常：{error}")),
     };
     let link = plc(app).status();
-    let handshake = snapshot.as_ref().and_then(|s| s.plc_handshake.as_ref());
     evaluate(Facts {
         plc_connected: link.state == LinkState::Connected,
         session_behind: link.state == LinkState::Connected
-            && handshake.is_some_and(|v| v.connection != Some(link.since)),
-        session: snapshot
-            .as_ref()
-            .and_then(|s| s.plc_handshake.as_ref())
-            .map(|v| v.phase),
-        session_message: snapshot
-            .as_ref()
-            .and_then(|s| s.plc_handshake.as_ref())
-            .and_then(|v| v.message.clone()),
-        phase: snapshot.as_ref().map_or(Phase::Idle, |s| s.phase),
-        fault: snapshot.as_ref().and_then(|s| s.fault.clone()),
+            && handshake
+                .as_ref()
+                .is_some_and(|v| v.connection != Some(link.since)),
+        session: handshake.as_ref().map(|v| v.phase),
+        session_message: handshake.and_then(|v| v.message),
+        phase,
+        fault,
         cameras,
         engine,
         workers,

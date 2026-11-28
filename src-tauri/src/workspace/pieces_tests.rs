@@ -1,5 +1,6 @@
-use super::burst::{calibration_round, measure_round, CameraTeaching};
+use super::burst::{calibration_round, CameraTeaching};
 use super::burst_tests::{burst_workspace, capture_round, measured, DEVICE};
+use super::capture_review::measure_calibration_round;
 use super::capture_review::{apply_capture_review, CaptureReviewEdit};
 use super::pieces::{measure_teaching, replace_teaching_piece, teaching_measured, TeachingPiece};
 use super::*;
@@ -72,11 +73,37 @@ pub(super) fn measured_teaching(kinds: &[SegmentKind], x: f64) -> Workspace {
 
 fn measure_with(w: &Workspace, teach: &CaptureRoundV2, x: f64) -> Result<Workspace, String> {
     measure_teaching(w, teach, |w, round| {
-        Ok(measure_round(&w.doc.plan_cameras(), round, |_, _, _| {
-            Ok(measured(x))
-        }))
+        measure_calibration_round(w, round, |_, _, _| Ok(measured(x)), None)
     })
     .map(|outcome| outcome.next)
+}
+
+#[test]
+fn damaged_unrelated_round_does_not_hide_the_current_teaching_piece() {
+    let root = tests::ImportTestDir::new();
+    let capture =
+        crate::recipe_capture::RecipeCaptureHost::open(root.0.clone(), Arc::new(|_| Ok(None)))
+            .unwrap();
+    let mut w = burst_workspace(&[Straight, Corner]);
+    let round = capture_round("capture-current", &w.doc, GROUPS, DEVICE, &[]);
+    w.teaching_piece = Some(piece(&round.round_id, 1));
+    for (id, text) in [
+        (
+            round.round_id.as_str(),
+            serde_json::to_string(&round).unwrap(),
+        ),
+        ("capture-damaged", r#"{"format":3}"#.to_owned()),
+    ] {
+        let dir = root.0.join(id);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("round.json"), text).unwrap();
+    }
+
+    let view = super::pieces::plan_pieces_for(&capture, &w);
+    assert_eq!(view.len(), 1);
+    assert_eq!(view[0].round_id, round.round_id);
+    assert_eq!(view[0].group_count, GROUPS);
+    assert!(view[0].images_unavailable.is_some());
 }
 
 #[test]
@@ -88,7 +115,7 @@ fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts
     let other = capture_round("other", &w.doc, GROUPS, DEVICE, &[]);
     apply_capture_review(&mut w, &other, CaptureReviewEdit::Save(vec![14])).unwrap();
     apply_capture_review(&mut w, &other, CaptureReviewEdit::Confirm).unwrap();
-    let metrics = measure_round(&w.doc.plan_cameras(), &other, |_, _, _| Ok(measured(0.0)));
+    let metrics = measure_calibration_round(&w, &other, |_, _, _| Ok(measured(0.0)), None).unwrap();
     w.calibration
         .rounds
         .push(calibration_round(&w.doc, &other, &metrics));

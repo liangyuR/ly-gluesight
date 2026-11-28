@@ -6,13 +6,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::camera::CameraSource;
+use crate::camera::{camera_gate, CameraConfig, CameraSlot, CameraSource};
 use crate::cycle::{self, CycleHost};
 use crate::frame::FrameImage;
 use crate::judge::{self, Verdict};
 use crate::recipe::{Recipe, RecipeDoc, RecipeStage};
 use crate::release::ValidationSite;
-use crate::store::Store;
+use crate::store::{HistoryCompareInput, Store};
 use crate::vision;
 
 pub(crate) mod agent;
@@ -112,6 +112,14 @@ pub struct FrozenImage {
     pub history_id: Option<i64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeachingTarget {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segment: Option<u32>,
+    pub camera: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Check {
@@ -121,6 +129,8 @@ pub struct Check {
     /// 只提醒、不拦发布：没满足时照样能发布（如有段在示教帧上没测成，D-SB-59）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub advisory: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub teaching_targets: Vec<TeachingTarget>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -256,6 +266,20 @@ impl Workspace {
         self.flow != pieces::FLOW
     }
 
+    fn identity(&self) -> CandidateRevision {
+        CandidateRevision {
+            instance_id: self.instance_id,
+            revision: self.revision,
+        }
+    }
+
+    fn expect_instance(&self, instance_id: u64) -> Result<(), String> {
+        if self.instance_id != instance_id {
+            return Err("候选已删除或重建，请重新加载后操作".into());
+        }
+        Ok(())
+    }
+
     fn expect(&self, revision: u64) -> Result<(), String> {
         if self.legacy() {
             return Err(pieces::LEGACY.into());
@@ -276,7 +300,8 @@ impl Workspace {
         self.updated_at = ly_plc::now_ms();
     }
 
-    fn retry_publish(&mut self, revision: u64) -> Result<(), String> {
+    fn retry_publish(&mut self, revision: u64, instance_id: u64) -> Result<(), String> {
+        self.expect_instance(instance_id)?;
         if self.revision != revision
             || self.pending.is_none()
             || !matches!(
@@ -291,7 +316,8 @@ impl Workspace {
     }
 
     /// 生效失败时放弃冻结的待生效版本，候选回到草稿；生产版本不受影响。状态不确定时须先核实，不能放弃。
-    fn abandon_publish(&mut self, revision: u64) -> Result<(), String> {
+    fn abandon_publish(&mut self, revision: u64, instance_id: u64) -> Result<(), String> {
+        self.expect_instance(instance_id)?;
         if self.revision != revision
             || self.pending.is_none()
             || !matches!(self.publish, PublishState::Failed { .. })
@@ -346,6 +372,31 @@ pub enum PublishState {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkspaceCatalogEntry {
+    id: String,
+    name: String,
+    product_code: u16,
+    cameras: Vec<String>,
+    instance_id: u64,
+    revision: u64,
+    flow: u32,
+    publish: PublishState,
+    pending: Option<WorkspaceCatalogPending>,
+    has_teaching_piece: bool,
+    segment_recipe: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceCatalogPending {
+    id: String,
+    name: String,
+    product_code: u16,
+    cameras: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceView {
     pub workspace: Workspace,
     pub layout: Recipe,
@@ -365,12 +416,19 @@ pub struct WorkspaceHost {
     live_burst: Mutex<LiveFrames>,
     /// 段配方在途件各帧测到的叠图，按 (计划相机下标, seq)
     live_views: Mutex<LiveViews>,
-    station: Mutex<HashMap<u8, (FrozenImage, Arc<FrameImage>)>>,
+    station: Mutex<HashMap<String, StationSample>>,
     mix_samples: Mutex<HashMap<String, mix_teaching::Sample>>,
     capture_seq: std::sync::atomic::AtomicU64,
     comparisons: comparisons::Comparisons,
+    frame_metadata: recorded::FrameMetadataCache,
     /// 历史叠图最近用的发布包及其项目（不在生产预热里时另加载，只留一个，不占生产预热）
     history_bundle: Mutex<Option<(String, Arc<crate::production::Prepared>)>>,
+}
+
+struct StationSample {
+    sequence: u64,
+    meta: FrozenImage,
+    image: Arc<FrameImage>,
 }
 
 /// 在途件的原图：按工件与配方修订成组，换件即清空。内存里只留最近的帧（总量超过上限时丢最早的），
@@ -435,6 +493,54 @@ impl LiveFrames {
 }
 
 impl WorkspaceHost {
+    fn catalog(&self) -> Vec<WorkspaceCatalogEntry> {
+        let mut entries: Vec<_> = self
+            .items
+            .lock()
+            .unwrap()
+            .values()
+            .map(|w| WorkspaceCatalogEntry {
+                id: w.doc.id.clone(),
+                name: w.doc.name.clone(),
+                product_code: w.doc.product_code,
+                cameras: w.doc.plan_cameras(),
+                instance_id: w.instance_id,
+                revision: w.revision,
+                flow: w.flow,
+                publish: w.publish.clone(),
+                pending: w.pending.as_ref().map(|release| WorkspaceCatalogPending {
+                    id: release.doc.id.clone(),
+                    name: release.doc.name.clone(),
+                    product_code: release.doc.product_code,
+                    cameras: release.doc.plan_cameras(),
+                }),
+                has_teaching_piece: w.teaching_piece.is_some(),
+                segment_recipe: w.doc.is_burst(),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.id.cmp(&b.id));
+        entries
+    }
+
+    fn candidate_doc(
+        &self,
+        id: &str,
+        instance_id: u64,
+        revision: u64,
+    ) -> Result<RecipeDoc, String> {
+        safe_id(id)?;
+        let items = self.items.lock().unwrap();
+        let w = items.get(id).ok_or("候选配置不存在")?;
+        w.expect_instance(instance_id)?;
+        if w.legacy() {
+            return Err(pieces::LEGACY.into());
+        }
+        if w.revision != revision {
+            return Err("候选配置已更新，请重新加载后操作".into());
+        }
+        Ok(w.doc.clone())
+    }
+
     pub(crate) fn comparison_snapshot(
         &self,
         id: &str,
@@ -518,6 +624,7 @@ impl WorkspaceHost {
             mix_samples: Mutex::new(HashMap::new()),
             capture_seq: std::sync::atomic::AtomicU64::new(0),
             comparisons: comparisons::Comparisons::default(),
+            frame_metadata: recorded::FrameMetadataCache::default(),
             history_bundle: Mutex::new(None),
         })
     }
@@ -566,7 +673,10 @@ fn view(app: &AppHandle, mut w: Workspace) -> Result<WorkspaceView, String> {
     })
 }
 
-fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
+fn environment(
+    app: &AppHandle,
+    recipe: &Recipe,
+) -> Result<(Value, Option<Arc<vision::Engine>>), String> {
     let cycle = app.state::<CycleHost>();
     let mut values = Vec::new();
     for id in recipe.cameras() {
@@ -585,11 +695,9 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
         )?)?);
     }
     values.push(json!([true]));
-    values.push(json!(app
-        .state::<vision::VisionHost>()
-        .engine()
-        .map(|engine| engine_state(&engine))));
-    Ok(state_value(&values))
+    let engine = app.state::<vision::VisionHost>().engine();
+    values.push(json!(engine.as_deref().map(engine_state)));
+    Ok((state_value(&values), engine))
 }
 
 /// 相机标签：设备参数；样本集相机另含样本集编号，换同名相机的另一套样本集也算设备变化。
@@ -610,14 +718,29 @@ pub fn workspace_list(host: State<'_, WorkspaceHost>) -> Vec<Workspace> {
     out
 }
 
+#[tauri::command]
+pub fn workspace_catalog(host: State<'_, WorkspaceHost>) -> Vec<WorkspaceCatalogEntry> {
+    host.catalog()
+}
+
+#[tauri::command]
+pub fn workspace_candidate_doc(
+    host: State<'_, WorkspaceHost>,
+    id: String,
+    instance_id: u64,
+    revision: u64,
+) -> Result<RecipeDoc, String> {
+    host.candidate_doc(&id, instance_id, revision)
+}
+
 fn unloaded_hint(dir: &Path) -> String {
     format!("旧格式不兼容或文件损坏，文件已保留。请先移走候选目录 {}，再从当前生产版本重新建立候选；该目录含已发布归档，移走后需重新验证和发布才能生产", dir.display())
 }
 
-fn ensure_workspace_can_be_created(path: &Path) -> Result<(), String> {
+fn ensure_no_workspace_file(path: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("无法确认旧候选是否存在，拒绝覆盖：{error}")),
+        Err(error) => Err(format!("无法确认磁盘候选状态：{error}")),
         Ok(_) => Err(format!(
             "磁盘已有未加载的候选：{}",
             unloaded_hint(path.parent().unwrap_or(path))
@@ -638,7 +761,7 @@ fn get(app: AppHandle, id: String) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     if !items.contains_key(&id) {
-        ensure_workspace_can_be_created(&host.dir(&id).join("workspace.json"))?;
+        ensure_no_workspace_file(&host.dir(&id).join("workspace.json"))?;
         let cycle = app.state::<CycleHost>();
         let mut doc = cycle.recipes.doc(&id).ok_or("配方不存在")?;
         let production = cycle.recipe(&id).map(|r| r.revision_id.clone());
@@ -742,12 +865,47 @@ pub(crate) fn reset_for_project_import(path: &Path) -> Result<(), String> {
     )
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CandidateRevision {
+    instance_id: u64,
+    revision: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecipeDeletionTarget {
+    candidate: Option<CandidateRevision>,
+    production_revision_id: Option<String>,
+}
+
 #[tauri::command]
-pub fn workspace_delete(app: AppHandle, id: String) -> Result<(), String> {
+pub fn workspace_delete(
+    app: AppHandle,
+    id: String,
+    target: RecipeDeletionTarget,
+) -> Result<(), String> {
     safe_id(&id)?;
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
-    if items.get(&id).is_some_and(|w| w.pending.is_some()) {
+    let workspace = items.get(&id);
+    let cycle = app.state::<CycleHost>();
+    let production = cycle.recipe(&id);
+    if target.candidate != workspace.map(Workspace::identity)
+        || target.production_revision_id.as_deref()
+            != production
+                .as_ref()
+                .map(|recipe| recipe.revision_id.as_str())
+    {
+        return Err("配方已变化，请刷新配方库后重新确认删除".into());
+    }
+    if workspace.is_none() {
+        if production.is_none() {
+            return Err("配方不存在".into());
+        }
+        ensure_no_workspace_file(&host.dir(&id).join("workspace.json"))?;
+    }
+    if workspace.is_some_and(|w| w.pending.is_some()) {
         return Err("已有待生效版本，不能删除".into());
     }
     let rounds = || {
@@ -756,7 +914,7 @@ pub fn workspace_delete(app: AppHandle, id: String) -> Result<(), String> {
             .recipe_capture()
             .delete_recipe_rounds(&id)
     };
-    if items.get(&id).is_some_and(Workspace::legacy) {
+    if workspace.is_some_and(Workspace::legacy) {
         // 旧流程候选只删候选本身与它导入的轮次（RB-5）：生产配方与发布归档照常运行，之后可从生产配方新建新流程候选
         rounds()?;
         pieces::remove_legacy_dir(&host.dir(&id))?;
@@ -764,8 +922,8 @@ pub fn workspace_delete(app: AppHandle, id: String) -> Result<(), String> {
         return Ok(());
     }
     // 生产配方的删除检查（在用、在途事务、配置门）通过后才删轮次，被拒时示教与标定原图不受影响
-    if app.state::<CycleHost>().recipe(&id).is_some() {
-        crate::recipe_api::recipe_delete(app.clone(), app.state::<CycleHost>(), id.clone())?;
+    if let Some(revision_id) = target.production_revision_id {
+        crate::recipe_api::recipe_delete(app.clone(), cycle, id.clone(), revision_id)?;
     }
     rounds()?;
     let dir = host.dir(&id);
@@ -783,9 +941,10 @@ pub async fn workspace_save_doc(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
     doc: RecipeDoc,
 ) -> Result<WorkspaceView, String> {
-    tauri::async_runtime::spawn_blocking(move || save_doc(app, id, revision, doc))
+    tauri::async_runtime::spawn_blocking(move || save_doc(app, id, revision, instance_id, doc))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -794,9 +953,12 @@ fn save_doc(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
     doc: RecipeDoc,
 ) -> Result<WorkspaceView, String> {
-    let w = app.state::<WorkspaceHost>().save_doc(&id, revision, doc)?;
+    let w = app
+        .state::<WorkspaceHost>()
+        .save_doc(&id, revision, instance_id, doc)?;
     view(&app, w)
 }
 
@@ -806,14 +968,17 @@ impl WorkspaceHost {
         &self,
         id: &str,
         revision: u64,
+        instance_id: u64,
         mut doc: RecipeDoc,
     ) -> Result<Workspace, String> {
         if doc.id != id {
             return Err("编辑候选配置时不能改变配方编号；请在配方库复制".into());
         }
         let mut items = self.items.lock().unwrap();
-        let mut w = items.get(id).ok_or("候选配置不存在")?.clone();
+        let w = items.get(id).ok_or("候选配置不存在")?;
+        w.expect_instance(instance_id)?;
         w.expect(revision)?;
+        let mut w = w.clone();
         burst::keep_color_measure(&w, &mut doc);
         update_doc(&mut w, doc)?;
         self.save(&w)?;
@@ -958,10 +1123,12 @@ pub fn workspace_publish(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
 ) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     let w = items.get_mut(&id).ok_or("候选配置不存在")?;
+    w.expect_instance(instance_id)?;
     w.expect(revision)?;
     if w.pending.is_some() {
         return Err("已有待生效版本，请等待工件结束".into());
@@ -970,13 +1137,14 @@ pub fn workspace_publish(
         return Err("旧拍照点配方已停用，请创建段配方".into());
     }
     // D-SB-46：发布时当场核对发布前检查
-    let validated = burst_release::publish_checks(&app, w)?;
+    let (validated, teaching) = burst_release::publish_checks(&app, w)?;
     if let Some(failed) = burst_release::publish_blocker(&validated.checks) {
         return Err(format!("不能发布：{}：{}", failed.name, failed.detail));
     }
     let recipes = &app.state::<CycleHost>().recipes;
     let release_doc = formal_release_doc(w, recipes.release_version(&w.doc)?)?;
-    let bundle = burst_release::freeze_bundle(&app, &host, &release_doc, &w.camera_teaching)?;
+    let teaching = teaching.ok_or("不能发布：缺少已检查的示教帧和测量图")?;
+    let bundle = burst_release::freeze_bundle(&app, &host, &release_doc, teaching)?;
     let navigation = navigation::prepare_navigation_release(
         &crate::storage::project(&app),
         w,
@@ -1307,15 +1475,23 @@ async fn compare_at(
                 .comparison_snapshot(&id, revision, instance_id)?;
             let recipe = w.doc.build()?;
             let store = app.state::<Store>();
-            let detail = store.detail(history_id)?;
+            let input = if raw {
+                HistoryCompareInput::RawImages
+            } else {
+                HistoryCompareInput::StoredMetrics
+            };
+            let (mut detail, original) = store.comparison_input(history_id, input)?;
             // 任意候选都能复测任意记录（不看型号、配方编号与所属项目）；按规则重判仍需记录的配方快照
-            let original = store.record_recipe(&detail.summary)?;
+            let original = match original {
+                Some(original) => Some(original),
+                None => store.record_recipe(&detail.summary)?.map(Arc::new),
+            };
             let (judgement, burst) = burst_history::compare(
                 &app,
                 &w,
                 &recipe,
-                &detail,
-                original.as_ref(),
+                &mut detail,
+                original.as_deref(),
                 raw,
                 operation,
             )?;
@@ -1361,23 +1537,39 @@ fn save_comparison(app: &AppHandle, comparison: &Comparison) -> Result<(), Strin
         .save(&host.root, &app.state::<Store>(), comparison)
 }
 
-/// 按天清理：被示教件、标定件引用的历史件（记录与录制）保留，引用核对不了时本次不清理。调用方持
+/// 按天清理：有过期件时先核对示教与标定引用，核对失败时保留历史记录。调用方持
 /// `recipe_capture::REFERENCES`（先于追溯状态锁取得）。
 pub(crate) fn purge_history(app: &AppHandle, before: i64) -> Result<(usize, Vec<String>), String> {
     let host = app.state::<WorkspaceHost>();
-    let data = crate::storage::root(app);
-    let keep = crate::project::records::referenced_cycles(&data)
-        .map_err(|e| format!("无法核对示教件引用的历史件，本次不清理：{e}"))?;
+    purge_history_for(
+        &crate::storage::root(app),
+        &host.root,
+        &app.state::<Store>(),
+        &host.comparisons,
+        before,
+    )
+}
+
+fn purge_history_for(
+    data: &Path,
+    root: &Path,
+    store: &Store,
+    comparisons: &comparisons::Comparisons,
+    before: i64,
+) -> Result<(usize, Vec<String>), String> {
+    let keep = store
+        .has_history_before(before)?
+        .then(|| {
+            crate::project::records::referenced_cycles(data)
+                .map_err(|e| format!("无法核对示教件引用的历史件，本次不清理：{e}"))
+        })
+        .transpose()?;
     let (count, mut warnings, orphaned) =
-        host.comparisons
-            .purge(&host.root, &app.state::<Store>(), before, &keep)?;
+        comparisons.purge(root, store, keep.as_ref().map(|keep| (before, keep)))?;
     for (project, source, directory) in orphaned {
-        if let Err(error) = crate::project::records::remove_recording(
-            &data,
-            &project,
-            source,
-            Path::new(&directory),
-        ) {
+        if let Err(error) =
+            crate::project::records::remove_recording(data, &project, source, Path::new(&directory))
+        {
             warnings.push(format!(
                 "项目 {project} 的过期原图 {directory} 未删除：{error}"
             ));
@@ -1415,7 +1607,8 @@ pub async fn workspace_compare_original(
     tauri::async_runtime::spawn_blocking(move || {
         operation.run(|operation| {
             let store = app.state::<Store>();
-            let detail = store.detail(history_id)?;
+            let (detail, original) =
+                store.comparison_input(history_id, HistoryCompareInput::RawImages)?;
             if !detail.recording.available {
                 return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into());
             }
@@ -1432,9 +1625,14 @@ pub async fn workspace_compare_original(
             if detail.summary.recipe_revision.is_none() {
                 return Err("历史记录缺少配方快照身份".into());
             }
-            let original = store
-                .record_recipe(&detail.summary)?
-                .ok_or("原始配方快照缺失；不能使用当前配方替代")?;
+            let original = match original {
+                Some(original) => original,
+                None => Arc::new(
+                    store
+                        .record_recipe(&detail.summary)?
+                        .ok_or("原始配方快照缺失；不能使用当前配方替代")?,
+                ),
+            };
             let bundle = record_bundle(&app, &detail.summary.project_id, &original.id, bundle_id)?;
             let engine = app
                 .state::<vision::VisionHost>()
@@ -1452,7 +1650,7 @@ pub async fn workspace_compare_original(
                 bundle_id: Some(bundle_id.into()),
                 candidate_id: original.id.clone(),
                 candidate_revision: 0,
-                candidate_recipe: original,
+                candidate_recipe: Arc::unwrap_or_clone(original),
                 original_verdict: detail.summary.verdict,
                 judgement,
                 measurements: Vec::new(),
@@ -1478,8 +1676,7 @@ pub async fn workspace_history_compare_options(
 ) -> Result<burst_history::CompareOptions, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
-        let detail = store.detail(history_id)?;
-        let original = store.record_recipe(&detail.summary)?;
+        let (detail, original) = store.history_comparison_record(history_id)?;
         let (chosen, choices) = {
             let host = app.state::<WorkspaceHost>();
             let items = host.items.lock().unwrap();
@@ -1504,7 +1701,7 @@ pub async fn workspace_history_compare_options(
         )
         .err();
         let mut options =
-            burst_history::compare_options(&detail, original.as_ref(), chosen.as_ref(), releases);
+            burst_history::compare_options(&detail, original.as_deref(), chosen.as_ref(), releases);
         options.choices = choices;
         Ok(options)
     })
@@ -1543,7 +1740,7 @@ pub async fn workspace_comparison_get(
     app: AppHandle,
     history_id: i64,
     comparison_id: String,
-) -> Result<Comparison, String> {
+) -> Result<Arc<Comparison>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<WorkspaceHost>();
         host.comparisons.get(
@@ -1569,7 +1766,7 @@ fn trace_view(
     recipe: &Recipe,
     segment: u32,
     trace: crate::measure::FrameTrace,
-    metrics: &crate::burst_judge::FrameMetrics,
+    metrics: Arc<crate::burst_judge::FrameMetrics>,
 ) -> CalibrationFrameView {
     let (corridor, search_half_px) = burst::corridor_overlay(recipe, metrics.camera, segment);
     CalibrationFrameView {
@@ -1582,7 +1779,7 @@ fn trace_view(
         search_half_px,
         edges: trace.edges,
         part_edges: trace.part_edges,
-        metrics: metrics.clone(),
+        metrics,
     }
 }
 
@@ -1632,7 +1829,7 @@ pub async fn workspace_history_frame_view(
 ) -> Result<CalibrationFrameView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
-        let detail = store.detail_frame(history_id, camera, seq)?;
+        let (detail, original) = store.detail_frame_with_recipe(history_id, camera, seq)?;
         let burst = detail
             .burst
             .as_ref()
@@ -1670,12 +1867,6 @@ pub async fn workspace_history_frame_view(
             .bundle_id
             .as_deref()
             .ok_or("本件没有发布包（维护采集件或未匹配到可用配方），画不了辅助线")?;
-        if detail.summary.recipe_revision.is_none() {
-            return Err("历史记录缺少配方快照身份".into());
-        }
-        let original = store
-            .record_recipe(&detail.summary)?
-            .ok_or("原始配方快照缺失")?;
         let prepared = history_prepared(&app, &detail.summary.project_id, &original, bundle_id)?;
         let image = burst_history::frame_image(&app, &detail, camera, seq)?;
         let measured = prepared.measure_frame(
@@ -1690,7 +1881,7 @@ pub async fn workspace_history_frame_view(
             part_edges: measured.part_edges,
             line: measured.line,
         };
-        Ok(trace_view(&prepared.recipe, segment, trace, &metrics))
+        Ok(trace_view(&prepared.recipe, segment, trace, metrics))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1703,12 +1894,12 @@ pub fn retain_live_view(
     recipe: &Recipe,
     segment: u32,
     trace: crate::measure::FrameTrace,
-    metrics: &crate::burst_judge::FrameMetrics,
+    metrics: &Arc<crate::burst_judge::FrameMetrics>,
 ) {
     let Some(host) = app.try_state::<WorkspaceHost>() else {
         return;
     };
-    let view = trace_view(recipe, segment, trace, metrics);
+    let view = trace_view(recipe, segment, trace, Arc::clone(metrics));
     let mut live = host.live_views.lock().unwrap();
     let key = (cycle_id.to_owned(), recipe.revision_id.clone());
     if live.key.as_ref() != Some(&key) {
@@ -1788,7 +1979,7 @@ fn live_frame_image(
     cycle_id: &str,
     revision_id: &str,
     k: (usize, u64),
-    recorded_part: impl FnOnce() -> Result<FrameImage, String>,
+    recorded_part: impl FnOnce() -> Result<Arc<FrameImage>, String>,
 ) -> Result<Arc<FrameImage>, String> {
     let (held, recorded) = {
         let live = live.lock().unwrap();
@@ -1810,16 +2001,15 @@ fn live_frame_image(
     if let Some(view) = held {
         return view.image();
     }
-    let image = match recorded.map(|frame| frame.state()) {
+    match recorded.map(|frame| frame.state()) {
         Some(crate::recorder::RecordedFrame::Ready(path)) if path.is_file() => {
-            crate::image_file::load(&path).map_err(|e| format!("读回录制原图失败：{e}"))?
+            crate::image_file::load(&path)
+                .map(Arc::new)
+                .map_err(|e| format!("读回录制原图失败：{e}"))
         }
-        Some(crate::recorder::RecordedFrame::Writing) => {
-            return Err("这一帧原图还在写盘，稍后再看".into())
-        }
-        _ => recorded_part()?,
-    };
-    Ok(Arc::new(image))
+        Some(crate::recorder::RecordedFrame::Writing) => Err("这一帧原图还在写盘，稍后再看".into()),
+        _ => recorded_part(),
+    }
 }
 
 /// 已收尾的本件按历史记录读录制原图。
@@ -1829,7 +2019,7 @@ fn recorded_part_frame(
     revision_id: &str,
     camera: usize,
     seq: u64,
-) -> Result<FrameImage, String> {
+) -> Result<Arc<FrameImage>, String> {
     let store = app.state::<Store>();
     let id = store
         .id_by_cycle(cycle_id)?
@@ -1841,49 +2031,135 @@ fn recorded_part_frame(
     burst_history::frame_image(app, &detail, camera, seq)
 }
 
-pub fn station_image_ref(
-    app: &AppHandle,
-    cam: u8,
-    image_id: &str,
-) -> Result<Arc<FrameImage>, String> {
-    let cycle = app.state::<CycleHost>();
-    if cycle.busy() {
-        return Err("工件正在检测，结束后再操作标定样本".into());
+impl WorkspaceHost {
+    fn save_station_sample(
+        &self,
+        sequence: u64,
+        meta: FrozenImage,
+        image: Arc<FrameImage>,
+    ) -> Result<FrozenImage, String> {
+        let mut samples = self.station.lock().unwrap();
+        if samples
+            .get(&meta.camera)
+            .is_some_and(|sample| sample.sequence > sequence)
+        {
+            return Err("冻结样本已更新，请重新选择图像".into());
+        }
+        samples.insert(
+            meta.camera.clone(),
+            StationSample {
+                sequence,
+                meta: meta.clone(),
+                image,
+            },
+        );
+        Ok(meta)
     }
-    let config = cycle
-        .camera
-        .slot(cam as usize)
-        .ok_or("相机不存在")?
-        .config();
-    let host = app.state::<WorkspaceHost>();
-    let samples = host.station.lock().unwrap();
-    let (meta, image) = samples
-        .get(&cam)
-        .filter(|(meta, _)| meta.id == image_id)
-        .ok_or("冻结样本已更新，请重新选择图像")?;
-    if meta.camera_tag != state_value(&config) {
-        return Err("相机参数变化，请重新冻结标定样本".into());
+
+    pub(crate) fn station_sample(
+        &self,
+        config: &CameraConfig,
+        view: u8,
+        image_id: &str,
+    ) -> Result<Arc<FrameImage>, String> {
+        let samples = self.station.lock().unwrap();
+        let sample = samples
+            .get(&config.id)
+            .filter(|sample| sample.meta.id == image_id)
+            .ok_or("冻结样本已更新，请重新选择图像")?;
+        if sample.meta.view != view {
+            return Err("冻结标定样本的图编号与当前选择不一致".into());
+        }
+        if sample.meta.camera_tag != state_value(config) {
+            return Err("相机参数变化，请重新冻结标定样本".into());
+        }
+        Ok(Arc::clone(&sample.image))
     }
-    Ok(image.clone())
+
+    pub(crate) fn forget_station_sample(&self, id: &str) {
+        self.station.lock().unwrap().remove(id);
+    }
 }
 
-pub fn station_image_view(app: &AppHandle, cam: u8, image_id: &str) -> Result<u8, String> {
-    let host = app.state::<WorkspaceHost>();
-    let samples = host.station.lock().unwrap();
-    samples
-        .get(&cam)
-        .filter(|(meta, _)| meta.id == image_id)
-        .map(|(meta, _)| meta.view)
-        .ok_or_else(|| "标定样本已更新".into())
+struct StationCamera {
+    cam: u8,
+    slot: Arc<CameraSlot>,
+    config: CameraConfig,
+    view: u8,
+}
+
+impl StationCamera {
+    fn resolve(cycle: &CycleHost, cam: u8, id: &str, view: Option<u8>) -> Result<Self, String> {
+        let (slot, config) = cycle.camera.target_slot(cam, id)?;
+        let view = view.unwrap_or(1);
+        if !(1..=config.view_count).contains(&view) {
+            return Err("图编号超出设备范围".into());
+        }
+        Ok(Self {
+            cam,
+            slot,
+            config,
+            view,
+        })
+    }
+
+    fn still_current(&self, cycle: &CycleHost) -> bool {
+        !cycle.busy()
+            && cycle
+                .camera
+                .slot(usize::from(self.cam))
+                .is_some_and(|slot| Arc::ptr_eq(&slot, &self.slot) && slot.config() == self.config)
+    }
+
+    fn metadata(
+        &self,
+        id: String,
+        source: String,
+        captured_at: i64,
+        image: &FrameImage,
+    ) -> FrozenImage {
+        FrozenImage {
+            mix_capture: None,
+            view: self.view,
+            id,
+            source,
+            captured_at,
+            size: [image.width, image.height],
+            camera: self.config.id.clone(),
+            camera_tag: state_value(&self.config),
+            calib_tag: Value::Null,
+            geometry_tag: Value::Null,
+            exposure_us: None,
+            gain_db: None,
+            history_id: None,
+        }
+    }
+}
+
+fn station_sequence(app: &AppHandle) -> u64 {
+    app.state::<WorkspaceHost>()
+        .capture_seq
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[tauri::command]
-pub fn workspace_station_image(
+pub async fn workspace_station_image(
     app: AppHandle,
     cam: u8,
+    id: String,
     image_id: String,
+    view: Option<u8>,
 ) -> Result<tauri::ipc::Response, String> {
-    let image = station_image_ref(&app, cam, &image_id)?;
+    let image = {
+        let cycle = app.state::<CycleHost>();
+        let _gate = camera_gate(&cycle).await?;
+        if cycle.busy() {
+            return Err("工件正在检测，结束后再操作标定样本".into());
+        }
+        let camera = StationCamera::resolve(&cycle, cam, &id, view)?;
+        app.state::<WorkspaceHost>()
+            .station_sample(&camera.config, camera.view, &image_id)?
+    };
     Ok(preview_response(&image))
 }
 
@@ -1891,47 +2167,31 @@ pub fn workspace_station_image(
 pub async fn workspace_station_capture(
     app: AppHandle,
     cam: u8,
+    id: String,
     view: Option<u8>,
 ) -> Result<FrozenImage, String> {
+    let sequence = station_sequence(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let cycle = app.state::<CycleHost>();
+        let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
         if cycle.busy() {
             return Err("工件正在检测，结束后再取标定样本".into());
         }
-        let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
-        let config = slot.config();
-        if !(1..=config.view_count).contains(&view.unwrap_or(1)) {
-            return Err("图编号超出设备范围".into());
-        }
-        let selected = view.unwrap_or(1);
-        let image = cycle.camera.capture_view(cam, selected, None)?;
-        if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
+        crate::camera::check_idle(&cycle)?;
+        let camera = StationCamera::resolve(&cycle, cam, &id, view)?;
+        let image = cycle.camera.capture_view(&camera.slot, camera.view)?;
+        if !camera.still_current(&cycle) {
             return Err("取样期间设备或节拍状态变化，样本已丢弃".into());
         }
-        let host = app.state::<WorkspaceHost>();
-        let seq = host
-            .capture_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let meta = FrozenImage {
-            mix_capture: None,
-            view: view.unwrap_or(1),
-            id: format!("station-{cam}-{}-{seq}", ly_plc::now_ms()),
-            source: format!("{:?}", config.source),
-            captured_at: ly_plc::now_ms(),
-            size: [image.width, image.height],
-            camera: config.id,
-            camera_tag: state_value(&slot.config()),
-            calib_tag: Value::Null,
-            geometry_tag: Value::Null,
-            exposure_us: None,
-            gain_db: None,
-            history_id: None,
-        };
-        host.station
-            .lock()
-            .unwrap()
-            .insert(cam, (meta.clone(), image));
-        Ok(meta)
+        let captured_at = ly_plc::now_ms();
+        let meta = camera.metadata(
+            format!("station-{cam}-{captured_at}-{sequence}"),
+            format!("{:?}", camera.config.source),
+            captured_at,
+            &image,
+        );
+        app.state::<WorkspaceHost>()
+            .save_station_sample(sequence, meta, image)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1941,47 +2201,37 @@ pub async fn workspace_station_capture(
 pub async fn workspace_station_import(
     app: AppHandle,
     cam: u8,
+    id: String,
     bytes: Vec<u8>,
     view: Option<u8>,
 ) -> Result<FrozenImage, String> {
+    let sequence = station_sequence(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let cycle = app.state::<CycleHost>();
-        if cycle.busy() {
-            return Err("工件正在检测，结束后再导入标定原图".into());
-        }
-        let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
-        let config = slot.config();
-        if !(1..=config.view_count).contains(&view.unwrap_or(1)) {
-            return Err("图编号超出设备范围".into());
-        }
-        let image = Arc::new(decode_imported_image(bytes, config.image_mode.color())?);
-        if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
+        let camera = {
+            let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
+            if cycle.busy() {
+                return Err("工件正在检测，结束后再导入标定原图".into());
+            }
+            StationCamera::resolve(&cycle, cam, &id, view)?
+        };
+        let image = Arc::new(decode_imported_image(
+            bytes,
+            camera.config.image_mode.color(),
+        )?);
+        let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
+        if !camera.still_current(&cycle) {
             return Err("导入期间设备或节拍状态变化，原图已丢弃".into());
         }
-        let host = app.state::<WorkspaceHost>();
-        let seq = host
-            .capture_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let meta = FrozenImage {
-            mix_capture: None,
-            view: view.unwrap_or(1),
-            id: format!("station-import-{cam}-{}-{seq}", ly_plc::now_ms()),
-            source: "import".into(),
-            captured_at: ly_plc::now_ms(),
-            size: [image.width, image.height],
-            camera: config.id.clone(),
-            camera_tag: state_value(&config),
-            calib_tag: Value::Null,
-            geometry_tag: Value::Null,
-            exposure_us: None,
-            gain_db: None,
-            history_id: None,
-        };
-        host.station
-            .lock()
-            .unwrap()
-            .insert(cam, (meta.clone(), image));
-        Ok(meta)
+        let captured_at = ly_plc::now_ms();
+        let meta = camera.metadata(
+            format!("station-import-{cam}-{captured_at}-{sequence}"),
+            "import".into(),
+            captured_at,
+            &image,
+        );
+        app.state::<WorkspaceHost>()
+            .save_station_sample(sequence, meta, image)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1992,49 +2242,33 @@ pub async fn workspace_station_import(
 pub async fn workspace_station_restore(
     app: AppHandle,
     cam: u8,
+    id: String,
     view: Option<u8>,
 ) -> Result<Option<FrozenImage>, String> {
+    let sequence = station_sequence(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let cycle = app.state::<CycleHost>();
-        if cycle.busy() {
-            return Err("工件正在检测，结束后再读取标定原图".into());
-        }
-        let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
-        let config = slot.config();
-        let selected = view.unwrap_or(1);
-        if !(1..=config.view_count).contains(&selected) {
-            return Err("图编号超出设备范围".into());
-        }
-        let keys = vision::camera_calib_keys(&app, cam, Some(selected))?;
-        let calib = vision::calib_key_path(&app, &keys[0])?;
-        let Some((id, image, ts)) = vision::calib_sample(&crate::storage::project(&app), &calib)?
-        else {
-            return Ok(None);
+        let camera = {
+            let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
+            if cycle.busy() {
+                return Err("工件正在检测，结束后再读取标定原图".into());
+            }
+            StationCamera::resolve(&cycle, cam, &id, view)?
         };
-        if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
+        let keys = vision::calib_keys(&camera.config, Some(camera.view))?;
+        let calib = vision::calib_key_path(&app, &keys[0])?;
+        let sample = vision::calib_sample(&crate::storage::project(&app), &calib)?;
+        let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
+        if !camera.still_current(&cycle) {
             return Err("读取期间设备或节拍状态变化，原图已丢弃".into());
         }
-        let meta = FrozenImage {
-            mix_capture: None,
-            view: selected,
-            id,
-            source: "calib".into(),
-            captured_at: ts.unwrap_or(0),
-            size: [image.width, image.height],
-            camera: config.id.clone(),
-            camera_tag: state_value(&config),
-            calib_tag: Value::Null,
-            geometry_tag: Value::Null,
-            exposure_us: None,
-            gain_db: None,
-            history_id: None,
+        let Some((image_id, image, ts)) = sample else {
+            return Ok(None);
         };
+        let meta = camera.metadata(image_id, "calib".into(), ts.unwrap_or(0), &image);
         app.state::<WorkspaceHost>()
-            .station
-            .lock()
-            .unwrap()
-            .insert(cam, (meta.clone(), Arc::new(image)));
-        Ok(Some(meta))
+            .save_station_sample(sequence, meta, Arc::new(image))
+            .map(Some)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2062,6 +2296,137 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn test_host(root: PathBuf, items: HashMap<String, Workspace>) -> WorkspaceHost {
+        WorkspaceHost {
+            root,
+            items: Mutex::new(items),
+            notes: Vec::new(),
+            live_burst: Mutex::default(),
+            live_views: Mutex::default(),
+            station: Mutex::default(),
+            mix_samples: Mutex::default(),
+            capture_seq: std::sync::atomic::AtomicU64::new(0),
+            comparisons: comparisons::Comparisons::default(),
+            frame_metadata: recorded::FrameMetadataCache::default(),
+            history_bundle: Mutex::default(),
+        }
+    }
+
+    #[test]
+    fn late_station_sample_cannot_replace_the_newer_sample_or_cross_camera_config_and_view() {
+        let host = test_host(PathBuf::new(), HashMap::new());
+        let camera = CameraConfig {
+            id: "cam1".into(),
+            ..CameraConfig::default()
+        };
+        let other = CameraConfig {
+            id: "cam2".into(),
+            ..camera.clone()
+        };
+        let save = |config: &CameraConfig, sequence, id: &str, pixel| {
+            let meta = FrozenImage {
+                mix_capture: None,
+                view: 1,
+                id: id.into(),
+                source: "import".into(),
+                captured_at: 1,
+                size: [1, 1],
+                camera: config.id.clone(),
+                camera_tag: state_value(config),
+                calib_tag: Value::Null,
+                geometry_tag: Value::Null,
+                exposure_us: None,
+                gain_db: None,
+                history_id: None,
+            };
+            host.save_station_sample(sequence, meta, Arc::new(FrameImage::new(1, 1, vec![pixel])))
+        };
+        save(&camera, 2, "new-sample", 42).unwrap();
+        assert!(save(&camera, 1, "old-sample", 17).is_err());
+        save(&other, 3, "other-camera", 89).unwrap();
+
+        assert_eq!(
+            host.station_sample(&camera, 1, "new-sample")
+                .unwrap()
+                .pixels,
+            [42]
+        );
+        assert_eq!(
+            host.station_sample(&other, 1, "other-camera")
+                .unwrap()
+                .pixels,
+            [89]
+        );
+        assert!(host.station_sample(&camera, 1, "old-sample").is_err());
+        assert!(host.station_sample(&other, 1, "new-sample").is_err());
+        assert!(host.station_sample(&camera, 2, "new-sample").is_err());
+        let changed = CameraConfig {
+            serial: "changed".into(),
+            ..camera
+        };
+        assert!(host.station_sample(&changed, 1, "new-sample").is_err());
+    }
+
+    #[test]
+    fn candidate_copy_requires_the_listed_instance_even_when_revision_is_reused() {
+        let root = ImportTestDir::new();
+        let store = Store::open(&root.0.join("history.sqlite")).unwrap();
+        let mut original = Workspace::new(crate::recipe::samples_burst());
+        original.ensure_instance(&store).unwrap();
+        let saved = original.doc.clone();
+        let mut pending = saved.clone();
+        pending.name = "待生效的配置".into();
+        original.pending = Some(Box::new(Release {
+            doc: pending,
+            bundle_id: "pending-release".into(),
+            revision: original.revision,
+            validation: Validation {
+                revision: original.revision,
+                passed: true,
+                checked_at: 1,
+                checks: Vec::new(),
+                environment_tag: Value::Null,
+            },
+            validation_site: ValidationSite::Offline,
+            navigation: None,
+            _frames: Discarded,
+            _overview: Discarded,
+            _base_revision: Discarded,
+        }));
+        original.publish = PublishState::Waiting;
+        let host = test_host(
+            root.0.join("workspaces"),
+            HashMap::from([(saved.id.clone(), original)]),
+        );
+        let listed = host.catalog().pop().unwrap();
+        assert_eq!(
+            host.candidate_doc(&listed.id, listed.instance_id, listed.revision)
+                .unwrap(),
+            saved
+        );
+
+        let mut replacement = Workspace::new(saved);
+        replacement.doc.name = "重建后的候选".into();
+        replacement.ensure_instance(&store).unwrap();
+        assert_eq!(replacement.revision, listed.revision);
+        host.items
+            .lock()
+            .unwrap()
+            .insert(listed.id.clone(), replacement.clone());
+        assert!(host
+            .candidate_doc(&listed.id, listed.instance_id, listed.revision)
+            .is_err());
+        let current = host.catalog().pop().unwrap();
+        assert!(host
+            .candidate_doc(&current.id, current.instance_id, current.revision + 1)
+            .is_err());
+        assert_eq!(
+            host.candidate_doc(&current.id, current.instance_id, current.revision)
+                .unwrap(),
+            replacement.doc
+        );
     }
 
     /// 第 1 帧带着录制文件 `file` 进内存预览，再来两帧大图把它挤出去。
@@ -2103,7 +2468,7 @@ mod tests {
         let dir = ImportTestDir::new();
         let live = evicted_first_frame(dir.0.join("moved").join("cam1_s000001.pgm"));
         let image = live_frame_image(&live, "c1", "r1", (0, 1), || {
-            Ok(FrameImage::new(2, 2, vec![7; 4]))
+            Ok(Arc::new(FrameImage::new(2, 2, vec![7; 4])))
         })
         .unwrap();
         assert_eq!(&image.pixels[..], &[7; 4]);

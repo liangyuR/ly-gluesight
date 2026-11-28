@@ -139,19 +139,60 @@ pub fn preview_bytes(image: &FrameImage) -> Vec<u8> {
         .max(1.0);
     let w = (image.width as f32 / scale).max(1.0) as u32;
     let h = (image.height as f32 / scale).max(1.0) as u32;
-    let mut bytes = Vec::with_capacity(20 + (w * h) as usize * channels);
+    let pixel_bytes = (w * h) as usize * channels;
+    let mut bytes = Vec::with_capacity(20 + pixel_bytes);
     for n in [w, h, image.width, image.height, channels as u32] {
         bytes.extend(n.to_le_bytes());
     }
-    for y in 0..h {
-        for x in 0..w {
-            let iy = ((y as f32 * scale) as u32).min(image.height - 1);
-            let ix = ((x as f32 * scale) as u32).min(image.width - 1);
-            let at = (iy * image.width + ix) as usize * channels;
-            bytes.extend_from_slice(&image.pixels[at..at + channels]);
+    if w == image.width && h == image.height {
+        bytes.extend_from_slice(&image.pixels[..pixel_bytes]);
+        return bytes;
+    }
+
+    let columns: Vec<_> = (0..w)
+        .map(|x| ((x as f32 * scale) as u32).min(image.width - 1) as usize)
+        .collect();
+    match channels {
+        1 | 3 => {
+            let header_len = bytes.len();
+            bytes.resize(header_len + pixel_bytes, 0);
+            let output = &mut bytes[header_len..];
+            if channels == 1 {
+                sample_image_preview::<1>(image, scale, &columns, output);
+            } else {
+                sample_image_preview::<3>(image, scale, &columns, output);
+            }
+        }
+        _ => {
+            for y in 0..h {
+                let iy = ((y as f32 * scale) as u32).min(image.height - 1) as usize;
+                for &ix in &columns {
+                    let at = (iy * image.width as usize + ix) * channels;
+                    bytes.extend_from_slice(&image.pixels[at..at + channels]);
+                }
+            }
         }
     }
     bytes
+}
+
+fn sample_image_preview<const C: usize>(
+    image: &FrameImage,
+    scale: f32,
+    columns: &[usize],
+    output: &mut [u8],
+) {
+    let (input, _) = image.pixels.as_chunks::<C>();
+    let (output, _) = output.as_chunks_mut::<C>();
+    let width = image.width as usize;
+    for (y, row) in output.chunks_exact_mut(columns.len()).enumerate() {
+        let iy = ((y as f32 * scale) as u32).min(image.height - 1) as usize;
+        let start = iy * width;
+        let source_row = &input[start..start + width];
+        for (pixel, &ix) in row.iter_mut().zip(columns) {
+            *pixel = source_row[ix];
+        }
+    }
 }
 
 impl Drop for FrameImage {
@@ -373,6 +414,13 @@ impl Drop for PoolCharge {
     }
 }
 
+pub(crate) fn validate_bayer_dimensions(w: usize, h: usize) -> Result<(), String> {
+    if w < 2 || h < 2 {
+        return Err(format!("Bayer 图像至少 2×2（实际 {w}×{h}）"));
+    }
+    Ok(())
+}
+
 /// 8 位 Bayer 马赛克双线性去马赛克成 RGB（交错、行紧排）：本像素的颜色取原值，缺的两色取 3×3 邻域里同色像素的均值
 /// （四舍五入）——内部即标准双线性（G 取上下左右、R/B 取对角或同行同列的两个），边界只用图内的邻居。
 pub fn bayer8_rgb_into(
@@ -382,9 +430,7 @@ pub fn bayer8_rgb_into(
     src: &[u8],
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
-    if w < 2 || h < 2 {
-        return Err(format!("Bayer 图像至少 2×2（实际 {w}×{h}）"));
-    }
+    validate_bayer_dimensions(w, h)?;
     let n = w * h;
     if src.len() < n {
         return Err(format!(
@@ -458,9 +504,7 @@ pub fn bayer8_rgb_into(
 /// (min(x, w-2), min(y, h-2)) 的 2×2 块，输出 (四个之和 + 2) / 4。任一 2×2 块都是一 R 两 G 一 B，
 /// 所以等于 (R + 2G + B) / 4，与相位无关；末行末列往回退一格，块仍是完整的 Bayer 四格。
 pub fn bayer8_gray_into(w: usize, h: usize, src: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
-    if w < 2 || h < 2 {
-        return Err(format!("Bayer 图像至少 2×2（实际 {w}×{h}）"));
-    }
+    validate_bayer_dimensions(w, h)?;
     let n = w * h;
     if src.len() < n {
         return Err(format!(
@@ -701,6 +745,46 @@ impl Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_wire_bytes_keep_nearest_neighborhood_and_valid_pixels() {
+        for (width, height, channels) in [
+            (3, 2, 1),
+            (640, 480, 3),
+            (905, 1, 1),
+            (1001, 827, 3),
+            (1, 658, 3),
+        ] {
+            let mut pixels: Vec<u8> = (0..width * height * channels)
+                .map(|i| (i % 251) as u8)
+                .collect();
+            pixels.extend([253; 7]);
+            let image = match channels {
+                1 => FrameImage::new(width, height, pixels),
+                _ => FrameImage::rgb(width, height, pixels),
+            };
+            let scale = (width as f32 / 900.0).max(height as f32 / 650.0).max(1.0);
+            let preview_width = (width as f32 / scale).max(1.0) as u32;
+            let preview_height = (height as f32 / scale).max(1.0) as u32;
+            let mut expected: Vec<u8> = [preview_width, preview_height, width, height, channels]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect();
+            for y in 0..preview_height {
+                for x in 0..preview_width {
+                    let iy = ((y as f32 * scale) as u32).min(height - 1);
+                    let ix = ((x as f32 * scale) as u32).min(width - 1);
+                    let offset = ((iy * width + ix) * channels) as usize;
+                    expected.extend_from_slice(&image.pixels[offset..offset + channels as usize]);
+                }
+            }
+            assert_eq!(
+                preview_bytes(&image),
+                expected,
+                "{width}×{height}×{channels}"
+            );
+        }
+    }
 
     #[test]
     fn frame_pool_over_budget_refuses_allocation_until_frames_released() {

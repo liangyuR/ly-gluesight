@@ -20,15 +20,46 @@ export interface RecordingEvidence {
 export type RecordSource = "real";
 export type HistoryScope = "real";
 
-/** 进入历史详情时的路由 state：历史列表带筛选（前后件按它导航）；其他页面（如试测）带返回目标，返回按钮回到那里。 */
-/** 历史详情的地址状态：列表筛选、返回目标；从分段与示教页返回时带回离开时的滚动位置。 */
-export type HistoryDetailState = { query?: HistoryQuery; returnTo?: { path: string; label: string }; scrollTop?: number };
+type HistoryListSelection = { query: HistoryQuery; keys: string[] };
+
+/** 历史详情的地址状态：前后件筛选、列表视图和选择、其他返回目标及详情滚动位置。 */
+export type HistoryDetailState = { query?: HistoryQuery; listView?: HistoryListView; listRecordId?: number; listSelection?: HistoryListSelection; returnTo?: { path: string; label: string; state?: object }; scrollTop?: number };
+
+export interface HistoryListView {
+  range: string;
+  groups: string[];
+  mode: string;
+  sn: string;
+  tag: string;
+  recipeId: string;
+  project: string;
+  offset: number;
+}
+
+export type RejudgeResultList = "skipReasons" | "changes";
+
+export interface RejudgeReviewState {
+  taskId: string;
+  pages: Record<RejudgeResultList, number>;
+  list: RejudgeResultList;
+  recordId: number;
+}
+
+export interface HistoryListState {
+  filter?: HistoryFilter;
+  view?: HistoryListView;
+  focusRecordId?: number;
+  selection?: HistoryListSelection;
+  rejudgeReview?: RejudgeReviewState;
+  historyNotice?: { message: string; warnings: string[] };
+}
 
 export interface HistoryQuery {
   scope?: HistoryScope;
   from?: number | null;
   to?: number | null;
   verdicts?: Verdict[];
+  includeVerdictFacets?: boolean;
   sn?: string;
   tag?: string;
   recipeId?: string | null;
@@ -96,6 +127,7 @@ export interface VerdictCounts {
 export interface HistoryPage {
   total: number;
   counts: VerdictCounts;
+  verdictFacets?: VerdictCounts;
   items: PartSummary[];
 }
 
@@ -164,6 +196,7 @@ export interface HistoryPackageExported {
 /** 历史件导出包：导入前读到的清单；duplicates 为本机已有同一 cycleId、导入时跳过的件数 */
 export interface HistoryPackagePreview {
   path: string;
+  manifestSha256: string;
   bytes: number;
   sourceProject: string;
   sourceProjectName: string;

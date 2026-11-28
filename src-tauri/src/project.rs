@@ -321,6 +321,7 @@ pub async fn project_switch(app: AppHandle, id: String) -> Result<ProjectSwitchR
     }
     let target = open_target(&data, &id)?;
     let cycle = app.state::<crate::cycle::CycleHost>();
+    let _import = cycle.recipe_import_gate.lock().await;
     let _link = cycle.link_gate.lock().await;
     let _config = cycle.config_gate.lock().await;
     check_project_switch(&switch_state(&app)?)?;

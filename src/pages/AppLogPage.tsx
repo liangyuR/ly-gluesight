@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FolderOpen, PackageOpen } from "lucide-react";
-import { Alert, Button, Card, Stack, Text } from "qing-steel";
+import { Alert, Button, Card, Select, Stack, Switch, Text } from "qing-steel";
+import { OperationStatus, useOperation, type OperationLabels } from "../features/workspace/operation";
 import { desktopAvailable, desktopCall } from "../lib/desktop";
 import { errorText } from "../lib/errors";
 import "./app-log.css";
@@ -8,6 +9,19 @@ import "./app-log.css";
 type DiagnosticsResult = { path: string; notes: string[] };
 type LogBatch = { cursor: number; lines: string[]; skipped: boolean };
 const MAX_LINES = 200;
+const diagnosticsRanges = [
+  { value: "24h", label: "最近 24 小时", days: 1 },
+  { value: "3d", label: "最近 3 天", days: 3 },
+  { value: "7d", label: "最近 7 天", days: 7 },
+  { value: "30d", label: "最近 30 天", days: 30 },
+];
+const diagnosticsLabels: OperationLabels = {
+  preparing: "正在准备诊断包",
+  saving: "正在保存诊断包",
+  cancelling: "正在取消导出",
+  cancelled: "已取消导出",
+  failed: "导出未完成",
+};
 
 function RuntimeLogStream() {
   const desktop = desktopAvailable();
@@ -95,29 +109,70 @@ function RuntimeLogStream() {
   </section>;
 }
 
-export default function AppLogPage() {
-  const [exporting, setExporting] = useState(false);
-  const [result, setResult] = useState<DiagnosticsResult | null>(null);
+function DiagnosticsExportResult({ result }: { result: DiagnosticsResult }) {
+  const pending = useRef(false);
+  const [opening, setOpening] = useState(false);
   const [error, setError] = useState("");
 
-  async function openDirectory() {
+  async function openFolder() {
+    if (pending.current) return;
+    pending.current = true;
+    setOpening(true);
     setError("");
+    try {
+      await desktopCall("reveal_path", { path: result.path });
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      pending.current = false;
+      setOpening(false);
+    }
+  }
+
+  return <>
+    <Alert tone={result.notes.length ? "warn" : "ok"} title="诊断包已导出" action={
+      <Button variant="text" size="sm" disabled={opening} onClick={openFolder}>
+        {opening ? "正在打开…" : "打开所在文件夹"}
+      </Button>
+    }>
+      <div className="mono diagnostics-export-path">{result.path}</div>
+      {result.notes.length > 0 && <ul>{result.notes.map((note, index) => <li key={index}>{note}</li>)}</ul>}
+    </Alert>
+    {error && <Alert tone="warn">打开所在文件夹失败：{error}</Alert>}
+  </>;
+}
+
+export default function AppLogPage() {
+  const operation = useOperation();
+  const exportPending = useRef(false);
+  const [exporting, setExporting] = useState(false);
+  const [result, setResult] = useState<DiagnosticsResult | null>(null);
+  const [directoryError, setDirectoryError] = useState("");
+  const [range, setRange] = useState(diagnosticsRanges[0].value);
+  const [includeImages, setIncludeImages] = useState(true);
+
+  async function openDirectory() {
+    setDirectoryError("");
     try {
       await desktopCall("app_open_log_dir");
     } catch (cause) {
-      setError(errorText(cause));
+      setDirectoryError(errorText(cause));
     }
   }
 
   async function exportDiagnostics() {
+    if (exportPending.current) return;
+    exportPending.current = true;
     setExporting(true);
     setResult(null);
-    setError("");
+    const to = Date.now();
+    const days = diagnosticsRanges.find(option => option.value === range)?.days ?? 1;
+    const request = { from: to - days * 86_400_000, to, images: includeImages ? "abnormal" : "none" };
     try {
-      setResult(await desktopCall<DiagnosticsResult>("diagnostics_export"));
-    } catch (cause) {
-      setError(errorText(cause));
+      const exported = await operation.run(taskId => desktopCall<DiagnosticsResult>("diagnostics_export", { taskId, request })).catch(() => null);
+      if (exported) setResult(exported);
     } finally {
+      exportPending.current = false;
       setExporting(false);
     }
   }
@@ -130,13 +185,13 @@ export default function AppLogPage() {
           <Button variant="filled" leadingIcon={<PackageOpen size={16} />} loading={exporting} disabled={exporting} onClick={exportDiagnostics}>
             {exporting ? "正在导出…" : "导出诊断包"}
           </Button>
+          <Select aria-label="诊断包时间范围" value={range} onValueChange={setRange} options={diagnosticsRanges} disabled={exporting} />
+          <Switch label="附带异常工件原图" checked={includeImages} onCheckedChange={setIncludeImages} disabled={exporting} />
         </Stack>
-        <Text muted>诊断包包含最近 24 小时的运行日志、PLC 通讯日志和检测记录，最多附带 20 件异常工件的原图。</Text>
-        {result && <Alert tone={result.notes.length ? "warn" : "ok"} title="诊断包已导出">
-          <div className="mono">{result.path}</div>
-          {result.notes.length > 0 && <ul>{result.notes.map((note, index) => <li key={index}>{note}</li>)}</ul>}
-        </Alert>}
-        {error && <Alert tone="ng">{error}</Alert>}
+        <Text muted>包含所选时段的运行日志、PLC 通讯日志和检测记录{includeImages ? "，最多附带 20 件异常工件的原图。" : "。"}</Text>
+        {!result && <OperationStatus operation={operation} label="导出诊断包" labels={diagnosticsLabels} />}
+        {result && <DiagnosticsExportResult key={result.path} result={result} />}
+        {directoryError && <Alert tone="ng">{directoryError}</Alert>}
       </Stack>
     </Card>
     <RuntimeLogStream />

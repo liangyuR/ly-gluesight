@@ -18,7 +18,7 @@ export interface CalibInfo {
 }
 
 /** 工位标定：标定板放在内边所在高度，软触发一帧，用 lyFlow 的 image.board_calib 求单应，存为工位标定文件。 */
-export default function CalibPanel({ cam, view=1, multiView=false, isSim, imageId, onMmPerPx, onCalibration }: { cam: number; view?:number; /** 三目拼接相机（旧配方）才标出视角；单视角相机不带“图 N”。 */ multiView?:boolean; isSim: boolean; imageId?:string; onMmPerPx?: (mmPerPx: number | null) => void; onCalibration?: (info: CalibInfo | null) => void }) {
+export default function CalibPanel({ cam, cameraId, view=1, multiView=false, isSim, imageId, onMmPerPx, onCalibration }: { cam: number; cameraId: string; view?:number; /** 三目拼接相机（旧配方）才标出视角；单视角相机不带“图 N”。 */ multiView?:boolean; isSim: boolean; imageId?:string; onMmPerPx?: (mmPerPx: number | null) => void; onCalibration?: (info: CalibInfo | null) => void }) {
   const [info, setInfo] = useState<CalibInfo | null>(null);
   const [cols, setCols] = useState(11);
   const [rows, setRows] = useState(8);
@@ -28,27 +28,28 @@ export default function CalibPanel({ cam, view=1, multiView=false, isSim, imageI
   const { show: snack } = useSnackbar();
   const [loading,setLoading]=useState(isTauri()),[loaded,setLoaded]=useState(false),[loadError,setLoadError]=useState("");
   const mounted=useRef(true),loadSerial=useRef(0),runSerial=useRef(0),pending=useRef(false);
-  const scope=JSON.stringify([cam,view,imageId,isSim]),current=useRef({cam,view,scope});current.current={cam,view,scope};
+  const target = JSON.stringify([cam, cameraId, view]);
+  const scope=JSON.stringify([target,imageId,isSim]),current=useRef({target,scope});current.current={target,scope};
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;loadSerial.current++;runSerial.current++;};},[]);
 
   const load=async()=>{
     if(!isTauri())return;
     const serial=++loadSerial.current;setLoading(true);setLoadError("");
     try{
-      const value=await invoke<CalibInfo|null>("vision_calib_info",{cam,view});
-      if(!mounted.current||serial!==loadSerial.current||(current.current.cam!==cam||current.current.view!==view))return;
+      const value=await invoke<CalibInfo|null>("vision_calib_info",{cam,id:cameraId,view});
+      if(!mounted.current||serial!==loadSerial.current||current.current.target!==target)return;
       setInfo(value);setLoaded(true);
       if(value?.pattern?.length===2){setCols(value.pattern[0]);setRows(value.pattern[1]);}
       if(value?.square!=null)setSquare(value.square);
-    }catch(e){if(mounted.current&&serial===loadSerial.current&&current.current.cam===cam&&current.current.view===view)setLoadError(String(e));}
-    finally{if(mounted.current&&serial===loadSerial.current&&current.current.cam===cam&&current.current.view===view)setLoading(false);}
+    }catch(e){if(mounted.current&&serial===loadSerial.current&&current.current.target===target)setLoadError(String(e));}
+    finally{if(mounted.current&&serial===loadSerial.current&&current.current.target===target)setLoading(false);}
   };
 
   useEffect(() => {
     setInfo(null);setLoaded(false);setLoadError("");setCols(11);setRows(8);setSquare(5);
     void load();
     return()=>{loadSerial.current++;};
-  }, [cam,view]);
+  }, [target]);
   useEffect(()=>{runSerial.current++;pending.current=false;setBusy(false);setRunError("");},[scope]);
   const mmPerPx = isSim ? 0.08 : info?.mmPerPx ?? null;
   useEffect(()=>{onMmPerPx?.(mmPerPx);},[mmPerPx,onMmPerPx]);
@@ -63,7 +64,7 @@ export default function CalibPanel({ cam, view=1, multiView=false, isSim, imageI
     setBusy(true);
     setRunError("");
     try {
-      const r = await invoke<CalibInfo>("vision_calibrate", { pattern: [cols, rows], square, cam, view, imageId });
+      const r = await invoke<CalibInfo>("vision_calibrate", { pattern: [cols, rows], square, cam, id: cameraId, view, imageId });
       if(!mounted.current||serial!==runSerial.current||current.current.scope!==scope)return;
       if(!r)throw new Error("标定没有返回有效结果");
       setInfo(r);

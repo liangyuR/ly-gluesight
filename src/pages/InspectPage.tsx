@@ -10,6 +10,8 @@ import InspectionDiagnostics, { type DiagnosticGroup } from "../features/cycle/c
 import ContextHelp from "../features/cycle/components/ContextHelp";
 import { MaintenanceToggle } from "../features/cycle/components/MaintenanceMode";
 import PartResult from "../features/cycle/components/PartResult";
+import PreviousEvidence, { usePreviousEvidence } from "../features/cycle/components/PreviousEvidence";
+import { findFrameGroup } from "../features/cycle/frameGroups";
 import { errorText } from "../lib/errors";
 import {
   cycleApi,
@@ -30,11 +32,12 @@ const viewOptions = [{ value: "image", label: "原图" }, { value: "part", label
 const noSegments: PathSegment[] = [];
 
 export default function InspectPage() {
-  const { snapshot } = useCycle();
+  const { snapshot, snapshotCurrent, snapshotError, subscriptionError, retrySnapshot } = useCycle();
   const recipes = useRecipes();
   const [view, setView] = useState<"image" | "part">("image");
   const [diagnostics, setDiagnostics] = useState<DiagnosticGroup | null>(null);
   const [seqSelection, setSeqSelection] = useState<{ scope: string; seq: number; camera?: number } | null>(null);
+  const { lastEvidence, setLastEvidence } = usePreviousEvidence();
   const [pendingRecipe, setPendingRecipe] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState("");
   const [action, setAction] = useState<"switch" | null>(null);
@@ -57,9 +60,10 @@ export default function InspectPage() {
   const burstJudgement = result?.burst ?? null;
   const burstSegments = layout && (!recipeRevision || layout.revisionId === recipeRevision) ? layout.pathSegments : noSegments;
   const burstScope = `${part?.cycleId ?? "idle"}:${part?.bundleId ?? ""}:${part?.recipeRevision ?? ""}`;
-  const latestSeq = burst?.groups.reduce<number | null>((latest, group) => latest == null || group.seq > latest ? group.seq : latest, null) ?? null;
-  const burstManual = seqSelection?.scope === burstScope && !!burst?.groups.some(group => group.seq === seqSelection.seq);
-  const burstSeq = burstManual ? seqSelection!.seq : latestSeq;
+  const manualGroup = burst && seqSelection?.scope === burstScope ? findFrameGroup(burst.groups, seqSelection.seq) : null;
+  const selectedGroup = manualGroup ?? burst?.groups.at(-1) ?? null;
+  const burstManual = manualGroup !== null;
+  const burstSeq = selectedGroup?.seq ?? null;
   const { readiness, status: readinessStatus, error: readinessError } = useReadiness(`${phase}:${snapshot?.fault ?? ""}:${snapshot?.activeRecipeId ?? ""}:${snapshot?.productSource ?? ""}:${snapshot?.alarms.length ?? 0}`);
 
   useEffect(() => {
@@ -69,12 +73,17 @@ export default function InspectPage() {
 
   const resumeFollowing = () => setSeqSelection(null);
   const selectGroup = (seq: number, camera?: number) => {
-    if (!burst?.groups.some(group => group.seq === seq)) return;
+    if (!burst || !findFrameGroup(burst.groups, seq)) return false;
     setSeqSelection({ scope: burstScope, seq, camera });
     setView("image");
+    return true;
   };
-  const canSwitch = (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
-  const switchProblem = !canSwitch ? "当前工件已开始或型号由 PLC 下发，暂时不能切换配方" : pendingRecipe && !recipes.some(recipe => recipe.id === pendingRecipe) ? "该配方已不在配方库中，请重新选择" : "";
+  const locateEvidence = (seq: number, camera?: number) => {
+    if (!selectGroup(seq, camera) || !partResult || !part) return;
+    setLastEvidence({ cycleId: part.cycleId, sn: part.sn, seq, camera, cameraName: camera == null ? undefined : part.burst.cameras[camera] });
+  };
+  const canSwitch = snapshotCurrent && (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
+  const switchProblem = !snapshotCurrent ? "实时状态未确认，暂时不能切换配方" : !canSwitch ? "当前工件已开始或型号由 PLC 下发，暂时不能切换配方" : pendingRecipe && !recipes.some(recipe => recipe.id === pendingRecipe) ? "该配方已不在配方库中，请重新选择" : "";
 
   const closeSwitch = () => {
     if (activeAction.current === "switch") return;
@@ -104,7 +113,8 @@ export default function InspectPage() {
     }
   };
 
-  const busy = !!snapshot && phase !== "IDLE" && phase !== "FAULT";
+  const busy = snapshotCurrent && phase !== "IDLE" && phase !== "FAULT";
+  const phaseLabel = snapshotCurrent ? phaseLabels[phase] : subscriptionError ? "实时状态连接失败" : snapshotError ? "状态读取失败" : "状态确认中";
   return (
     <div className="prod">
       <TitlebarContent slot="details"><div className="inspect-title-details" role="group" aria-label="当前检测信息">
@@ -129,10 +139,16 @@ export default function InspectPage() {
         </Chip>
       </div></TitlebarContent>
       <TitlebarContent slot="actions"><div className="inspect-title-actions" role="group" aria-label="在线检测操作">
-        <span className={`qs-badge prod-phase${phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
-        {snapshot && <MaintenanceToggle maintenance={snapshot.maintenance} compact />}
+        <span className={`qs-badge prod-phase${snapshotCurrent && phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{phaseLabel}</span>
+        {snapshotCurrent && snapshot && <MaintenanceToggle maintenance={snapshot.maintenance} compact />}
         <Button size="sm" variant="text" onClick={() => setDiagnostics("readiness")}>诊断</Button>
       </div></TitlebarContent>
+      {subscriptionError && <Alert tone="warn" title="在线检测实时订阅失败"
+        action={<Button size="sm" onClick={retrySnapshot}>重新连接</Button>}>
+        <div>{subscriptionError}</div>{snapshot && <div>页面保留的上次状态仅供参考。</div>}
+      </Alert>}
+      {snapshotError && <Alert tone="warn" title="在线检测状态读取失败"
+        action={<Button size="sm" onClick={retrySnapshot}>重新读取</Button>}>{snapshotError}</Alert>}
       {!!snapshot?.measurementWorkers.timedOut && <Alert tone="ng">
         测量线程超时未返回：{snapshot.measurementWorkers.timedOut} / {snapshot.measurementWorkers.capacity}，当前可用容量 {snapshot.measurementWorkers.availableCapacity}。
         {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，新到的工件无法检测。"}
@@ -140,7 +156,7 @@ export default function InspectPage() {
       {snapshot?.recordingAlarm && <Alert tone="warn">
         原图录制失败：连续 {snapshot.recordingAlarm.consecutive} 件原图未完整保存（最近 <span className="mono">{snapshot.recordingAlarm.cycleId}</span>：{snapshot.recordingAlarm.reason}）。检测与判定照常；请检查录制盘空间与录制目录写权限，下一件完整保存后自动消除。
       </Alert>}
-      <InspectionReadiness snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
+      <InspectionReadiness snapshot={snapshotCurrent ? snapshot : null} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
       <div className="prod-body">
         <div className="prod-main">
@@ -154,7 +170,7 @@ export default function InspectPage() {
             </div>
             {view === "part"
               ? <CameraSegmentOverview cameras={burst?.cameras ?? summary?.cameras ?? []} segments={burstSegments} regions={burstJudgement?.regions} />
-              : <BurstRuntimeFrame part={part} seq={burstSeq} regions={partResult?.burst?.regions} focusedCamera={burstManual ? seqSelection?.camera : undefined} />}
+              : <BurstRuntimeFrame part={part} group={selectedGroup} regions={partResult?.burst?.regions} focusedCamera={burstManual ? seqSelection?.camera : undefined} />}
           </Card>
 
           <Card>
@@ -171,7 +187,10 @@ export default function InspectPage() {
 
         <aside className="prod-side" aria-label="整件结果">
           <PartResult key={resultScope} phase={phase} result={result} part={part}
-            segments={burstSegments} onLocate={selectGroup} />
+            segments={burstSegments} onLocate={locateEvidence} />
+          {lastEvidence && lastEvidence.cycleId !== part?.cycleId && <PreviousEvidence
+            key={`${lastEvidence.cycleId}:${lastEvidence.seq}:${lastEvidence.camera ?? ""}`}
+            evidence={lastEvidence} onDismiss={() => setLastEvidence(null)} />}
           <Stats snapshot={snapshot} />
           <Progress snapshot={snapshot} result={partResult} onDiagnostics={() => setDiagnostics("capture")} />
           <Card className="prod-segments" role="region" aria-label="检测区域结果">
@@ -180,12 +199,12 @@ export default function InspectPage() {
               <ContextHelp label="区域结果说明">整件按区域（直线、弯道、未分段）分别判；每个区域写帧数、胶宽范围、胶偏或未判原因。未分段区域只跑每帧独立检测、不判胶偏。缺帧只标检测不完整，不改 OK/NG。</ContextHelp>
             </div>
             <RegionResultPanel key={resultScope} judgement={burstJudgement} segments={burstSegments} cameras={burst?.cameras ?? summary?.cameras}
-              expectedTotal={burst ? burst.expectedTotal : undefined} onSelectGroup={burst ? selectGroup : undefined} />
+              expectedTotal={burst ? burst.expectedTotal : undefined} onSelectGroup={burst ? locateEvidence : undefined} />
           </Card>
         </aside>
       </div>
 
-      {diagnostics && <InspectionDiagnostics group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={part} selectedSeq={burstSeq} />}
+      {diagnostics && <InspectionDiagnostics group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={part} regions={partResult?.burst?.regions} selectedGroup={selectedGroup} />}
       {pendingRecipe && (
         <Dialog
           open

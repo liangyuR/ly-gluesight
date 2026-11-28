@@ -8,7 +8,8 @@
 //!   `frames.jsonl`，帧原图不复制也不链接，按 `origin` 的 cycleId 经检测记录库查到录制目录再读（[`RecordingLookup`]），
 //!   录制可在任意盘；format 3 的旧轮次原图在本轮目录（硬链接或复制），本轮目录缺图时同样按来源历史件读录制原图。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::borrow::Borrow;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use super::*;
 use crate::frame_group::{loss_alarms, LossAlarm};
@@ -21,6 +22,10 @@ const FORMAT_V2: u8 = 2;
 /// 一轮的帧组序号上限：ΣN_exp 不超过 PLC Int，防止异常记录生成海量帧组。
 pub const MAX_SEQ: u64 = crate::plan::MAX_EXPECTED_TOTAL as u64;
 const FRAMES_FILE: &str = "frames.jsonl";
+const ROUND_INDEX_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
+const ROUND_INDEX_CACHE_MAX_HEADER_BYTES: usize = 1024 * 1024;
+const FRAME_AVAILABILITY_BATCH_MIN: usize = 64;
+const FRAME_AVAILABILITY_DIRECT_PREFIX: usize = 16;
 
 /// 某台相机（本轮相机下标）缺某个帧组的帧。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -219,14 +224,11 @@ fn resolve_recording(lookup: &RecordingLookup, cycle_id: &str) -> Result<PathBuf
 
 /// round.json 文本是不是段配方轮次（format 2、3 或 4）。
 pub(super) fn is_v2(text: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(text)
-        .ok()
-        .and_then(|v| v.get("format").and_then(serde_json::Value::as_u64))
-        .is_some_and(|format| {
-            [FORMAT, FORMAT_V3, FORMAT_V2]
-                .iter()
-                .any(|&f| u64::from(f) == format)
-        })
+    crate::history_metadata::round_format(text.as_bytes()).is_some_and(|format| {
+        [FORMAT, FORMAT_V3, FORMAT_V2]
+            .iter()
+            .any(|&f| u64::from(f) == format)
+    })
 }
 
 /// 由帧组数与各相机已写盘的 seq 得出的统计。
@@ -279,21 +281,34 @@ fn apply(round: &mut CaptureRoundV2, summary: Summary) {
 
 pub struct BurstFrameIndex {
     dir: PathBuf,
-    round: CaptureRoundV2,
-    saved: BTreeMap<String, BTreeSet<u64>>,
+    validated: Arc<ValidatedRoundIndex>,
     lookup: RecordingLookup,
     /// 来源历史件的录制目录，第一次要读录制原图时解析
     recording: std::sync::OnceLock<Result<PathBuf, String>>,
 }
 
+struct ValidatedRoundIndex {
+    round: CaptureRoundV2,
+    saved: BTreeMap<String, BTreeSet<u64>>,
+}
+
+pub(super) struct CachedRoundIndex {
+    dir: PathBuf,
+    round_path: PathBuf,
+    frames_path: PathBuf,
+    round_bytes: Box<[u8]>,
+    frames_bytes: Box<[u8]>,
+    validated: Arc<ValidatedRoundIndex>,
+}
+
 impl BurstFrameIndex {
     pub fn round(&self) -> &CaptureRoundV2 {
-        &self.round
+        &self.validated.round
     }
 
     fn recording(&self) -> Result<&Path, String> {
         let cycle = self
-            .round
+            .round()
             .history_cycle()
             .ok_or("示教件原图不在本轮目录，轮次也没有来源历史件")?;
         self.recording
@@ -304,6 +319,7 @@ impl BurstFrameIndex {
 
     fn check_saved(&self, camera_id: &str, seq: u64) -> Result<(), String> {
         let saved = self
+            .validated
             .saved
             .get(camera_id)
             .ok_or_else(|| format!("采集轮次没有相机 {camera_id}"))?;
@@ -316,7 +332,7 @@ impl BurstFrameIndex {
     /// 本轮目录里的原图（旧轮次）；不在时为 None。
     fn local(&self, camera_id: &str, seq: u64) -> Option<PathBuf> {
         let path = self.dir.join(camera_id).join(frame_file(seq));
-        (!self.round.references_recording() && path.is_file()).then_some(path)
+        (!self.round().references_recording() && path.is_file()).then_some(path)
     }
 
     /// 某台相机第 seq 帧原图的路径：format 4 在来源历史件的录制目录里；旧轮次在本轮目录，本轮目录缺图时改读录制原图。
@@ -351,16 +367,28 @@ impl BurstFrameIndex {
 
     /// 有帧的原图读不到时给出原因（录制已清理、记录不在本机等）；只查文件在不在，不读图。
     pub fn unavailable(&self) -> Option<String> {
-        for (camera_id, seqs) in &self.saved {
+        let recording_only = self.round().references_recording();
+        let frame_count: usize = self.validated.saved.values().map(BTreeSet::len).sum();
+        let mut source = FrameAvailability::default();
+        for (camera_id, seqs) in &self.validated.saved {
+            let local_dir = (!recording_only).then(|| self.dir.join(camera_id));
+            let mut local = FrameAvailability::default();
             for &seq in seqs {
-                if self.local(camera_id, seq).is_some() {
+                if local_dir.as_ref().is_some_and(|dir| {
+                    local.exists(dir, frame_file(seq), seqs.len(), OriginalFiles::Local)
+                }) {
                     continue;
                 }
                 let dir = match self.recording() {
                     Ok(dir) => dir,
                     Err(error) => return Some(error),
                 };
-                if !crate::image_file::exists(&dir.join(recording_file(camera_id, seq))) {
+                if !source.exists(
+                    dir,
+                    recording_file(camera_id, seq),
+                    frame_count,
+                    OriginalFiles::Recording,
+                ) {
                     return Some(format!(
                         "示教件原图不可用：录制里缺相机 {camera_id} 第 {seq} 帧组的原图"
                     ));
@@ -369,6 +397,77 @@ impl BurstFrameIndex {
         }
         None
     }
+}
+
+enum OriginalFiles {
+    Local,
+    Recording,
+}
+
+#[derive(Default)]
+struct FrameAvailability {
+    checked: usize,
+    present: Option<HashSet<String>>,
+}
+
+impl FrameAvailability {
+    fn exists(
+        &mut self,
+        dir: &Path,
+        pgm: String,
+        frame_count: usize,
+        files: OriginalFiles,
+    ) -> bool {
+        let include_gsr = matches!(files, OriginalFiles::Recording);
+        if frame_count > FRAME_AVAILABILITY_BATCH_MIN
+            && self.checked == FRAME_AVAILABILITY_DIRECT_PREFIX
+        {
+            self.present = frame_file_stems(dir, frame_count, include_gsr);
+        }
+        self.checked += 1;
+        if self
+            .present
+            .as_ref()
+            .zip(pgm.strip_suffix(".pgm"))
+            .is_some_and(|(stems, stem)| stems.contains(stem))
+        {
+            return true;
+        }
+        let path = dir.join(pgm);
+        if include_gsr {
+            crate::image_file::exists(&path)
+        } else {
+            path.is_file()
+        }
+    }
+}
+
+fn frame_file_stems(dir: &Path, frame_count: usize, include_gsr: bool) -> Option<HashSet<String>> {
+    let mut present = HashSet::new();
+    let limit = frame_count.saturating_mul(2).saturating_add(32);
+    for entry in std::fs::read_dir(dir).ok()?.take(limit).flatten() {
+        let Ok(mut name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if !(name.ends_with(".pgm") || include_gsr && name.ends_with(".gsr")) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                continue;
+            }
+        }
+        if metadata.is_file() {
+            name.truncate(name.len() - 4);
+            present.insert(name);
+        }
+    }
+    Some(present)
 }
 
 impl RecipeCaptureHost {
@@ -401,9 +500,9 @@ impl RecipeCaptureHost {
     /// 一轮的笔结构（D-SB-62）：按帧记录里每帧的时间戳重算。
     pub fn burst_passes(&self, round_id: &str) -> Result<Vec<u32>, String> {
         let (round, lines) = self.load_burst(round_id, true)?;
+        let lines = lines.unwrap_or_default();
         Ok(crate::passes::from_times(
             lines
-                .unwrap_or_default()
                 .iter()
                 .map(|line| (line.camera, line.seq, line.ts as f64)),
             round.group_count,
@@ -426,23 +525,57 @@ impl RecipeCaptureHost {
     }
 
     pub fn burst_frame_index(&self, round_id: &str) -> Result<BurstFrameIndex, String> {
-        let dir = self.safe_round_path(round_id)?;
-        let (round, lines) = self.load_burst(round_id, true)?;
-        let mut saved: BTreeMap<String, BTreeSet<u64>> = round
-            .camera_ids()
-            .into_iter()
-            .map(|id| (id, BTreeSet::new()))
-            .collect();
-        for line in lines.unwrap_or_default() {
-            saved
-                .get_mut(&round.cameras[line.camera].camera_id)
-                .unwrap()
-                .insert(line.seq);
-        }
+        let (dir, round_path) = self.checked_round_path(round_id)?;
+        let round_bytes = std::fs::read(&round_path).map_err(|e| e.to_string())?;
+        let cached = self.cached_index.lock().unwrap().clone();
+        let cached = cached.filter(|entry| {
+            entry.dir == dir
+                && entry.round_path == round_path
+                && entry.validated.round.round_id == round_id
+                && entry.round_bytes.as_ref() == round_bytes.as_slice()
+        });
+        let parsed_round = if cached.is_none() {
+            Some(parse_round(metadata_text(&round_bytes)?)?)
+        } else {
+            None
+        };
+        let frames_path = checked_frames_path(&dir)?;
+        let frames_bytes = std::fs::read(&frames_path).map_err(|e| e.to_string())?;
+        let validated = if let Some(entry) = cached.filter(|entry| {
+            entry.frames_path == frames_path
+                && entry.frames_bytes.as_ref() == frames_bytes.as_slice()
+        }) {
+            Arc::clone(&entry.validated)
+        } else {
+            let round = match parsed_round {
+                Some(round) => round,
+                None => parse_round(metadata_text(&round_bytes)?)?,
+            };
+            let lines = frame_lines(metadata_text(&frames_bytes)?);
+            let saved =
+                validate_record(round_id, &round, Some(lines))?.ok_or("采集帧记录不存在")?;
+            let saved = round.camera_ids().into_iter().zip(saved).collect();
+            let validated = Arc::new(ValidatedRoundIndex { round, saved });
+            if round_bytes.len() <= ROUND_INDEX_CACHE_MAX_HEADER_BYTES
+                && round_bytes.len().saturating_add(frames_bytes.len())
+                    <= ROUND_INDEX_CACHE_MAX_BYTES
+            {
+                let entry = Arc::new(CachedRoundIndex {
+                    dir: dir.clone(),
+                    round_path,
+                    frames_path,
+                    round_bytes: round_bytes.into_boxed_slice(),
+                    frames_bytes: frames_bytes.into_boxed_slice(),
+                    validated: Arc::clone(&validated),
+                });
+                let previous = self.cached_index.lock().unwrap().replace(entry);
+                drop(previous);
+            }
+            validated
+        };
         Ok(BurstFrameIndex {
             dir,
-            round,
-            saved,
+            validated,
             lookup: self.recordings.clone(),
             recording: std::sync::OnceLock::new(),
         })
@@ -465,15 +598,15 @@ impl RecipeCaptureHost {
             return Err("缩略图起始帧组须从 1 起，每批须为 1–32 组".into());
         }
         let index = self.burst_frame_index(round_id)?;
-        if !index.saved.contains_key(camera_id) {
+        if !index.validated.saved.contains_key(camera_id) {
             return Err(format!("采集轮次没有相机 {camera_id}"));
         }
-        if start_seq > index.round.group_count {
+        if start_seq > index.round().group_count {
             return Err("缩略图起始帧组超出本件范围".into());
         }
         let end = start_seq
             .saturating_add(u64::from(count) - 1)
-            .min(index.round.group_count);
+            .min(index.round().group_count);
         let frames: Vec<Option<FrameImage>> = (start_seq..=end)
             .map(|seq| {
                 index
@@ -496,44 +629,116 @@ impl RecipeCaptureHost {
         round_id: &str,
         deep: bool,
     ) -> Result<(CaptureRoundV2, Option<Vec<FrameLine>>), String> {
+        let (dir, text) = self.read_round_text(round_id)?;
+        Self::load_burst_text(round_id, &dir, &text, deep)
+    }
+
+    pub(crate) fn load_supported_burst(
+        &self,
+        round_id: &str,
+        deep: bool,
+    ) -> Result<CaptureRoundV2, String> {
+        let (dir, text) = self.read_round_text(round_id)?;
+        if !is_v2(&text) {
+            return Err(format!(
+                "采集轮次 {round_id} 是旧拍照点配方的采集记录，已停用"
+            ));
+        }
+        Self::load_burst_text(round_id, &dir, &text, deep).map(|(round, _)| round)
+    }
+
+    fn read_round_text(&self, round_id: &str) -> Result<(PathBuf, String), String> {
+        let (dir, path) = self.checked_round_path(round_id)?;
+        let text = crate::fsio::read_text(&path).map_err(|e| e.to_string())?;
+        Ok((dir, text))
+    }
+
+    fn checked_round_path(&self, round_id: &str) -> Result<(PathBuf, PathBuf), String> {
         let dir = self.safe_round_path(round_id)?;
         let path = std::fs::canonicalize(dir.join("round.json")).map_err(|e| e.to_string())?;
         if !path.starts_with(&dir) {
             return Err("采集记录路径越出本轮目录".into());
         }
-        let round: CaptureRoundV2 =
-            serde_json::from_str(&crate::fsio::read_text(&path).map_err(|e| e.to_string())?)
-                .map_err(|e| format!("采集记录无法读取：{e}"))?;
+        Ok((dir, path))
+    }
+
+    fn load_burst_text(
+        round_id: &str,
+        dir: &Path,
+        text: &str,
+        deep: bool,
+    ) -> Result<(CaptureRoundV2, Option<Vec<FrameLine>>), String> {
+        let round = parse_round(text)?;
         let lines = if deep {
-            let path = std::fs::canonicalize(dir.join(FRAMES_FILE))
-                .map_err(|e| format!("采集帧记录不存在：{e}"))?;
-            if !path.starts_with(&dir) {
-                return Err("采集帧记录路径越出本轮目录".into());
-            }
-            let text = crate::fsio::read_text(&path).map_err(|e| e.to_string())?;
-            Some(
-                text.lines()
-                    .map(|line| {
-                        serde_json::from_str::<FrameLine>(line)
-                            .map_err(|e| format!("采集帧记录无法读取：{e}"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
+            let text =
+                crate::fsio::read_text(&checked_frames_path(dir)?).map_err(|e| e.to_string())?;
+            Some(frame_lines(&text).collect::<Result<Vec<_>, _>>()?)
         } else {
             None
         };
-        validate_record(round_id, &round, lines.as_deref())?;
+        let _ = validate_record(
+            round_id,
+            &round,
+            lines.as_ref().map(|lines| lines.iter().map(Ok)),
+        )?;
         Ok((round, lines))
     }
 }
 
+fn checked_frames_path(dir: &Path) -> Result<PathBuf, String> {
+    let path = std::fs::canonicalize(dir.join(FRAMES_FILE))
+        .map_err(|e| format!("采集帧记录不存在：{e}"))?;
+    if !path.starts_with(dir) {
+        return Err("采集帧记录路径越出本轮目录".into());
+    }
+    Ok(path)
+}
+
+fn metadata_text(bytes: &[u8]) -> Result<&str, String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+    Ok(text.strip_prefix('\u{feff}').unwrap_or(text))
+}
+
+fn parse_round(text: &str) -> Result<CaptureRoundV2, String> {
+    serde_json::from_str(text).map_err(|e| format!("采集记录无法读取：{e}"))
+}
+
+fn frame_lines(text: &str) -> impl Iterator<Item = Result<FrameLine, String>> + '_ {
+    text.lines()
+        .map(|line| serde_json::from_str(line).map_err(|e| format!("采集帧记录无法读取：{e}")))
+}
+
 /// 核对新轮次记录：身份、相机、统计自洽、各状态应有的字段；给了 frames.jsonl 时逐行核对路径、相机、seq 与帧计数，
 /// 完整轮次还要求统计与 frames.jsonl 一致（防止改写记录伪造帧或把图像指到别处）。
-fn validate_record(
+fn validate_record<F: Borrow<FrameLine>>(
     expected_id: &str,
     round: &CaptureRoundV2,
-    lines: Option<&[FrameLine]>,
-) -> Result<(), String> {
+    lines: Option<impl IntoIterator<Item = Result<F, String>>>,
+) -> Result<Option<Vec<BTreeSet<u64>>>, String> {
+    let metadata = validate_round_metadata(expected_id, round);
+    let Some(lines) = lines else {
+        metadata?;
+        return Ok(None);
+    };
+    let mut checked =
+        metadata.map(|_| (vec![BTreeSet::new(); round.cameras.len()], BTreeMap::new()));
+    for line in lines {
+        let line = line?;
+        // 留下首个校验错误，继续解码余行，保留 JSONL 解码错误优先的顺序。
+        if let Ok((saved, baselines)) = &mut checked {
+            if let Err(error) = validate_frame_line(round, line.borrow(), saved, baselines) {
+                checked = Err(error);
+            }
+        }
+    }
+    let (saved, _) = checked?;
+    if round.state == CaptureState::Complete && !matches_complete_round(round, &saved) {
+        return Err("完整采集的统计与已写盘的帧不一致".into());
+    }
+    Ok(Some(saved))
+}
+
+fn validate_round_metadata(expected_id: &str, round: &CaptureRoundV2) -> Result<(), String> {
     let cameras = &round.cameras;
     let n = cameras.len();
     let format_ok = (round.format == FORMAT && round.history_cycle().is_some())
@@ -552,33 +757,35 @@ fn validate_record(
     {
         return Err("采集记录身份或相机无效".into());
     }
+    let mut missing_counts = [0u64; MAX_CAMERAS];
     let missing_ok = round
         .missing_frames
         .windows(2)
         .all(|w| (w[0].seq, w[0].camera) < (w[1].seq, w[1].camera))
-        && round
-            .missing_frames
-            .iter()
-            .all(|m| m.camera < n && (1..=round.group_count).contains(&m.seq));
-    let mut incomplete: Vec<u64> = round.missing_frames.iter().map(|m| m.seq).collect();
-    incomplete.dedup();
+        && round.missing_frames.iter().all(|m| {
+            if m.camera >= n || !(1..=round.group_count).contains(&m.seq) {
+                return false;
+            }
+            missing_counts[m.camera] += 1;
+            true
+        });
+    let incomplete = round
+        .missing_frames
+        .chunk_by(|a, b| a.seq == b.seq)
+        .map(|group| group[0].seq);
     if round.group_count > MAX_SEQ
         || round.camera_frames.len() != n
         || !missing_ok
-        || incomplete != round.incomplete_groups
+        || !incomplete.eq(round.incomplete_groups.iter().copied())
         || cameras
             .iter()
             .zip(&round.camera_frames)
             .any(|(c, &frames)| c.received_count != frames)
-        || round.camera_frames.iter().enumerate().any(|(i, &frames)| {
-            frames as u64
-                + round
-                    .missing_frames
-                    .iter()
-                    .filter(|m| m.camera == i)
-                    .count() as u64
-                != round.group_count
-        })
+        || round
+            .camera_frames
+            .iter()
+            .zip(missing_counts)
+            .any(|(&frames, missing)| u64::from(frames) + missing != round.group_count)
         || round.loss_alarms != loss_alarms(&round.camera_frames)
     {
         return Err("采集记录的帧组、缺帧或丢帧告警统计不自洽".into());
@@ -630,45 +837,60 @@ fn validate_record(
     if !terminal_ok {
         return Err("采集记录的状态与 PLC 开始、结束或失败原因不一致".into());
     }
-    let Some(lines) = lines else { return Ok(()) };
-    let mut saved = vec![BTreeSet::new(); n];
-    let mut baselines: BTreeMap<usize, u64> = BTreeMap::new();
-    for line in lines {
-        let camera = cameras
-            .get(line.camera)
-            .ok_or("采集帧记录引用了本轮之外的相机")?;
-        if !(1..=MAX_SEQ).contains(&line.seq) || line.width == 0 || line.height == 0 {
-            return Err("采集帧记录的帧组序号或尺寸无效".into());
-        }
-        if line.path != line_path(round, &camera.camera_id, line.seq) {
-            return Err("采集帧记录的图像路径与轮次目录不一致".into());
-        }
-        if !saved[line.camera].insert(line.seq) {
-            return Err("采集帧记录重复".into());
-        }
-        let baseline = line
-            .frame_counter
-            .checked_sub(line.seq)
-            .ok_or("采集帧记录的帧计数小于帧组序号")?;
-        if *baselines.entry(line.camera).or_insert(baseline) != baseline {
-            return Err(format!(
-                "相机 {} 的帧计数与帧组序号对不上",
-                camera.camera_id
-            ));
-        }
+    Ok(())
+}
+
+fn validate_frame_line(
+    round: &CaptureRoundV2,
+    line: &FrameLine,
+    saved: &mut [BTreeSet<u64>],
+    baselines: &mut BTreeMap<usize, u64>,
+) -> Result<(), String> {
+    let camera = round
+        .cameras
+        .get(line.camera)
+        .ok_or("采集帧记录引用了本轮之外的相机")?;
+    if !(1..=MAX_SEQ).contains(&line.seq) || line.width == 0 || line.height == 0 {
+        return Err("采集帧记录的帧组序号或尺寸无效".into());
     }
-    if round.state == CaptureState::Complete {
-        let expected = summarize(round.group_count, &saved);
-        if saved
-            .iter()
-            .any(|s| s.last().is_some_and(|&seq| seq > round.group_count))
-            || expected.camera_frames != round.camera_frames
-            || expected.missing_frames != round.missing_frames
-        {
-            return Err("完整采集的统计与已写盘的帧不一致".into());
-        }
+    if line.path != line_path(round, &camera.camera_id, line.seq) {
+        return Err("采集帧记录的图像路径与轮次目录不一致".into());
+    }
+    if !saved[line.camera].insert(line.seq) {
+        return Err("采集帧记录重复".into());
+    }
+    let baseline = line
+        .frame_counter
+        .checked_sub(line.seq)
+        .ok_or("采集帧记录的帧计数小于帧组序号")?;
+    if *baselines.entry(line.camera).or_insert(baseline) != baseline {
+        return Err(format!(
+            "相机 {} 的帧计数与帧组序号对不上",
+            camera.camera_id
+        ));
     }
     Ok(())
+}
+
+fn matches_complete_round(round: &CaptureRoundV2, saved: &[BTreeSet<u64>]) -> bool {
+    if saved
+        .iter()
+        .zip(&round.camera_frames)
+        .any(|(seqs, &count)| {
+            seqs.len() != count as usize || seqs.last().is_some_and(|&seq| seq > round.group_count)
+        })
+    {
+        return false;
+    }
+    // 每台相机的实收与缺帧数已覆盖全轮，核对两个集合互斥即可。
+    let mut recorded: Vec<_> = saved.iter().map(|seqs| seqs.iter().peekable()).collect();
+    round.missing_frames.iter().all(|missing| {
+        let seqs = &mut recorded[missing.camera];
+        while seqs.peek().is_some_and(|&&seq| seq < missing.seq) {
+            seqs.next();
+        }
+        seqs.peek().is_none_or(|&&seq| seq != missing.seq)
+    })
 }
 
 /// 启动时恢复：进行中的轮次按 frames.jsonl 重算统计（容忍末行写了一半），判为应用退出中断。

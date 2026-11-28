@@ -201,12 +201,12 @@ fn part_larger_than_old_4mb_event_limit_then_written_with_every_frame() {
             frame_counter: Some(seq),
             trigger_counter: Some(seq),
             region: None,
-            metrics: Some(crate::burst_judge::FrameMetrics {
+            metrics: Some(Arc::new(crate::burst_judge::FrameMetrics {
                 widths: (0..200)
                     .map(|station| Some(3.5 + (seq as f32 * 0.37 + station as f32 * 0.0137) % 1.0))
                     .collect(),
                 ..crate::store::burst_fixture::measured(camera, seq, 4.0)
-            }),
+            })),
             raw_file: None,
         })
         .collect();

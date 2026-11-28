@@ -24,7 +24,7 @@ beforeEach(() => {
     if (command === "plc_get_config") return configWithHandshakePoint();
     if (command === "plc_get_status") return { state: "connected", message: "已连接", pollCount: 0, errorCount: 0 };
     if (command === "plc_get_values") return {};
-    if (command === "cycle_snapshot") return { phase: "IDLE", plcLocked: false };
+    if (command === "cycle_control_state") return { productionBusy: false, plcLocked: false, plcHandshake: null, maintenance: null };
     if (command === "plc_check_address") return "地址有效";
   });
 });

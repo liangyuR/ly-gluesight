@@ -1,6 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Bug, Camera, Cable, ChevronRight, FlaskConical, GitBranch, Play, RefreshCw, ScanEye, Wrench, type LucideIcon } from "lucide-react";
+import { Bug, Camera, Cable, ChevronRight, FlaskConical, GitBranch, LoaderCircle, Play, RefreshCw, ScanEye, Wrench, type LucideIcon } from "lucide-react";
 import { Alert, Card, Chip, Heading, IconButton, Stack, StatusBadge } from "qing-steel";
 import { cameraApi } from "../features/camera";
 import { linkStateLabels, plcApi, subscribe } from "../features/plc";
@@ -11,27 +11,45 @@ import { errorText } from "../lib/errors";
 import "./operation-guide.css";
 
 type Resource<T> = { data: T | null; error: string; loading: boolean };
-function useOverviewResource<T>(request: () => Promise<T>, refresh: number, interval = 0) {
+function useOverviewResource<T>(request: () => Promise<T>, interval = 0) {
   const [state, setState] = useState<Resource<T>>({ data: null, error: "", loading: true });
+  const refreshRef = useRef<(() => void) | null>(null);
+  const refresh = useCallback(() => refreshRef.current?.(), []);
   useEffect(() => {
     if (!desktopAvailable()) return;
-    let alive = true, pending = false;
-    const load = async () => {
-      if (pending) return;
+    let alive = true, pending = false, queued = false;
+    const load = async (requested: boolean) => {
+      if (!alive) return;
+      if (pending) {
+        queued ||= requested;
+        return;
+      }
       pending = true;
       try {
         const data = await request();
-        if (alive) setState({ data, error: "", loading: false });
+        if (alive && !queued) setState({ data, error: "", loading: false });
       } catch (e) {
-        if (alive) setState({ data: null, error: errorText(e), loading: false });
-      } finally { pending = false; }
+        if (alive && !queued) setState({ data: null, error: errorText(e), loading: false });
+      } finally {
+        pending = false;
+        if (queued) {
+          queued = false;
+          void load(false);
+        }
+      }
     };
-    setState({ data: null, error: "", loading: true });
-    void load();
-    const timer = interval ? setInterval(() => void load(), interval) : undefined;
-    return () => { alive = false; clearInterval(timer); };
-  }, [request, refresh, interval]);
-  return state;
+    refreshRef.current = () => {
+      setState(previous => previous.loading ? previous : { ...previous, loading: true });
+      void load(true);
+    };
+    const timer = interval ? setInterval(() => void load(false), interval) : undefined;
+    return () => {
+      alive = false;
+      refreshRef.current = null;
+      clearInterval(timer);
+    };
+  }, [request, interval]);
+  return [state, refresh] as const;
 }
 function unavailable(state: Resource<unknown>) {
   return !desktopAvailable() ? "需桌面后端" : state.error ? "读取失败" : state.loading ? "读取中…" : "状态未提供";
@@ -55,12 +73,19 @@ const journeys: { title: string; detail: string; icon: LucideIcon; action: strin
 ];
 
 export default function OperationGuidePage() {
-  const [refresh, setRefresh] = useState(0);
-  useEffect(() => subscribe("workspace://changed", () => setRefresh(value => value + 1)), []);
-  const cameras = useOverviewResource(cameraApi.rigStatus, refresh, 5000);
-  const plc = useOverviewResource(plcApi.getStatus, refresh, 5000);
-  const recipes = useOverviewResource(recipeApi.list, refresh);
-  const drafts = useOverviewResource(workspaceApi.list, refresh);
+  const [cameras, refreshCameras] = useOverviewResource(cameraApi.rigStatus, 5000);
+  const [plc, refreshPlc] = useOverviewResource(plcApi.getStatus, 5000);
+  const [recipes, refreshRecipes] = useOverviewResource(recipeApi.list);
+  const [drafts, refreshDrafts] = useOverviewResource(workspaceApi.list);
+  const refreshCatalog = useCallback(() => { refreshRecipes(); refreshDrafts(); }, [refreshRecipes, refreshDrafts]);
+  useEffect(() => {
+    refreshCameras();
+    refreshPlc();
+    return subscribe("workspace://changed", refreshCatalog, undefined, refreshCatalog);
+  }, [refreshCameras, refreshPlc, refreshCatalog]);
+  const refreshAll = () => { refreshCameras(); refreshPlc(); refreshCatalog(); };
+  const desktop = desktopAvailable();
+  const refreshing = desktop && (cameras.loading || plc.loading || recipes.loading || drafts.loading);
   const ready = cameras.data?.filter(camera => camera.ready).length;
   const cameraLabel = cameras.data ? cameras.data.length ? `${ready}/${cameras.data.length} 设备就绪` : "未配置相机" : unavailable(cameras);
   const pending = drafts.data?.filter(draft => draft.publish.state === "waiting").length;
@@ -68,7 +93,10 @@ export default function OperationGuidePage() {
   const plcMessage = plc.data?.message?.trim();
   const workflows = journeys;
   return <div className="guide-page">
-    <div className="guide-toolbar"><div><IconButton variant="text" aria-label="刷新总览状态" disabled={!desktopAvailable()} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={17} /></IconButton></div></div>
+    <div className="guide-toolbar"><div><IconButton variant="text" aria-label="刷新总览状态"
+      title={refreshing ? "正在刷新总览状态" : "刷新总览状态"} aria-busy={refreshing} disabled={!desktop} onClick={refreshAll}>
+      {refreshing ? <LoaderCircle size={17} /> : <RefreshCw size={17} />}
+    </IconButton></div></div>
     <div className="guide-status-grid">
       <StatusCard title="采集设备" icon={Camera} status={<StatusBadge tone={cameras.data?.length && ready === cameras.data.length ? "ok" : "off"}>{cameraLabel}</StatusBadge>} links={[["相机", "/camera"], ["查看标定", "/camera/calibration"]]}>
         <div className="guide-camera-list">{cameras.data?.map(camera => <div className="guide-value" key={camera.id}><span>{camera.name}</span><strong>{camera.ready ? "设备就绪" : camera.released ? "已释放" : "未就绪"}</strong></div>)}</div>

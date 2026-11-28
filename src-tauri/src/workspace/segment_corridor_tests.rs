@@ -1,4 +1,7 @@
-use super::burst::{apply_segment_teaching, CameraTeaching};
+use super::burst::{
+    apply_segment_teaching, calibration_corridors, calibration_frame_segment, preview_graphs,
+    CameraTeaching,
+};
 use super::burst_tests::{burst_workspace, capture_round, DEVICE};
 use super::capture_review::{apply_capture_review, CaptureReviewEdit};
 use super::*;
@@ -33,6 +36,59 @@ fn workspace() -> (Workspace, Vec<String>) {
     (w, cameras)
 }
 
+#[test]
+fn calibration_frame_uses_the_confirmed_cut_and_detection_camera() {
+    let (w, cameras) = workspace();
+    for (camera, seq, expected) in [
+        (0, 10, Some(1)),
+        (0, 11, Some(2)),
+        (0, 20, Some(2)),
+        (1, 20, None),
+        (1, 21, Some(3)),
+        (1, GROUPS, Some(3)),
+    ] {
+        assert_eq!(
+            calibration_frame_segment(&w, "confirmed", GROUPS, &cameras[camera], seq).unwrap(),
+            (camera, expected)
+        );
+    }
+}
+
+#[test]
+fn calibration_frame_rejects_unconfirmed_multi_segment_round() {
+    let (w, cameras) = workspace();
+    assert!(calibration_frame_segment(&w, "draft", GROUPS, &cameras[1], 11).is_err());
+}
+
+#[test]
+fn calibration_frame_in_a_single_segment_needs_no_confirmed_cut() {
+    let w = burst_workspace(&[Straight]);
+    assert_eq!(
+        calibration_frame_segment(&w, "round", GROUPS, &w.doc.plan_cameras()[0], GROUPS).unwrap(),
+        (0, Some(1))
+    );
+}
+
+#[test]
+fn whole_round_calibration_keeps_original_frame_positions_for_each_camera() {
+    let mut w = burst_workspace(&[Straight, Corner, Straight]);
+    let cameras = w.doc.plan_cameras();
+    let mut doc = w.doc.clone();
+    doc.segments[1].cameras = vec![cameras[1].clone()];
+    doc.segments[2].skip = true;
+    update_doc(&mut w, doc).unwrap();
+    let round = capture_round("confirmed", &w.doc, GROUPS, DEVICE, &[]);
+    apply_capture_review(&mut w, &round, CaptureReviewEdit::Save(vec![6, 14])).unwrap();
+    apply_capture_review(&mut w, &round, CaptureReviewEdit::Confirm).unwrap();
+
+    let first_and_third = [vec![Some(1); 6], vec![None; 24]].concat();
+    let second = [vec![Some(1); 6], vec![Some(2); 8], vec![None; 16]].concat();
+    assert_eq!(
+        calibration_corridors(&w, &round.round_id, GROUPS).unwrap(),
+        [first_and_third.clone(), second, first_and_third]
+    );
+}
+
 /// 在已确认轮次第 `segment` 段中间选示教帧（100×100）并保存走廊。
 fn with_corridor(w: &mut Workspace, camera: &str, segment: u32, corridor: Vec<[f32; 2]>) {
     apply_segment_teaching(
@@ -63,6 +119,20 @@ fn with_corridor(w: &mut Workspace, camera: &str, segment: u32, corridor: Vec<[f
             measure: None,
         });
     update_doc(w, doc).unwrap();
+}
+
+#[test]
+fn preview_can_build_taught_camera_when_other_combinations_are_unavailable() {
+    let (mut w, cameras) = workspace();
+    with_corridor(&mut w, &cameras[0], 1, vec![[20.0, 50.0], [75.0, 50.0]]);
+    with_corridor(&mut w, &cameras[1], 3, vec![[20.0, 50.0], [75.0, 50.0]]);
+    let mut recipe = w.doc.build().unwrap();
+    recipe.inspect[0].mm_per_px = None;
+
+    let selected = preview_graphs(&w, &recipe, 1, 3).unwrap();
+    assert!(selected.get(1, 3).is_some());
+    assert!(preview_graphs(&w, &recipe, 0, 1).is_err());
+    assert!(preview_graphs(&w, &recipe, 2, 1).is_err());
 }
 
 #[test]

@@ -288,16 +288,18 @@ pub struct PieceView {
     pub images_unavailable: Option<String>,
 }
 
-/// 示教件的视图；还没选示教件，或它的轮次已不在本配方完整的轮次里时为空。
-pub(super) fn piece_views(w: &Workspace, rounds: &[CaptureSummary]) -> Vec<PieceView> {
+pub(super) fn plan_pieces_for(capture: &RecipeCaptureHost, w: &Workspace) -> Vec<PieceView> {
     let Some(piece) = w.teaching_piece.as_ref() else {
         return Vec::new();
     };
-    let Some(round) = rounds.iter().find(|r| r.round_id == piece.round_id) else {
+    let Ok(round) = capture.load_supported_burst(&piece.round_id, false) else {
         return Vec::new();
     };
+    if round.recipe_id != w.doc.id || round.state != CaptureState::Complete {
+        return Vec::new();
+    }
     let review = w.capture_review.rounds.get(&round.round_id);
-    let group_count = review.map_or(u64::from(round.received_count), |v| v.group_count);
+    let group_count = review.map_or(round.group_count, |v| v.group_count);
     let state = match review {
         None => PieceReview::None,
         Some(v) if v.status == ReviewStatus::Confirmed => {
@@ -310,8 +312,11 @@ pub(super) fn piece_views(w: &Workspace, rounds: &[CaptureSummary]) -> Vec<Piece
         Some(v) if v.status == ReviewStatus::Stale => PieceReview::Stale,
         Some(_) => PieceReview::Draft,
     };
+    let images_unavailable = capture
+        .images_unavailable(&round.round_id)
+        .unwrap_or_else(|e| Some(e));
     vec![PieceView {
-        round_id: round.round_id.clone(),
+        round_id: round.round_id,
         record_id: piece.record_id,
         cycle_id: piece.cycle_id.clone(),
         sn: piece.sn.clone(),
@@ -325,23 +330,14 @@ pub(super) fn piece_views(w: &Workspace, rounds: &[CaptureSummary]) -> Vec<Piece
         excluded_groups: review.map_or(0, |v| {
             u32::try_from(v.excluded_groups.len()).unwrap_or(u32::MAX)
         }),
-        images_unavailable: None,
+        images_unavailable,
     }]
 }
 
 /// 候选视图里的示教件。
 pub(super) fn plan_pieces(app: &AppHandle, w: &Workspace) -> Vec<PieceView> {
     let cycle = app.state::<CycleHost>();
-    let capture = cycle.camera.recipe_capture();
-    let mut pieces = piece_rounds(capture, w)
-        .map(|rounds| piece_views(w, &rounds))
-        .unwrap_or_default();
-    for piece in &mut pieces {
-        piece.images_unavailable = capture
-            .images_unavailable(&piece.round_id)
-            .unwrap_or_else(|e| Some(e));
-    }
-    pieces
+    plan_pieces_for(cycle.camera.recipe_capture(), w)
 }
 
 /// 删除旧流程候选的目录内容（RB-5）：保留 `published/` 发布归档，生产配方照常运行；目录空了一并删除。
@@ -518,12 +514,7 @@ pub(super) fn measure_teaching(
     }
     burst::check_round(&w.doc, round)?;
     let metrics = measure(w, round)?;
-    let segmented = burst::segment_round(
-        &w.doc.segments,
-        w.doc.plan_cameras().len(),
-        round.group_count,
-        &metrics,
-    );
+    let segmented = crate::segmentation::proportional_for_count(&w.doc.segments, round.group_count);
     let mut next = w.clone();
     next.calibration.rounds = vec![burst::calibration_round(&next.doc, round, &metrics)];
     burst::apply_reference(&mut next.doc, &next.calibration.rounds);
@@ -597,11 +588,10 @@ fn measure(
         let graphs = vision::CorridorSet::build(&recipe, &burst::teaching_sizes(w)?)?;
         let choice = burst::calibration_corridors(w, &round.round_id, round.group_count)?;
         let round_id = &round.round_id;
-        burst::measure_round_with_operation(
-            &w.doc.plan_cameras(),
+        capture_review::measure_calibration_round(
+            w,
             round,
             |camera, camera_id, seq| {
-                capture_review::require_available(w, &round.round_id, seq)?;
                 let Some(segment) = choice[camera][(seq - 1) as usize] else {
                     return Ok(burst::frame_without_metrics(
                         camera,

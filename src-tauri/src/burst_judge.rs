@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::frame_group::{FrameGroup, LossAlarm};
+use crate::frame_group::{GroupCoverage, LossAlarm};
 use crate::judge::{fault, Verdict};
 use crate::passes::PassRules;
 use crate::plan::{
@@ -370,6 +370,19 @@ impl BurstJudgement {
     }
 }
 
+type FrameMetricsIndex<'a> = BTreeMap<(u64, usize), &'a FrameMetrics>;
+
+fn index_metrics<'a>(
+    metrics: impl IntoIterator<Item = &'a FrameMetrics>,
+    camera_count: usize,
+) -> FrameMetricsIndex<'a> {
+    metrics
+        .into_iter()
+        .filter(|m| m.camera < camera_count)
+        .map(|m| ((m.seq, m.camera), m))
+        .collect()
+}
+
 /// 判一件。cameras 是计划相机（`FrameMetrics.camera` 的下标基准，`OffsetRef.camera` 按它找下标）；
 /// expected_total 由 `plan::expected_total` 算出；区域内检测相机取最差（D-SB-41：直线 / 弯道区域只用本段检测相机，
 /// 过渡区用两侧段检测相机的并集，未分段区域用全部计划相机）。
@@ -382,49 +395,83 @@ impl BurstJudgement {
 /// - 三台相机整件没有一帧测成时判 ERR 91；区域引用了配方里没有的段时判 ERR 93。
 /// - 笔结构（D-SB-62）原样记进结果；本件笔数与示教件不同只记笔数异常，不改结论。
 #[allow(clippy::too_many_arguments)]
-pub fn judge(
+pub(crate) fn judge<'a>(
     segments: &[PathSegment],
     expected_total: Option<u32>,
     regions: &[Region],
-    groups: &[FrameGroup],
-    metrics: &[FrameMetrics],
+    coverage: GroupCoverage<impl Iterator<Item = u64>>,
+    metrics: impl IntoIterator<Item = &'a FrameMetrics>,
     cameras: &[String],
     loss: &[LossAlarm],
     passes: PassRules,
 ) -> BurstJudgement {
+    judge_with_output(
+        segments,
+        expected_total,
+        regions,
+        coverage,
+        metrics,
+        cameras,
+        loss,
+        passes,
+        false,
+    )
+    .0
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn judge_with_output<'a>(
+    segments: &[PathSegment],
+    expected_total: Option<u32>,
+    regions: &[Region],
+    coverage: GroupCoverage<impl Iterator<Item = u64>>,
+    metrics: impl IntoIterator<Item = &'a FrameMetrics>,
+    cameras: &[String],
+    loss: &[LossAlarm],
+    passes: PassRules,
+    include_frame_verdicts: bool,
+) -> (BurstJudgement, Vec<FrameVerdict>) {
+    let frames = index_metrics(metrics, cameras.len());
+    let mut frame_verdicts = include_frame_verdicts.then(FrameVerdictIndex::new);
     let mut judgement = judge_regions(
         segments,
         expected_total,
         regions,
-        groups,
-        metrics,
+        coverage,
+        &frames,
         cameras,
         loss,
+        frame_verdicts.as_mut(),
     );
     judgement.passes = passes.part.to_vec();
     judgement.expected_passes = passes.taught.map(|taught| taught.len() as u32);
     judgement.flags.pass_count_anomaly = passes.mismatch();
-    judgement
+    (
+        judgement,
+        frame_verdicts
+            .map(frame_verdict_results)
+            .unwrap_or_default(),
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn judge_regions(
     segments: &[PathSegment],
     expected_total: Option<u32>,
     regions: &[Region],
-    groups: &[FrameGroup],
-    metrics: &[FrameMetrics],
+    coverage: GroupCoverage<impl Iterator<Item = u64>>,
+    frames: &FrameMetricsIndex<'_>,
     cameras: &[String],
     loss: &[LossAlarm],
+    mut verdicts: Option<&mut FrameVerdictIndex>,
 ) -> BurstJudgement {
-    let group_count =
-        u32::try_from(groups.iter().map(|g| g.seq).max().unwrap_or(0)).unwrap_or(u32::MAX);
-    // 每个 (seq, 相机) 一帧；不是计划相机的帧不参与
-    let frames: BTreeMap<(u64, usize), &FrameMetrics> = metrics
+    let group_count = u32::try_from(coverage.group_count).unwrap_or(u32::MAX);
+    if regions
         .iter()
-        .filter(|m| m.camera < cameras.len())
-        .map(|m| ((m.seq, m.camera), m))
-        .collect();
-
+        .any(|region| !region.has_ordered_frame_range())
+    {
+        return BurstJudgement::error(fault::INVALID_POINTS, "分段区域的帧组起止序号颠倒");
+    }
     if !frames.values().any(|m| m.state == FrameState::Measured) {
         let reason = if frames.values().all(|m| m.state == FrameState::Missing) {
             "三台相机整件没有收到帧"
@@ -434,12 +481,10 @@ fn judge_regions(
         let mix_alarm = regions.iter().any(|region| {
             let scope = covered(segments, region);
             let allowed = region_cameras_for(cameras, region, &scope);
-            frames
-                .range((region.first_seq, 0)..=(region.last_seq, usize::MAX))
-                .any(|(&(_, camera), m)| {
-                    allowed.contains(&camera)
-                        && m.mix_evidence.as_ref().is_some_and(MixEvidence::alarm)
-                })
+            frames_in_region(frames, region).any(|frame| {
+                allowed.contains(&frame.camera)
+                    && frame.mix_evidence.as_ref().is_some_and(MixEvidence::alarm)
+            })
         });
         return BurstJudgement {
             group_count,
@@ -459,35 +504,31 @@ fn judge_regions(
             )
         };
     }
-    if regions
+    let covered_by_region: Vec<_> = regions
         .iter()
-        .any(|region| covered(segments, region).is_empty())
-    {
+        .map(|region| covered(segments, region))
+        .collect();
+    if covered_by_region.iter().any(Vec::is_empty) {
         return BurstJudgement::error(fault::INVALID_POINTS, "分段区域与配方的段不一致");
     }
 
-    let incomplete_seqs = groups
-        .iter()
-        .filter(|g| g.incomplete)
-        .map(|g| g.seq)
-        .collect();
     let part = PartInput {
         segments,
         expected_total,
-        incomplete_seqs,
-        frames: &frames,
+        incomplete_seqs: coverage.incomplete_seqs.collect(),
+        frames,
         cameras,
     };
-    let inspected: Vec<_> = regions
-        .iter()
-        .flat_map(|region| RegionScope::of(&part, region).measured())
-        .collect();
-    let unavailable = inspected.iter().any(|m| m.measurement_evidence.is_some())
-        && !inspected.iter().any(|m| m.has_usable_evidence());
+    let mut evidence = EvidenceAvailability::default();
     let mut results: Vec<RegionResult> = regions
         .iter()
-        .map(|region| judge_region(&part, region))
+        .zip(covered_by_region)
+        .map(|(region, covered)| {
+            let scope = RegionScope::new(cameras, region, covered);
+            judge_region(&part, region, scope, &mut evidence, verdicts.as_deref_mut())
+        })
         .collect();
+    let unavailable = evidence.reported && !evidence.usable;
     if unavailable {
         for result in &mut results {
             if !matches!(result.region.kind, RegionKind::Skipped { .. }) {
@@ -719,10 +760,19 @@ fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding
 
 /// 一帧按给定检查项的独立结论：只看这一帧的指标，不含区域级的均匀性与胶偏。区域划定前的在线帧格用它（检查项取所测走廊的段）。
 pub fn frame_verdict(frame: &FrameMetrics, checks: &SegmentChecks) -> Verdict {
+    with_frame_evidence(frame, || findings_verdict(&judge_frame(frame, checks)))
+}
+
+fn with_frame_evidence(frame: &FrameMetrics, verdict: impl FnOnce() -> Verdict) -> Verdict {
     if frame.measurement_evidence.is_some() && !frame.has_usable_evidence() {
-        return Verdict::ErrInspect;
+        Verdict::ErrInspect
+    } else {
+        verdict()
     }
-    judge_frame(frame, checks)
+}
+
+fn findings_verdict(findings: &BTreeSet<Finding>) -> Verdict {
+    findings
         .iter()
         .map(|f| f.verdict())
         .max()
@@ -738,51 +788,9 @@ pub struct FrameVerdict {
     pub verdict: Verdict,
 }
 
-/// 区域划定后的逐帧结论（在线、历史与复测对照共用）：每帧按所在区域的检测相机与检查项判独立指标，与区域判定同一口径；
-/// 直线区域的局部跑偏落到偏离均值超限的帧。胶宽不均、整段胶偏只属于区域，不落到帧上。
-/// 不在区域检测相机里、没测成或不在任何区域的帧没有结论。按 (camera, seq) 排序。
-pub fn frame_verdicts<'a>(
-    segments: &[PathSegment],
-    regions: &[Region],
-    metrics: impl IntoIterator<Item = &'a FrameMetrics>,
-    cameras: &[String],
-) -> Vec<FrameVerdict> {
-    let frames: BTreeMap<(u64, usize), &FrameMetrics> = metrics
-        .into_iter()
-        .filter(|m| m.camera < cameras.len())
-        .map(|m| ((m.seq, m.camera), m))
-        .collect();
-    let part = PartInput {
-        segments,
-        expected_total: None,
-        incomplete_seqs: BTreeSet::new(),
-        frames: &frames,
-        cameras,
-    };
-    let mut verdicts: BTreeMap<(usize, u64), Verdict> = BTreeMap::new();
-    for region in regions {
-        if covered(segments, region).is_empty() {
-            continue;
-        }
-        let scope = RegionScope::of(&part, region);
-        let measured = scope.measured();
-        for m in &measured {
-            verdicts.insert((m.camera, m.seq), frame_verdict(m, &scope.checks));
-        }
-        if matches!(region.kind, RegionKind::Straight { .. }) {
-            if let Ok((check, _, series)) =
-                offset_series(scope.covered[0], &scope.checks, region, &measured, cameras)
-            {
-                let mean = series.iter().map(|&(_, x)| x).sum::<f64>() / series.len() as f64;
-                for (m, x) in series {
-                    if (x - mean).abs() > check.max_local_dev_mm {
-                        let verdict = verdicts.entry((m.camera, m.seq)).or_insert(Verdict::Ok);
-                        *verdict = (*verdict).max(Finding::LocalDev.verdict());
-                    }
-                }
-            }
-        }
-    }
+type FrameVerdictIndex = BTreeMap<(usize, u64), Verdict>;
+
+fn frame_verdict_results(verdicts: FrameVerdictIndex) -> Vec<FrameVerdict> {
     verdicts
         .into_iter()
         .map(|((camera, seq), verdict)| FrameVerdict {
@@ -793,21 +801,60 @@ pub fn frame_verdicts<'a>(
         .collect()
 }
 
-/// 直线段胶偏（xs 已去掉区域首尾各一帧，非空）：x 均值 − x_ref 判整段偏移，各帧 x 与均值的最大偏差判局部跑偏。
-fn straight_offset(xs: &[f64], x_ref: f64, check: &OffsetCheck) -> (OffsetStat, BTreeSet<Finding>) {
-    let mean = xs.iter().sum::<f64>() / xs.len() as f64;
-    let stat = OffsetStat {
-        mean_shift: mean - x_ref,
-        max_dev: xs.iter().map(|x| (x - mean).abs()).fold(0.0, f64::max),
-    };
-    let mut found = BTreeSet::new();
-    if stat.mean_shift.abs() > check.max_mean_shift_mm {
-        found.insert(Finding::Shift);
+/// 区域划定后的逐帧结论（在线、历史与复测对照共用）：每帧按所在区域的检测相机与检查项判独立指标，与区域判定同一口径；
+/// 直线区域的局部跑偏落到偏离均值超限的帧。胶宽不均、整段胶偏只属于区域，不落到帧上。
+/// 不在区域检测相机里、没测成或不在任何区域的帧没有结论。按 (camera, seq) 排序。
+pub fn frame_verdicts<'a>(
+    segments: &[PathSegment],
+    regions: &[Region],
+    metrics: impl IntoIterator<Item = &'a FrameMetrics>,
+    cameras: &[String],
+) -> Vec<FrameVerdict> {
+    let frames = index_metrics(metrics, cameras.len());
+    let mut verdicts = FrameVerdictIndex::new();
+    for region in regions {
+        if !region.has_ordered_frame_range() {
+            continue;
+        }
+        let covered = covered(segments, region);
+        if covered.is_empty() {
+            continue;
+        }
+        let scope = RegionScope::new(cameras, region, covered);
+        let measured: Vec<_> = frames_in_region(&frames, region)
+            .filter(|frame| {
+                frame.state == FrameState::Measured && scope.allowed.contains(&frame.camera)
+            })
+            .collect();
+        for m in &measured {
+            verdicts.insert((m.camera, m.seq), frame_verdict(m, &scope.checks));
+        }
+        if matches!(region.kind, RegionKind::Straight { .. }) {
+            if let Ok((check, _, series)) =
+                offset_series(scope.covered[0], &scope.checks, region, &measured, cameras)
+            {
+                let mean = series.iter().map(|&(_, x)| x).sum::<f64>() / series.len() as f64;
+                apply_local_offset(&mut verdicts, check, &series, mean);
+            }
+        }
     }
-    if stat.max_dev > check.max_local_dev_mm {
-        found.insert(Finding::LocalDev);
+    frame_verdict_results(verdicts)
+}
+
+fn apply_local_offset(
+    verdicts: &mut FrameVerdictIndex,
+    check: &OffsetCheck,
+    series: &[(&FrameMetrics, f64)],
+    mean: f64,
+) {
+    for &(frame, x) in series {
+        if (x - mean).abs() > check.max_local_dev_mm {
+            let verdict = verdicts
+                .entry((frame.camera, frame.seq))
+                .or_insert(Verdict::Ok);
+            *verdict = (*verdict).max(Finding::LocalDev.verdict());
+        }
     }
-    (stat, found)
 }
 
 /// 整件共用的输入。
@@ -816,7 +863,7 @@ struct PartInput<'a> {
     expected_total: Option<u32>,
     /// 配组标了 incomplete 的 seq
     incomplete_seqs: BTreeSet<u64>,
-    frames: &'a BTreeMap<(u64, usize), &'a FrameMetrics>,
+    frames: &'a FrameMetricsIndex<'a>,
     cameras: &'a [String],
 }
 
@@ -863,18 +910,16 @@ fn region_cameras_for(
     }
 }
 
-/// 区域判定的范围：覆盖的段、参与判定的相机、所用检查项（未分段区域取覆盖段里最宽的）与区域内这些相机的帧。
+/// 区域判定所用的段、相机和检查项。未分段区域取所覆盖段的较宽允差。
 struct RegionScope<'a> {
     covered: Vec<&'a PathSegment>,
     allowed: BTreeSet<usize>,
     checks: SegmentChecks,
-    in_region: Vec<&'a FrameMetrics>,
 }
 
 impl<'a> RegionScope<'a> {
-    fn of(part: &PartInput<'a>, region: &Region) -> Self {
-        let covered = covered(part.segments, region);
-        let allowed = region_cameras_for(part.cameras, region, &covered);
+    fn new(cameras: &[String], region: &Region, covered: Vec<&'a PathSegment>) -> Self {
+        let allowed = region_cameras_for(cameras, region, &covered);
         let checks = match region.kind {
             RegionKind::Unsegmented { .. } => wider_checks(
                 &covered
@@ -884,46 +929,96 @@ impl<'a> RegionScope<'a> {
             ),
             _ => covered[0].checks.clone(),
         };
-        let in_region = part
-            .frames
-            .range((region.first_seq, 0)..=(region.last_seq, usize::MAX))
-            .map(|(_, &m)| m)
-            .filter(|m| allowed.contains(&m.camera))
-            .collect();
         Self {
             covered,
             allowed,
             checks,
-            in_region,
         }
-    }
-
-    fn measured(&self) -> Vec<&'a FrameMetrics> {
-        self.in_region
-            .iter()
-            .copied()
-            .filter(|m| m.state == FrameState::Measured)
-            .collect()
     }
 }
 
-fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
+fn frames_in_region<'a>(
+    frames: &'a FrameMetricsIndex<'a>,
+    region: &Region,
+) -> impl Iterator<Item = &'a FrameMetrics> + 'a {
+    frames
+        .range((region.first_seq, 0)..=(region.last_seq, usize::MAX))
+        .map(|(_, &frame)| frame)
+}
+
+#[derive(Default)]
+struct EvidenceAvailability {
+    reported: bool,
+    usable: bool,
+}
+
+fn judge_region(
+    part: &PartInput,
+    region: &Region,
+    scope: RegionScope,
+    evidence: &mut EvidenceAvailability,
+    mut verdicts: Option<&mut FrameVerdictIndex>,
+) -> RegionResult {
     let RegionScope {
         covered,
         allowed,
         checks,
-        in_region,
-    } = RegionScope::of(part, region);
+    } = scope;
     let straight = matches!(region.kind, RegionKind::Straight { .. });
-    let measured: Vec<&FrameMetrics> = in_region
-        .iter()
+    let mut measured = Vec::new();
+    let mut camera_frames = vec![0u32; part.cameras.len()];
+    let mut incomplete_groups = Vec::new();
+    let mut mix_alarm_groups = Vec::new();
+    let mut frames = frames_in_region(part.frames, region).peekable();
+    let mut grouped_missing = (allowed.len() == part.cameras.len())
+        .then(|| {
+            part.incomplete_seqs
+                .range(region.first_seq..=region.last_seq)
+        })
+        .into_iter()
+        .flatten()
         .copied()
-        .filter(|m| m.state == FrameState::Measured)
-        .collect();
+        .peekable();
+    for seq in region.first_seq..=region.last_seq {
+        let mut complete = 0;
+        let mut mix_alarm = false;
+        while let Some(frame) = frames.next_if(|frame| frame.seq == seq) {
+            if frame.state != FrameState::Missing {
+                camera_frames[frame.camera] = camera_frames[frame.camera].wrapping_add(1);
+            }
+            if !allowed.contains(&frame.camera) {
+                continue;
+            }
+            if frame.state == FrameState::Measured {
+                evidence.reported |= frame.measurement_evidence.is_some();
+                evidence.usable |= frame.has_usable_evidence();
+                measured.push(frame);
+            }
+            if frame.state == FrameState::NotInspected
+                || (frame.state == FrameState::Measured && !frame.measurement_incomplete())
+            {
+                complete += 1;
+            }
+            mix_alarm |= frame.mix_evidence.as_ref().is_some_and(MixEvidence::alarm);
+        }
+        if grouped_missing.next_if_eq(&seq).is_some() || complete < allowed.len() {
+            incomplete_groups.push(seq);
+        }
+        if mix_alarm {
+            mix_alarm_groups.push(seq);
+        }
+    }
 
     let mut findings: BTreeSet<Finding> = measured
         .iter()
-        .flat_map(|m| judge_frame(m, &checks))
+        .flat_map(|frame| {
+            let findings = judge_frame(frame, &checks);
+            if let Some(verdicts) = verdicts.as_deref_mut() {
+                let verdict = with_frame_evidence(frame, || findings_verdict(&findings));
+                verdicts.insert((frame.camera, frame.seq), verdict);
+            }
+            findings
+        })
         .collect();
     // 均匀性：只在直线区域判（D-SB-16）
     if straight && checks.width.enabled {
@@ -937,8 +1032,14 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
 
     let (offset, offset_unjudged) = match region.kind {
         RegionKind::Straight { .. } => {
-            let (offset, unjudged, found) =
-                region_offset(covered[0], &checks, region, &measured, part.cameras);
+            let (offset, unjudged, found) = region_offset(
+                covered[0],
+                &checks,
+                region,
+                &measured,
+                part.cameras,
+                verdicts,
+            );
             findings.extend(found);
             (offset, unjudged)
         }
@@ -964,11 +1065,7 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
         }
     };
 
-    let verdict = findings
-        .iter()
-        .map(|f| f.verdict())
-        .max()
-        .unwrap_or(Verdict::Ok);
+    let verdict = findings_verdict(&findings);
     let reason = findings
         .iter()
         .filter(|f| f.verdict() == verdict && f.warning().is_none())
@@ -986,34 +1083,6 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
         RegionKind::Unsegmented { .. } | RegionKind::Skipped { .. } => None,
     };
 
-    let cams = part.cameras.len();
-    // 各相机收到的帧数（全部计划相机，供追溯；不参与判定）
-    let camera_frames = (0..cams)
-        .map(|c| {
-            (region.first_seq..=region.last_seq)
-                .filter(|&seq| {
-                    part.frames
-                        .get(&(seq, c))
-                        .is_some_and(|m| m.state != FrameState::Missing)
-                })
-                .count() as u32
-        })
-        .collect();
-    // 缺帧组：区域检测相机里某台这一组没有测成的帧（缺帧、测量失败、没测、走出走廊）；用全部相机时配组标了 incomplete 也算。
-    // 按设计不测的帧（NotInspected：未分段区域里不检测预测段的相机）不算
-    let all_cameras = allowed.len() == cams;
-    let incomplete_groups = (region.first_seq..=region.last_seq)
-        .filter(|seq| {
-            (all_cameras && part.incomplete_seqs.contains(seq))
-                || allowed.iter().any(|&c| {
-                    part.frames.get(&(*seq, c)).is_none_or(|m| {
-                        !matches!(m.state, FrameState::Measured | FrameState::NotInspected)
-                            || (m.state == FrameState::Measured && m.measurement_incomplete())
-                    })
-                })
-        })
-        .collect();
-
     RegionResult {
         region: region.clone(),
         verdict,
@@ -1027,13 +1096,7 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
         offset,
         offset_unjudged,
         incomplete_groups,
-        mix_alarm_groups: in_region
-            .iter()
-            .filter(|m| m.mix_evidence.as_ref().is_some_and(MixEvidence::alarm))
-            .map(|m| m.seq)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect(),
+        mix_alarm_groups,
         warnings,
     }
 }
@@ -1048,6 +1111,7 @@ fn region_offset(
     region: &Region,
     measured: &[&FrameMetrics],
     cameras: &[String],
+    verdicts: Option<&mut FrameVerdictIndex>,
 ) -> (
     Option<OffsetStat>,
     Option<OffsetUnjudged>,
@@ -1056,8 +1120,24 @@ fn region_offset(
     match offset_series(segment, checks, region, measured, cameras) {
         Err(why) => (None, why, BTreeSet::new()),
         Ok((check, x_ref, series)) => {
-            let xs: Vec<f64> = series.iter().map(|&(_, x)| x).collect();
-            let (stat, found) = straight_offset(&xs, x_ref, check);
+            let mean = series.iter().map(|&(_, x)| x).sum::<f64>() / series.len() as f64;
+            let stat = OffsetStat {
+                mean_shift: mean - x_ref,
+                max_dev: series
+                    .iter()
+                    .map(|&(_, x)| (x - mean).abs())
+                    .fold(0.0, f64::max),
+            };
+            let mut found = BTreeSet::new();
+            if stat.mean_shift.abs() > check.max_mean_shift_mm {
+                found.insert(Finding::Shift);
+            }
+            if stat.max_dev > check.max_local_dev_mm {
+                found.insert(Finding::LocalDev);
+                if let Some(verdicts) = verdicts {
+                    apply_local_offset(verdicts, check, &series, mean);
+                }
+            }
             (Some(stat), None, found)
         }
     }
@@ -1223,6 +1303,7 @@ fn uninspected(regions: &[Region]) -> Vec<Uninspected> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame_group::FrameGroup;
     use crate::plan::{new_segment, KindDefaults, OffsetRef};
     use SegmentKind::{Corner, Straight};
 
@@ -1333,7 +1414,7 @@ mod tests {
             segments,
             expected_total,
             regions,
-            &groups_of(metrics),
+            FrameGroup::coverage(&groups_of(metrics)),
             metrics,
             &cameras(),
             &[],
@@ -1519,6 +1600,29 @@ mod tests {
         assert!(!with_skip.uninspected.is_empty());
     }
 
+    #[test]
+    fn unusable_selected_camera_evidence_still_counts_unselected_camera_frames() {
+        let mut segments = plan(&[Corner]);
+        segments[0].cameras = vec![cameras()[0].clone()];
+        let regions = [region(RegionKind::Corner { segment: 1 }, 1, 3)];
+        let unknown = evidence_frame(StationEvidenceState::Unknown, None);
+        let metrics = [
+            unknown.clone(),
+            ok(1, 1),
+            FrameMetrics { seq: 3, ..unknown },
+            ok(1, 3),
+            ok(2, 3),
+        ];
+        let result = run(&segments, Some(3), &regions, &metrics);
+
+        assert_eq!(
+            (result.verdict, result.fault_code),
+            (Verdict::ErrInspect, fault::MISSING_FRAME)
+        );
+        assert_eq!(result.regions[0].camera_frames, [2, 2, 1]);
+        assert_eq!(result.regions[0].incomplete_groups, [1, 2, 3]);
+    }
+
     /// D-SB-61：偏宽只预警的段，整帧偏宽、溢胶都不判 NG，整件仍合格（PLC 收到 1），只记预警标记。
     #[test]
     fn wide_warn_only_records_wide_and_overflow_as_warnings_and_stays_ok() {
@@ -1584,6 +1688,68 @@ mod tests {
             (verdicts[&(0, 2)], verdicts[&(0, 5)]),
             (Verdict::Ok, Verdict::NgWidth)
         );
+    }
+
+    #[test]
+    fn combined_judgement_preserves_local_offset_and_later_region_frame_verdicts() {
+        let cameras = cameras();
+        let mut segments = plan(&[Straight, Corner]);
+        segments[0].checks.offset = Some(OffsetCheck {
+            enabled: true,
+            max_mean_shift_mm: 10.0,
+            max_local_dev_mm: 5.0,
+        });
+        segments[0].offset_ref = Some(OffsetRef {
+            measure: OffsetMeasure::AbsoluteX,
+            camera: cameras[0].clone(),
+            x_ref: Some(0.0),
+            spread: Some(0.0),
+            edge: None,
+        });
+        let regions = [
+            region(RegionKind::Straight { segment: 1 }, 1, 7),
+            region(RegionKind::Corner { segment: 2 }, 4, 8),
+        ];
+        let mut metrics = frames(8);
+        at(&mut metrics, 0, 2).x_mm = Some(10.0);
+        at(&mut metrics, 0, 4).x_mm = Some(10.0);
+        *at(&mut metrics, 1, 4) = FrameMetrics {
+            camera: 1,
+            seq: 4,
+            ..evidence_frame(StationEvidenceState::Unknown, None)
+        };
+        let (judgement, verdicts) = judge_with_output(
+            &segments,
+            Some(8),
+            &regions,
+            FrameGroup::coverage(&groups_of(&metrics)),
+            &metrics,
+            &cameras,
+            &[],
+            PassRules::NONE,
+            true,
+        );
+
+        assert_eq!(judgement, run(&segments, Some(8), &regions, &metrics));
+        assert_eq!(judgement.verdict, Verdict::NgPosition);
+        assert_eq!(judgement.regions[0].verdict, Verdict::NgPosition);
+        assert_eq!(judgement.regions[1].verdict, Verdict::Ok);
+        let offset = judgement.regions[0].offset.as_ref().unwrap();
+        assert_eq!((offset.mean_shift, offset.max_dev), (4.0, 6.0));
+        assert_eq!(
+            verdicts,
+            frame_verdicts(&segments, &regions, &metrics, &cameras)
+        );
+        let verdict_at = |camera, seq| {
+            verdicts
+                .iter()
+                .find(|frame| (frame.camera, frame.seq) == (camera, seq))
+                .unwrap()
+                .verdict
+        };
+        assert_eq!(verdict_at(0, 2), Verdict::NgPosition);
+        assert_eq!(verdict_at(0, 4), Verdict::Ok);
+        assert_eq!(verdict_at(1, 4), Verdict::ErrInspect);
     }
 
     /// D-SB-41：直线 / 弯道区域只用本段检测相机——没选中的相机这一帧断胶、缺帧都不影响结论与检测不完整；
@@ -1762,8 +1928,14 @@ mod tests {
                 edge,
             });
             let measured: Vec<&FrameMetrics> = frames.iter().collect();
-            let (stat, unjudged, found) =
-                region_offset(&segment, &segment.checks, &region, &measured, &cameras());
+            let (stat, unjudged, found) = region_offset(
+                &segment,
+                &segment.checks,
+                &region,
+                &measured,
+                &cameras(),
+                None,
+            );
             (
                 stat.map(|s| s.mean_shift),
                 unjudged,

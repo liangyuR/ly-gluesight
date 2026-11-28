@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::BufWriter;
+use std::io::{self, BufWriter, Seek, Write};
 use std::path::{Component, Path};
 
 use chrono::Local;
@@ -11,14 +11,16 @@ use tauri::{AppHandle, Manager};
 
 use crate::applog;
 use crate::judge::Verdict;
-use crate::store::{HistoryQuery, HistoryScope, PartDetail, Store};
+use crate::operation::Operation;
+use crate::plc::log_snapshot::{self, ScanError};
+use crate::store::{HistoryQuery, HistoryScope, PartDetail, RecordingEvidence, Store};
 use crate::ziparchive::ZipWriter;
 
 const MAX_RANGE_MS: i64 = 31 * 86_400_000;
 const MAX_PARTS: usize = 5000;
 const MAX_IMAGE_PARTS: usize = 200;
 const MAX_IMAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const MAX_PLC_LOGS: i64 = 200_000;
+const MAX_PLC_LOGS: u32 = 200_000;
 const MAX_CONFIG_FILE: u64 = 8 * 1024 * 1024;
 
 const README: &str = r#"# 诊断包说明
@@ -90,24 +92,64 @@ fn ok_class(verdict: Verdict) -> bool {
     matches!(verdict, Verdict::Ok | Verdict::OkWithExcursion)
 }
 
-/// 选择要附原图的工件：指定记录时只取指定的；否则按模式取异常件或全部，新的在前，不超过上限。
-pub fn image_parts(
-    parts: &[(i64, Verdict)],
-    explicit: bool,
-    mode: ImageMode,
-    max: usize,
-) -> Vec<i64> {
-    if mode == ImageMode::None {
-        return Vec::new();
+struct ImagePart {
+    id: i64,
+    cycle_id: Option<String>,
+    project_id: String,
+    recording: RecordingEvidence,
+    files: Vec<(String, String)>,
+}
+
+impl From<PartDetail> for ImagePart {
+    fn from(detail: PartDetail) -> Self {
+        let files = detail
+            .burst
+            .into_iter()
+            .flat_map(|burst| {
+                let cameras = burst.cameras;
+                burst.frames.into_iter().filter_map(move |frame| {
+                    let file = frame.raw_file?;
+                    let camera = cameras.get(frame.camera).map_or("?", String::as_str);
+                    Some((format!("相机 {camera} 第 {} 帧", frame.seq), file))
+                })
+            })
+            .collect();
+        Self {
+            id: detail.summary.id,
+            cycle_id: detail.summary.cycle_id,
+            project_id: detail.summary.project_id,
+            recording: detail.recording,
+            files,
+        }
     }
-    let mut chosen: Vec<_> = parts
-        .iter()
-        .filter(|(_, v)| explicit || mode == ImageMode::All || !ok_class(*v))
-        .map(|(id, _)| *id)
-        .collect();
-    chosen.sort_unstable_by(|a, b| b.cmp(a));
-    chosen.truncate(max);
-    chosen
+}
+
+fn offer_image(
+    candidates: &mut Vec<(usize, ImagePart)>,
+    request: &ExportRequest,
+    order: usize,
+    detail: PartDetail,
+) {
+    let limit = request.max_image_parts.min(MAX_IMAGE_PARTS);
+    let explicit = !request.history_ids.is_empty();
+    if request.images == ImageMode::None
+        || limit == 0
+        || (!explicit && request.images == ImageMode::Abnormal && ok_class(detail.summary.verdict))
+    {
+        return;
+    }
+    if candidates.len() < limit {
+        candidates.push((order, detail.into()));
+    } else if explicit {
+        if let Some(last) = candidates
+            .iter_mut()
+            .min_by_key(|(order, part)| (part.id, std::cmp::Reverse(*order)))
+        {
+            if detail.summary.id > last.1.id {
+                *last = (order, detail.into());
+            }
+        }
+    }
 }
 
 fn relative(file: &str) -> Option<&Path> {
@@ -142,13 +184,32 @@ struct PackedFile {
     sha256: String,
 }
 
-struct Package<W: std::io::Write> {
+struct EntryHash<'a> {
+    out: &'a mut dyn Write,
+    bytes: &'a mut u64,
+    digest: &'a mut Sha256,
+}
+
+impl Write for EntryHash<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let n = self.out.write(bytes)?;
+        *self.bytes += n as u64;
+        self.digest.update(&bytes[..n]);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
+struct Package<W: Write + Seek> {
     zip: ZipWriter<W>,
     notes: Vec<String>,
     files: Vec<PackedFile>,
 }
 
-impl<W: std::io::Write> Package<W> {
+impl<W: Write + Seek> Package<W> {
     fn new(out: W) -> Self {
         Self {
             zip: ZipWriter::new(out),
@@ -169,6 +230,32 @@ impl<W: std::io::Write> Package<W> {
         Ok(())
     }
 
+    fn add_stream(
+        &mut self,
+        name: &str,
+        write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+    ) -> Result<(), String> {
+        let mut bytes = 0;
+        let mut digest = Sha256::new();
+        self.zip
+            .add_stream(name, |out| {
+                let mut writer = BufWriter::new(EntryHash {
+                    out,
+                    bytes: &mut bytes,
+                    digest: &mut digest,
+                });
+                write(&mut writer)?;
+                writer.flush()
+            })
+            .map_err(|e| e.to_string())?;
+        self.files.push(PackedFile {
+            path: name.to_string(),
+            bytes,
+            sha256: format!("{:x}", digest.finalize()),
+        });
+        Ok(())
+    }
+
     fn copy_file(&mut self, path: &Path, name: &str) -> Result<(), String> {
         if fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX) > MAX_CONFIG_FILE {
             self.notes.push(format!("{name} 超过 8 MB，未打包"));
@@ -183,7 +270,13 @@ impl<W: std::io::Write> Package<W> {
         }
     }
 
-    fn copy_dir(&mut self, dir: &Path, prefix: &str, skip: &[&str]) -> Result<(), String> {
+    fn copy_dir(
+        &mut self,
+        dir: &Path,
+        prefix: &str,
+        skip: &[&str],
+        operation: &Operation,
+    ) -> Result<(), String> {
         let Ok(entries) = fs::read_dir(dir) else {
             return Ok(());
         };
@@ -196,6 +289,7 @@ impl<W: std::io::Write> Package<W> {
             .collect();
         files.sort_by_key(|e| e.file_name());
         for entry in files {
+            operation.checkpoint()?;
             self.copy_file(
                 &entry.path(),
                 &format!("{prefix}/{}", entry.file_name().to_string_lossy()),
@@ -213,116 +307,136 @@ struct PlcLine<'a> {
     entry: &'a ly_plc::LogEntry,
 }
 
-/// PLC 日志按时间正序逐行写出，每行补本地时间 t。
-fn plc_jsonl(mut entries: Vec<ly_plc::LogEntry>) -> Vec<u8> {
-    entries.sort_by_key(|e| (e.ts, e.id));
-    let mut out = Vec::new();
-    for entry in &entries {
-        if let Ok(line) = serde_json::to_string(&PlcLine {
-            t: applog::local_time(entry.ts),
-            entry,
-        }) {
-            out.extend_from_slice(line.as_bytes());
-            out.push(b'\n');
-        }
-    }
-    out
+fn write_plc_logs<W: Write + Seek>(
+    package: &mut Package<W>,
+    path: &Path,
+    from: i64,
+    to: i64,
+    limit: u32,
+    operation: &Operation,
+) -> Result<u64, String> {
+    let mut count = 0;
+    let mut note = None;
+    package.add_stream("logs/plc.jsonl", |out| {
+        let scan = log_snapshot::visit_recent(path, from, to, limit, |entry| {
+            if count % 256 == 0 {
+                operation.checkpoint().map_err(io::Error::other)?;
+            } else {
+                operation.check().map_err(io::Error::other)?;
+            }
+            serde_json::to_writer(
+                &mut *out,
+                &PlcLine {
+                    t: applog::local_time(entry.ts),
+                    entry: &entry,
+                },
+            )
+            .map_err(io::Error::other)?;
+            out.write_all(b"\n")?;
+            count += 1;
+            Ok(())
+        });
+        note = match scan {
+            Ok(true) => Some(format!("PLC 日志超过 {limit} 条，只打包最新的 {limit} 条")),
+            Ok(false) => None,
+            Err(ScanError::Read(error)) => Some(format!("PLC 日志读取失败：{error}")),
+            Err(ScanError::Write(error)) => return Err(error),
+        };
+        Ok(())
+    })?;
+    package.notes.extend(note);
+    Ok(count)
 }
 
-fn collect_parts(
+fn collect_part_ids(
     store: &Store,
     request: &ExportRequest,
     notes: &mut Vec<String>,
-) -> Result<Vec<PartDetail>, String> {
+) -> Result<Vec<i64>, String> {
     if !request.history_ids.is_empty() {
-        let mut parts = Vec::new();
-        for &id in request.history_ids.iter().take(MAX_PARTS) {
-            match store.detail(id) {
-                Ok(detail) => parts.push(detail),
-                Err(error) => notes.push(format!("记录 #{id}：{error}")),
-            }
-        }
-        return Ok(parts);
+        return Ok(request
+            .history_ids
+            .iter()
+            .take(MAX_PARTS)
+            .copied()
+            .collect());
     }
-    let scopes = request
-        .scope
-        .map_or_else(|| vec![HistoryScope::Real], |s| vec![s]);
-    let mut ids = Vec::new();
-    for scope in scopes {
-        let mut query = HistoryQuery {
-            from: Some(request.from),
-            to: Some(request.to.saturating_add(1)),
-            scope,
-            limit: 500,
-            ..HistoryQuery::default()
-        };
-        loop {
-            let page = store.query(&query)?;
-            ids.extend(page.items.iter().map(|p| p.id));
-            if page.items.len() < 500 || ids.len() > MAX_PARTS {
-                break;
-            }
-            query.offset += 500;
-        }
-    }
-    ids.sort_unstable_by(|a, b| b.cmp(a));
+    let query = HistoryQuery {
+        from: Some(request.from),
+        to: request.to.checked_add(1),
+        scope: request.scope.unwrap_or_default(),
+        ..HistoryQuery::default()
+    };
+    let mut ids = store.latest_history_ids(&query, MAX_PARTS + 1)?;
     if ids.len() > MAX_PARTS {
         notes.push(format!(
             "时间段内记录超过 {MAX_PARTS} 件，只打包最新的 {MAX_PARTS} 件"
         ));
         ids.truncate(MAX_PARTS);
     }
-    ids.into_iter().map(|id| store.detail(id)).collect()
+    Ok(ids)
 }
 
-fn plc_logs(app: &AppHandle, from: i64, to: i64, notes: &mut Vec<String>) -> Vec<ly_plc::LogEntry> {
-    let host = app.state::<crate::plc::PlcHost>();
-    let mut offset = 0u32;
-    let mut entries = Vec::new();
-    loop {
-        let query = ly_plc::LogQuery {
-            start: Some(from),
-            end: Some(to),
-            levels: Vec::new(),
-            categories: Vec::new(),
-            point_id: None,
-            context: None,
-            keyword: None,
-            limit: Some(1000),
-            offset: Some(offset),
-        };
-        match host.engine().logbook().query(&query) {
-            Ok(page) => {
-                let full = page.items.len() == 1000;
-                entries.extend(page.items);
-                if !full {
-                    break;
+struct PartEntries {
+    count: usize,
+    revisions: BTreeSet<(String, String)>,
+    images: Vec<ImagePart>,
+}
+
+fn write_part_entries<W: Write + Seek>(
+    package: &mut Package<W>,
+    store: &Store,
+    request: &ExportRequest,
+    operation: &Operation,
+) -> Result<PartEntries, String> {
+    let ids = collect_part_ids(store, request, &mut package.notes)?;
+    let mut count = 0;
+    let mut csv = crate::history::CSV_HEADER.as_bytes().to_vec();
+    let mut revisions = BTreeSet::new();
+    let mut candidates = Vec::new();
+    let mut notes = Vec::new();
+    package.add_stream("records/parts.jsonl", |out| {
+        for (order, id) in ids.into_iter().enumerate() {
+            operation.checkpoint().map_err(io::Error::other)?;
+            let detail = match store.detail(id) {
+                Ok(detail) => detail,
+                Err(error) if !request.history_ids.is_empty() => {
+                    notes.push(format!("记录 #{id}：{error}"));
+                    continue;
                 }
-                if entries.len() as i64 >= MAX_PLC_LOGS {
-                    notes.push(format!(
-                        "PLC 日志超过 {MAX_PLC_LOGS} 条，只打包最新的 {MAX_PLC_LOGS} 条"
-                    ));
-                    break;
-                }
-                offset += 1000;
+                Err(error) => return Err(io::Error::other(error)),
+            };
+            serde_json::to_writer(&mut *out, &detail).map_err(io::Error::other)?;
+            out.write_all(b"\n")?;
+            csv.extend_from_slice(crate::history::csv_row(&detail.summary).as_bytes());
+            if let Some(revision) = &detail.summary.recipe_revision {
+                revisions.insert((detail.summary.project_id.clone(), revision.clone()));
             }
-            Err(error) => {
-                notes.push(format!("PLC 日志读取失败：{error}"));
-                break;
-            }
+            offer_image(&mut candidates, request, order, detail);
+            count += 1;
         }
-    }
-    entries
+        Ok(())
+    })?;
+    operation.check()?;
+    package.notes.extend(notes);
+    package.add("records/parts.csv", &csv)?;
+    candidates.sort_unstable_by_key(|(order, _)| *order);
+    Ok(PartEntries {
+        count,
+        revisions,
+        images: candidates.into_iter().map(|(_, part)| part).collect(),
+    })
 }
 
-fn part_images<W: std::io::Write>(
+fn part_images<W: Write + Seek>(
     app: &AppHandle,
     package: &mut Package<W>,
-    detail: &PartDetail,
+    part: &ImagePart,
     budget: &mut u64,
+    operation: &Operation,
 ) -> Result<usize, String> {
-    let id = detail.summary.id;
-    let Some(cycle_id) = detail.summary.cycle_id.as_deref() else {
+    let id = part.id;
+    let Some(cycle_id) = part.cycle_id.as_deref() else {
         package
             .notes
             .push(format!("记录 #{id} 没有 cycleId，无法确定原图"));
@@ -330,8 +444,8 @@ fn part_images<W: std::io::Write>(
     };
     let root = match crate::project::records::record_root_of(
         &crate::storage::root(app),
-        &detail.summary.project_id,
-        detail.recording.directory.as_deref(),
+        &part.project_id,
+        part.recording.directory.as_deref(),
     ) {
         Ok(root) => root,
         Err(error) => {
@@ -344,18 +458,8 @@ fn part_images<W: std::io::Write>(
     let folder = format!("records/{id}_{cycle_id}");
     let mut count = 0;
     let mut directory = None;
-    // 原图按 (相机, seq) 记在帧记录里（FrameRecord.raw_file）
-    let frame_files = detail.burst.iter().flat_map(|burst| {
-        burst.frames.iter().filter_map(move |frame| {
-            let camera = burst.cameras.get(frame.camera).map_or("?", String::as_str);
-            frame
-                .raw_file
-                .as_deref()
-                .map(|file| (format!("相机 {camera} 第 {} 帧", frame.seq), file))
-        })
-    });
-    let files: Vec<(String, &str)> = frame_files.collect();
-    for (label, file) in &files {
+    for (label, file) in &part.files {
+        operation.checkpoint()?;
         let Some(path) = relative(file) else {
             package
                 .notes
@@ -390,21 +494,61 @@ fn part_images<W: std::io::Write>(
             package.add(&format!("{folder}/part.json"), &bytes)?;
         }
     }
-    if count == 0 && files.is_empty() {
+    if count == 0 && part.files.is_empty() {
         package.notes.push(format!(
             "记录 #{id} 没有保留原图（录制状态：{:?}）",
-            detail.recording.state
+            part.recording.state
         ));
     }
     let comparisons = crate::storage::project(app)
         .join("workspaces")
         .join("comparisons")
         .join(id.to_string());
-    package.copy_dir(&comparisons, &format!("{folder}/comparisons"), &[])?;
+    package.copy_dir(
+        &comparisons,
+        &format!("{folder}/comparisons"),
+        &[],
+        operation,
+    )?;
     Ok(count)
 }
 
-pub fn export(app: &AppHandle, request: ExportRequest) -> Result<ExportResult, String> {
+fn write_archive<T>(
+    path: &Path,
+    operation: &Operation,
+    build: impl FnOnce(&mut Package<BufWriter<fs::File>>) -> Result<T, String>,
+) -> Result<(T, Vec<String>), String> {
+    let temporary = path.with_extension("zip.tmp");
+    let file = fs::File::create_new(&temporary).map_err(|e| e.to_string())?;
+    let result = (|| {
+        let mut package = Package::new(BufWriter::new(file));
+        let summary = build(&mut package)?;
+        operation.check()?;
+        let Package { zip, notes, .. } = package;
+        zip.finish()
+            .map_err(|e| e.to_string())?
+            .into_inner()
+            .map_err(|e| e.to_string())?
+            .sync_all()
+            .map_err(|e| e.to_string())?;
+        if path.try_exists().map_err(|e| e.to_string())? {
+            return Err("诊断包文件已存在，请重试".into());
+        }
+        operation.saving()?;
+        fs::rename(&temporary, path).map_err(|e| e.to_string())?;
+        Ok((summary, notes))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn export(
+    app: &AppHandle,
+    request: ExportRequest,
+    operation: &Operation,
+) -> Result<ExportResult, String> {
     if request.to <= request.from {
         return Err("结束时间必须晚于开始时间".into());
     }
@@ -415,11 +559,9 @@ pub fn export(app: &AppHandle, request: ExportRequest) -> Result<ExportResult, S
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
     let path = dir.join(format!("诊断包_{stamp}.zip"));
-    let temporary = dir.join(format!("诊断包_{stamp}.zip.tmp"));
-    let file = fs::File::create_new(&temporary).map_err(|e| e.to_string())?;
-    let mut package = Package::new(BufWriter::new(file));
-    let built = build(app, &request, &mut package);
-    let result = built.and_then(|summary| {
+    let (summary, notes) = write_archive(&path, operation, |package| {
+        let summary = build(app, &request, package, operation)?;
+        operation.check()?;
         package.add("README.md", README.as_bytes())?;
         let version = app.package_info().version.to_string();
         let identity = applog::build_identity();
@@ -432,29 +574,11 @@ pub fn export(app: &AppHandle, request: ExportRequest) -> Result<ExportResult, S
             "configSummary": crate::commands::config_summary(app),
             "summary": summary, "notes": package.notes, "files": package.files,
         });
-        package.add("manifest.json", &serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)?;
+        package.add(
+            "manifest.json",
+            &serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
+        )?;
         Ok(summary)
-    });
-    let finished = result.and_then(|summary| {
-        let Package { zip, notes, .. } = package;
-        zip.finish()
-            .map_err(|e| e.to_string())?
-            .into_inner()
-            .map_err(|e| e.to_string())?
-            .sync_all()
-            .map_err(|e| e.to_string())?;
-        Ok((summary, notes))
-    });
-    let (summary, notes) = match finished {
-        Ok(done) => done,
-        Err(error) => {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-    };
-    fs::rename(&temporary, &path).map_err(|e| {
-        let _ = fs::remove_file(&temporary);
-        e.to_string()
     })?;
     let bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     tracing::info!(path = %path.display(), bytes, "已导出诊断包");
@@ -466,11 +590,13 @@ pub fn export(app: &AppHandle, request: ExportRequest) -> Result<ExportResult, S
     })
 }
 
-fn build<W: std::io::Write>(
+fn build<W: Write + Seek>(
     app: &AppHandle,
     request: &ExportRequest,
     package: &mut Package<W>,
+    operation: &Operation,
 ) -> Result<ExportResult, String> {
+    operation.stage("collecting_logs")?;
     let mut logs = 0;
     let files = applog::files_in_range(&applog::dir(app)?, request.from, request.to)
         .unwrap_or_else(|error| {
@@ -478,6 +604,7 @@ fn build<W: std::io::Write>(
             Vec::new()
         });
     for file in files {
+        operation.checkpoint()?;
         let name = file_name(&file);
         let mut out = Vec::new();
         match applog::export_file(&file, request.from, request.to, &mut out) {
@@ -492,34 +619,35 @@ fn build<W: std::io::Write>(
                 .push(format!("运行日志 {name} 未打包：{error}")),
         }
     }
-    let entries = plc_logs(app, request.from, request.to, &mut package.notes);
-    let plc_logs = entries.len() as u64;
-    package.add("logs/plc.jsonl", &plc_jsonl(entries))?;
+    let plc = app.state::<crate::plc::PlcHost>();
+    let plc_logs = write_plc_logs(
+        package,
+        plc.log_path(),
+        request.from,
+        request.to,
+        MAX_PLC_LOGS,
+        operation,
+    )?;
+    operation.checkpoint()?;
     let project = crate::storage::project(app);
     package.copy_file(&project.join("project.json"), "project.json")?;
-    package.copy_dir(&crate::storage::project_config(app), "config", &[])?;
+    package.copy_dir(
+        &crate::storage::project_config(app),
+        "config",
+        &[],
+        operation,
+    )?;
     let machine = crate::storage::config(app).join("site-offline.json");
     if machine.is_file() {
         package.copy_file(&machine, "machine/site-offline.json")?;
     }
     let state = crate::storage::state(app);
-    package.copy_dir(&state, "state", &[])?;
+    package.copy_dir(&state, "state", &[], operation)?;
+    operation.stage("packing_records")?;
     let store = app.state::<Store>();
-    let parts = collect_parts(&store, request, &mut package.notes)?;
-    let mut csv = crate::history::CSV_HEADER.as_bytes().to_vec();
-    let mut details = Vec::new();
-    let mut revisions = BTreeSet::new();
-    for detail in &parts {
-        csv.extend_from_slice(crate::history::csv_row(&detail.summary).as_bytes());
-        details.extend_from_slice(&serde_json::to_vec(detail).map_err(|e| e.to_string())?);
-        details.push(b'\n');
-        if let Some(revision) = &detail.summary.recipe_revision {
-            revisions.insert((detail.summary.project_id.clone(), revision.clone()));
-        }
-    }
-    package.add("records/parts.csv", &csv)?;
-    package.add("records/parts.jsonl", &details)?;
-    for (project, revision) in &revisions {
+    let records = write_part_entries(package, &store, request, operation)?;
+    for (project, revision) in &records.revisions {
+        operation.checkpoint()?;
         match store.recipe_snapshot(project, revision) {
             Ok(Some(recipe)) => package.add(
                 &format!("recipes/{project}/{revision}.json"),
@@ -531,23 +659,18 @@ fn build<W: std::io::Write>(
                 .push(format!("配方快照 {revision} 读取失败：{error}")),
         }
     }
-    let chosen = image_parts(
-        &parts
-            .iter()
-            .map(|p| (p.summary.id, p.summary.verdict))
-            .collect::<Vec<_>>(),
-        !request.history_ids.is_empty(),
-        request.images,
-        request.max_image_parts.min(MAX_IMAGE_PARTS),
-    );
     let mut budget = MAX_IMAGE_BYTES;
     let mut images = 0;
     let mut image_parts = 0;
-    for detail in parts.iter().filter(|p| chosen.contains(&p.summary.id)) {
+    if !records.images.is_empty() {
+        operation.stage("packing_images")?;
+    }
+    for part in &records.images {
         if budget == 0 {
             break;
         }
-        let added = part_images(app, package, detail, &mut budget)?;
+        operation.checkpoint()?;
+        let added = part_images(app, package, part, &mut budget, operation)?;
         if added > 0 {
             image_parts += 1;
         }
@@ -558,7 +681,7 @@ fn build<W: std::io::Write>(
         bytes: 0,
         logs,
         plc_logs,
-        parts: parts.len(),
+        parts: records.count,
         image_parts,
         images,
         notes: Vec::new(),
@@ -569,6 +692,7 @@ fn build<W: std::io::Write>(
 pub async fn diagnostics_export(
     app: AppHandle,
     request: Option<ExportRequest>,
+    task_id: Option<String>,
 ) -> Result<ExportResult, String> {
     let request = request.unwrap_or_else(|| {
         let to = ly_plc::now_ms();
@@ -581,10 +705,14 @@ pub async fn diagnostics_export(
             max_image_parts: default_image_parts(),
         }
     });
+    let operation = Operation::start(&app, task_id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let _busy = crate::raw_compress::activity().busy();
-        export(&app, request)
+        operation.run(|operation| export(&app, request, operation))
     })
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[cfg(test)]
+#[path = "diagnostics/record_stream_tests.rs"]
+mod record_stream_tests;

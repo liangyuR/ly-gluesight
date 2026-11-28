@@ -7,13 +7,12 @@
 //!   移入 `records/imported/`，提交失败即移回删除。中断时目录带未提交标记，下次启动按记录库核对后删掉或保留。
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
-use zip::ZipArchive;
 
 use crate::burst_judge::FrameState;
 use crate::operation::Operation;
@@ -33,6 +32,7 @@ const STAGING_PREFIX: &str = ".staging-";
 /// 一次最多导出的件数：每件约四千个帧文件，清单要在导入方的清单大小上限（64 MB）以内。
 pub const EXPORT_LIMIT: usize = 20;
 const NO_IMAGES: &str = "导出包未带原图";
+const PREVIEW_CHANGED: &str = "历史包内容已变化，请重新读取预览后再导入";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -125,8 +125,13 @@ fn allowed(path: &str, directories: &BTreeSet<&str>) -> bool {
         && part_directory(path).is_some_and(|directory| directories.contains(directory))
 }
 
-fn read_manifest<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<PackageManifest, String> {
-    let value = transfer::manifest_value(zip, LABEL)?;
+fn manifest_sha256(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+fn parse_manifest(text: &str) -> Result<PackageManifest, String> {
+    let value: Value =
+        serde_json::from_str(text).map_err(|e| format!("{LABEL}清单格式无效：{e}"))?;
     if value.get("kind").and_then(Value::as_str) != Some(KIND) {
         return Err(format!("不是{LABEL}（可能是项目导出包或配方回传包）"));
     }
@@ -169,11 +174,6 @@ fn read_manifest<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<PackageManif
         }
     }
     Ok(manifest)
-}
-
-/// 读包清单（不解包）。
-pub fn inspect(path: &Path) -> Result<PackageManifest, String> {
-    read_manifest(&mut transfer::open_zip(path, LABEL)?)
 }
 
 /// 导出的来源：记录所属项目在各录制盘上的真机录制根与项目名称。
@@ -291,6 +291,7 @@ pub fn export_package(
         target,
         entries,
         |files| PackageManifest { files, ..manifest },
+        || operation.check(),
         || operation.advance(FrameState::Measured),
         || operation.saving(),
     )
@@ -528,10 +529,17 @@ pub fn import_package(
     project: &str,
     root: &Path,
     package: &Path,
+    expected_manifest_sha256: &str,
+    history_days: u32,
     operation: &Operation,
 ) -> Result<Imported, String> {
     let mut zip = transfer::open_zip(package, LABEL)?;
-    let manifest = read_manifest(&mut zip)?;
+    let text = transfer::manifest_text(&mut zip, LABEL)?;
+    if manifest_sha256(&text) != expected_manifest_sha256 {
+        return Err(PREVIEW_CHANGED.into());
+    }
+    let manifest = parse_manifest(&text)?;
+    drop(text);
     let cycles: Vec<String> = manifest.parts.iter().map(|p| p.cycle_id.clone()).collect();
     let known = store.known_cycles(&cycles)?;
     let skipped: Vec<Skipped> = manifest
@@ -584,6 +592,7 @@ pub fn import_package(
             |path| allowed(path, &directories),
             LABEL,
             |path| part_directory(path).is_none_or(|d| wanted_directories.contains(d)),
+            || operation.check(),
             || operation.advance(FrameState::Measured),
         )?;
         let database = staging.join(DATABASE);
@@ -660,6 +669,18 @@ pub fn import_package(
             "{without} 件没带原图：只能按已存指标重判，不能原图复测或选作示教件"
         ));
     }
+    let days = i64::from(history_days.max(1));
+    let cutoff = ly_plc::now_ms() - days * 86_400_000;
+    let stale = manifest
+        .parts
+        .iter()
+        .filter(|part| part.ts < cutoff && inserted_cycles.contains(&part.cycle_id))
+        .count();
+    if stale > 0 {
+        notes.push(format!(
+            "{stale} 件早于历史保留期（{days} 天），会在下次记录清理时连同原图删除；需要保留请先在设置里调大保留天数"
+        ));
+    }
     Ok(Imported {
         imported: merged.inserted,
         ids,
@@ -716,6 +737,7 @@ pub struct HistoryPackageExported {
 pub struct HistoryPackagePreview {
     pub path: String,
     pub bytes: u64,
+    pub manifest_sha256: String,
     pub source_project: String,
     pub source_project_name: String,
     pub exported_at: i64,
@@ -724,6 +746,34 @@ pub struct HistoryPackagePreview {
     pub with_images: usize,
     pub duplicates: usize,
     pub notes: Vec<String>,
+}
+
+pub fn preview_package(store: &Store, path: &Path) -> Result<HistoryPackagePreview, String> {
+    let mut zip = transfer::open_zip(path, LABEL)?;
+    let text = transfer::manifest_text(&mut zip, LABEL)?;
+    let manifest = parse_manifest(&text)?;
+    let manifest_sha256 = manifest_sha256(&text);
+    drop(text);
+    let bytes = zip.into_inner().get_ref().metadata().map_or(0, |m| m.len());
+    let cycles: Vec<String> = manifest.parts.iter().map(|p| p.cycle_id.clone()).collect();
+    let duplicates = store.known_cycles(&cycles)?.len();
+    Ok(HistoryPackagePreview {
+        bytes,
+        path: path.display().to_string(),
+        manifest_sha256,
+        source_project: manifest.source_project,
+        source_project_name: manifest.source_project_name,
+        exported_at: manifest.exported_at,
+        app_version: manifest.app_version,
+        parts: manifest.parts.len(),
+        with_images: manifest
+            .parts
+            .iter()
+            .filter(|p| p.directory.is_some())
+            .count(),
+        duplicates,
+        notes: manifest.notes,
+    })
 }
 
 fn exports_dir(app: &AppHandle) -> PathBuf {
@@ -835,25 +885,19 @@ pub async fn history_package_pick(
         let Some(path) = dialog.pick_file() else {
             return Ok(None);
         };
-        let manifest = inspect(&path)?;
-        let cycles: Vec<String> = manifest.parts.iter().map(|p| p.cycle_id.clone()).collect();
-        let duplicates = app.state::<Store>().known_cycles(&cycles)?.len();
-        Ok(Some(HistoryPackagePreview {
-            bytes: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
-            path: path.display().to_string(),
-            source_project: manifest.source_project,
-            source_project_name: manifest.source_project_name,
-            exported_at: manifest.exported_at,
-            app_version: manifest.app_version,
-            parts: manifest.parts.len(),
-            with_images: manifest
-                .parts
-                .iter()
-                .filter(|p| p.directory.is_some())
-                .count(),
-            duplicates,
-            notes: manifest.notes,
-        }))
+        preview_package(&app.state::<Store>(), &path).map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn history_package_preview(
+    app: AppHandle,
+    path: String,
+) -> Result<HistoryPackagePreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        preview_package(&app.state::<Store>(), Path::new(&path))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -863,6 +907,7 @@ pub async fn history_package_pick(
 pub async fn history_package_import(
     app: AppHandle,
     path: String,
+    manifest_sha256: String,
     task_id: Option<String>,
 ) -> Result<Imported, String> {
     let operation = Operation::start(&app, task_id)?;
@@ -875,17 +920,16 @@ pub async fn history_package_import(
             let roots = crate::project::records::record_roots(&data, &project)?;
             let root = crate::disk_guard::first_with_reserve(&roots)
                 .map_or_else(|| roots[0].clone(), |i| roots[i].clone());
-            let mut imported = import_package(&store, &project, &root, Path::new(&path), operation)?;
-            let days = app.state::<crate::cycle::CycleHost>().settings().history_days.max(1) as i64;
-            let cutoff = ly_plc::now_ms() - days * 86_400_000;
-            let stale = inspect(Path::new(&path))
-                .map(|m| m.parts.iter().filter(|p| p.ts < cutoff && !imported.skipped.iter().any(|s| s.cycle_id == p.cycle_id)).count())
-                .unwrap_or(0);
-            if stale > 0 {
-                imported.notes.push(format!(
-                    "{stale} 件早于历史保留期（{days} 天），会在下次记录清理时连同原图删除；需要保留请先在设置里调大保留天数"
-                ));
-            }
+            let history_days = app.state::<crate::cycle::CycleHost>().settings().history_days;
+            let imported = import_package(
+                &store,
+                &project,
+                &root,
+                Path::new(&path),
+                &manifest_sha256,
+                history_days,
+                operation,
+            )?;
             tracing::info!(%path, %project, imported = imported.imported, skipped = imported.skipped.len(), "已导入历史件");
             Ok(imported)
         })

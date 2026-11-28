@@ -341,6 +341,7 @@ pub(super) fn publish_checks(w: &Workspace, configs: &[crate::camera::CameraConf
             result.push(Check {
                 advisory: false,
                 name: format!("混胶色差 · {} 第 {} 段", camera.camera, corridor.segment),
+                teaching_targets: Vec::new(),
                 passed: ready.is_ok(),
                 detail: ready
                     .err()

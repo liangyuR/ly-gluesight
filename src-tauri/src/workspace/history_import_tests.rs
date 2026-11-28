@@ -65,7 +65,7 @@ fn imported_round_references_recording(compressed: bool) {
     use crate::settings::RecordMode;
 
     let root = super::super::tests::ImportTestDir::new();
-    let records = root.0.join("records");
+    let records = crate::project::dir(&root.0, "default").join("records");
     let (tx, rx) = channel();
     let recorder = Recorder::new(
         vec![records.clone()],
@@ -97,12 +97,13 @@ fn imported_round_references_recording(compressed: bool) {
         }
     }
     rec.annotate("partMode", json!("maintenanceCollect"));
+    let white_balance = json!({"unit": "ratio", "red": 1.5, "green": 1.0, "blue": 1.25});
     rec.annotate(
         "devices",
         json!(cameras
             .iter()
             .map(|id| json!({"cameraId": id, "cameraConfig": DEVICE,
-        "imaging": {"exposureUs": 60.0, "gainDb": 6.0}, "deviceSession": 3}))
+        "imaging": {"exposureUs": 60.0, "gainDb": 6.0, "whiteBalance": white_balance}, "deviceSession": 3}))
             .collect::<Vec<_>>()),
     );
     rec.annotate(
@@ -128,13 +129,33 @@ fn imported_round_references_recording(compressed: bool) {
         );
     }
     let evidence = recording(Some(&directory));
+    let part_summary = summary(CYCLE);
+    let current = configs(&doc, DEVICE);
+    let imported = BTreeMap::new();
+    let mut roots = crate::project::records::RecordRoots::new(&root.0);
+    let listing = assess(
+        &doc,
+        &current,
+        &imported,
+        &part_summary,
+        &evidence,
+        roots
+            .resolve(&part_summary.project_id, evidence.directory.as_deref())
+            .and_then(|root| read_part(root, &evidence)),
+        false,
+    );
     let assessed = assess(
         &doc,
-        &configs(&doc, DEVICE),
-        &BTreeMap::new(),
-        &summary(CYCLE),
+        &current,
+        &imported,
+        &part_summary,
         &evidence,
         read_part(&records, &evidence),
+        true,
+    );
+    assert_eq!(
+        serde_json::to_value(&listing.view).unwrap(),
+        serde_json::to_value(&assessed.view).unwrap(),
     );
     let round = assessed
         .round
@@ -162,6 +183,12 @@ fn imported_round_references_recording(compressed: bool) {
         loaded.origin.as_ref().map(RoundOrigin::cycle_id),
         Some(CYCLE)
     );
+    for camera in &loaded.cameras {
+        assert_eq!(
+            serde_json::to_value(camera.imaging.white_balance).unwrap(),
+            white_balance
+        );
+    }
     for (camera, id) in cameras.iter().enumerate() {
         for seq in 1..=GROUPS {
             let image =
@@ -216,6 +243,7 @@ fn camera_config_differs_from_recording_then_piece_still_usable_with_warning() {
         &summary(CYCLE),
         &recording(Some(Path::new("recorded"))),
         Ok((PathBuf::from("recorded"), part)),
+        true,
     );
     assert!(
         assessed.round.is_some() && assessed.view.reasons.is_empty(),
@@ -223,4 +251,96 @@ fn camera_config_differs_from_recording_then_piece_still_usable_with_warning() {
         assessed.view.reasons
     );
     assert_eq!(assessed.view.warnings.len(), cameras.len());
+}
+
+#[test]
+fn recording_timing_uses_all_valid_timestamps_including_unsaved_images() {
+    let doc = crate::recipe::samples_burst();
+    let cameras = doc.plan_cameras();
+    let timestamps = [
+        [Some(200), Some(0), Some(100)],
+        [Some(400), Some(0), None],
+        [Some(20), Some(20), None],
+    ];
+    let mut frames = Vec::new();
+    for (camera, (id, times)) in cameras.iter().zip(timestamps).enumerate() {
+        for (index, ts) in times.into_iter().enumerate() {
+            let seq = index + 1;
+            frames.push(json!({
+                "camera": camera, "cameraId": id, "seq": seq, "ts": ts,
+                "available": (camera, seq) != (0, 3), "frameCounter": 100 + seq,
+                "file": format!("{id}_s{seq:06}.pgm"), "width": 2, "height": 1,
+            }));
+        }
+    }
+    let part =
+        json!({"cycleId": CYCLE, "cameras": cameras, "groupCount": GROUPS, "frames": frames});
+    let assessed = assess(
+        &doc,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &summary(CYCLE),
+        &recording(Some(Path::new("recorded"))),
+        Ok((PathBuf::from("recorded"), part)),
+        false,
+    );
+    assert!(!assessed.view.complete);
+    assert_eq!(assessed.view.duration_ms, Some(400));
+    assert_eq!(assessed.view.measured_fps, Some(6.25));
+}
+
+#[test]
+fn historical_part_shapes_keep_their_candidate_assessment() {
+    let root = super::super::tests::ImportTestDir::new();
+    let dir = root.0.join("recorded");
+    std::fs::create_dir_all(&dir).unwrap();
+    let evidence = recording(Some(&dir));
+    let summary = summary(CYCLE);
+    let doc = crate::recipe::samples_burst();
+    let cases: [&[u8]; 3] = [
+        br#"{"cycleId":"old","cycleId":"collect-cycle-7","cameras":["cam1"],"groupCount":1,"frames":true,"frames":[{"camera":12,"cam\u0065ra":0,"cameraId":"cam1","seq":1,"available":true,"file":"cam1_s000001.pgm","width":2,"height":1,"frameCounter":101,"ignored":[1,2]}]}"#,
+        br#"{"cycleId":"collect-cycle-7","cameras":["cam1"],"groupCount":1,"frames":[{"camera":0,"cameraId":"cam1","seq":1,"available":true,"file":"cam1_s000001.pgm","width":2,"height":1,"frameCounter":101},[null],false]}"#,
+        br#"{"cycleId":"collect-cycle-7","cameras":["cam1"],"groupCount":1,"frames":{"old":[]}}"#,
+    ];
+    for bytes in cases {
+        std::fs::write(dir.join("part.json"), bytes).unwrap();
+        let original = serde_json::from_slice(bytes).unwrap();
+        let view = |part| {
+            assess(
+                &doc,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &summary,
+                &evidence,
+                part,
+                false,
+            )
+            .view
+        };
+        assert_eq!(
+            serde_json::to_value(view(read_part(&root.0, &evidence))).unwrap(),
+            serde_json::to_value(view(Ok((dir.clone(), original)))).unwrap(),
+        );
+    }
+}
+
+#[test]
+fn invalid_values_in_unused_part_fields_still_reject_the_recording() {
+    let root = super::super::tests::ImportTestDir::new();
+    let dir = root.0.join("recorded");
+    std::fs::create_dir_all(&dir).unwrap();
+    let evidence = recording(Some(&dir));
+    let nested = format!(r#"{{"unused":{}0{}}}"#, "[".repeat(140), "]".repeat(140));
+    let cases: [&[u8]; 5] = [
+        br#"{"unused":1e999}"#,
+        br#"{"frames":[{"unused":"\uD800"}]}"#,
+        b"{\"unused\":\"\xff\"}",
+        nested.as_bytes(),
+        br#"{"unused":true} trailing"#,
+    ];
+    for bytes in cases {
+        assert!(serde_json::from_slice::<Value>(bytes).is_err());
+        std::fs::write(dir.join("part.json"), bytes).unwrap();
+        assert!(read_part(&root.0, &evidence).is_err());
+    }
 }

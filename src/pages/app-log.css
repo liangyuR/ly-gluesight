@@ -11,6 +11,11 @@
   gap: 12px;
 }
 
+.diagnostics-export-path {
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .runtime-stream {
   flex: 1;
   min-height: 10rem;

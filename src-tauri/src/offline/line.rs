@@ -130,6 +130,7 @@ pub fn nominal_frames(
 }
 
 /// 第 seq 帧在名义剖面里的位置：(段下标, 类型, 段内进度)。超出名义总数的帧算在最后一段末尾。
+#[cfg(test)]
 pub fn locate(frames: &[(SegmentKind, u32)], seq: u64) -> Option<(usize, SegmentKind, f32)> {
     let mut start = 0u64;
     for (segment, &(kind, count)) in frames.iter().enumerate() {

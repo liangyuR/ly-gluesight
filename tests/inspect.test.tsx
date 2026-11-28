@@ -1,17 +1,21 @@
-import { useState } from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { useState, type ReactElement } from "react";
+import { act, render as renderUi, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TitlebarSlotsContext } from "../src/layout/TitlebarContent";
+import HistoryDetailPage from "../src/pages/HistoryDetailPage";
 import InspectPage from "../src/pages/InspectPage";
+import PreviousEvidence, { PreviousEvidenceProvider } from "../src/features/cycle/components/PreviousEvidence";
 import { cycleApi, recipeApi, useCycle, useLayout } from "../src/features/cycle/api";
 import { burstImageApi } from "../src/features/workspace/burstImages";
+import { historyApi } from "../src/features/history/api";
 import { plcApi } from "../src/features/plc/api";
-import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, frameMetrics, readiness, snapshot } from "./fixtures";
+import { burstJudgement, burstPartDetail, burstRecipe, burstSummary, burstWorkspaceView, deferred, frameMetrics, readiness, snapshot } from "./fixtures";
 import { burstPartView, burstResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
 import type { Readiness, Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
+import type { CalibrationFrameView } from "../src/features/plan/types";
 import type { PointValue } from "../src/features/plc/types";
 
 vi.mock("../src/features/cycle/api", () => ({
@@ -22,19 +26,25 @@ vi.mock("../src/features/cycle/api", () => ({
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(),  } }));
 vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), liveView: vi.fn(), record: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, usePlcValues: () => values,
-  usePlcStatus: () => ({ state: "connected", since: 1 }), subscribe: () => () => {} }));
+  usePlcStatus: () => ({ state: "connected", since: 1 }),
+  subscribe: (_event: string, _receive: unknown, _onError?: unknown, onSettled?: () => void) => {
+    onSettled?.();
+    return () => {};
+  },
+}));
 
 let state: Snapshot, layout: Recipe | null;
 let recipeList: RecipeSummary[];
 let report: Readiness;
 let values: Record<string, PointValue>;
+const render = (ui: ReactElement) => renderUi(ui, { wrapper: PreviousEvidenceProvider });
 const recipe = (id = "A") => burstRecipe({ id, name: `段配方 ${id}` });
 const candidate = (id = "A") => burstWorkspaceView(recipe(id));
 beforeEach(() => {
   state = snapshot(); layout = candidate().layout; values = {};
   recipeList = [burstSummary(recipe()), burstSummary(recipe("B"))];
   report = readiness();
-  vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state }));
+  vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, snapshotCurrent: true, snapshotError: null, subscriptionError: null, retrySnapshot: vi.fn() }));
   vi.mocked(useLayout).mockImplementation(() => layout);
   vi.mocked(cycleApi.selectRecipe).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.setMaintenance).mockReset().mockResolvedValue(undefined);
@@ -46,6 +56,48 @@ beforeEach(() => {
 });
 const nativeSelect = (name: string, root: Pick<typeof screen, "getByLabelText"> = screen) => root.getByLabelText(name, { selector: "select" });
 const manual = () => nativeSelect("当前检测配方");
+
+it("在线状态首次读取失败 → 在当前页显示错误并提供重新读取", async () => {
+  const retrySnapshot = vi.fn();
+  vi.mocked(useCycle).mockReturnValue({ snapshot: null, snapshotCurrent: false, snapshotError: "暂时无法读取在线状态", subscriptionError: null, retrySnapshot });
+  render(<MemoryRouter><InspectPage /></MemoryRouter>);
+  expect(screen.getByText("暂时无法读取在线状态")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "重新读取" }));
+  expect(retrySnapshot).toHaveBeenCalledOnce();
+});
+
+it("在线订阅失败且仍有上次快照 → 允许重连，旧状态不能用于操作", async () => {
+  const retrySnapshot = vi.fn();
+  vi.mocked(useCycle).mockReturnValue({ snapshot: state, snapshotCurrent: false, snapshotError: null, subscriptionError: "无法接收实时状态", retrySnapshot });
+  render(<MemoryRouter><InspectPage /></MemoryRouter>);
+  expect(screen.getByText("无法接收实时状态")).toBeVisible();
+  expect(manual()).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "维护模式" })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "重新连接" }));
+  expect(retrySnapshot).toHaveBeenCalledOnce();
+});
+
+it("历史查询期间清除回查位置 → 查询稍后成功也不离开在线页", async () => {
+  let showRecord: (id: number) => void = () => {};
+  const pending = new Promise<number>(resolve => { showRecord = resolve; });
+  vi.spyOn(historyApi, "idByCycle").mockReturnValue(pending);
+
+  function Review() {
+    const [shown, setShown] = useState(true);
+    return shown ? <PreviousEvidence evidence={{ cycleId: "archived-cycle", sn: "1", seq: 5 }} onDismiss={() => setShown(false)} />
+      : <span>检测在线</span>;
+  }
+  const user = userEvent.setup();
+  render(<MemoryRouter initialEntries={["/inspect"]}><Routes>
+    <Route path="/inspect" element={<Review />} />
+    <Route path="/history/:id" element={<span>历史回查</span>} />
+  </Routes></MemoryRouter>);
+  await user.click(screen.getByRole("button", { name: "继续查看证据" }));
+  expect(screen.getByRole("button", { name: "继续查看证据" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "清除回查位置" }));
+  await act(async () => { showRecord(41); });
+  expect(screen.getByText("检测在线")).toBeVisible();
+});
 
 function TitlebarHarness({ showPage = true }: { showPage?: boolean }) {
   const [details, setDetails] = useState<HTMLDivElement | null>(null);
@@ -91,7 +143,7 @@ it("在线检测挂到窗口标题栏 → 状态与操作可用，离页后清�
 });
 
 describe("在线检测切型锁定", () => {
-  it("本件判定包含生产跳过 → 帧格与原图标记不判定，新工件不沿用上一件跳过范围", async () => {
+  it("本件判定包含生产跳过 → 原图、帧格和采集详情一致，换件后清除旧范围", async () => {
     const part = burstPartView(), result = burstResult();
     part.burst.groups[0].cells[0].verdict = "NG_GAP";
     part.burst.groups[0].cells[1] = { status: "missing", verdict: null, frameCounter: null };
@@ -113,8 +165,24 @@ describe("在线检测切型锁定", () => {
     expect(camera.getByText("不参与判定")).toBeVisible();
     expect(camera.getByText("NG · 仅供诊断")).toBeVisible();
     expect(within(screen.getByRole("region", { name: "CAM-2 帧组 1" })).getByText("原图缺失；本帧组生产跳过，不参与判定。")).toBeVisible();
-    state = { ...state, part: { ...part, cycleId: "next-cycle" } };
+
+    await userEvent.click(screen.getByRole("button", { name: /^采集详情/ }));
+    const cells = () => within(screen.getByRole("table", { name: "本帧组各相机" }));
+    const camera1 = () => within(cells().getByRole("row", { name: /CAM-1/ }));
+    const camera2 = () => within(cells().getByRole("row", { name: /CAM-2/ }));
+    expect(camera1().getByText("生产跳过")).toBeVisible();
+    expect(camera1().getByText("不参与判定")).toBeVisible();
+    expect(camera1().getByText("NG · 断胶 · 仅供诊断")).toBeVisible();
+    expect(camera1().getByText("1001")).toBeVisible();
+    expect(camera2().getByText("缺帧 · 仅供诊断")).toBeVisible();
+    expect(camera2().getByText("不参与判定")).toBeVisible();
+
+    state = { ...state, part: { ...part, cycleId: "next-cycle", burst: { ...part.burst, groups: [part.burst.groups[0]], groupCount: 1 } } };
     page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(camera1().getByText("NG · 断胶")).toBeVisible();
+    expect(camera2().getByText("缺帧")).toBeVisible();
+    expect(cells().queryByText("生产跳过")).toBeNull();
+    await userEvent.keyboard("{Escape}");
     const next = within(screen.getByRole("group", { name: "帧组" }));
     expect(within(next.getByRole("button", { name: "帧组 1" })).getByRole("img", { name: "CAM-1 · NG" })).toBeVisible();
     expect(screen.queryByText("生产跳过 4 帧组 · 不参与判定")).toBeNull();
@@ -190,9 +258,103 @@ describe("在线检测段配方", () => {
     expect(screen.queryByRole("button", { name: "返回当前帧组" })).not.toBeInTheDocument();
   });
 
-  it("OK 工件缺帧 → 从完整性明细定位对应帧组，下一件收起上一件证据", async () => {
+  it("同件更新移除手选帧组 → 原图和采集详情都恢复跟随最新组", async () => {
+    const part = state.part!;
+    const groups = part.burst.groups.filter(({ seq }) => [5, 8, 12].includes(seq));
+    state = { ...state, part: { ...part, burst: { ...part.burst, groups } } };
     const user = userEvent.setup();
     const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    await user.click(screen.getByRole("button", { name: "帧组 5 · 不完整" }));
+    expect(within(screen.getByRole("region", { name: "CAM-2 帧组 5" })).getByText("缺帧", { selector: ".wp-image-empty strong" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "返回当前帧组" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: /^采集详情/ }));
+    const capture = () => within(screen.getByRole("region", { name: "采集与测量" }));
+    const camera = (name: RegExp) => within(capture().getByRole("row", { name }));
+    expect(capture().getByRole("heading", { name: "帧组 5" })).toBeVisible();
+    expect(camera(/CAM-1/).getByText("1005")).toBeVisible();
+    expect(camera(/CAM-2/).getByText("缺帧")).toBeVisible();
+
+    state = { ...state, part: { ...part, burst: { ...part.burst, groups: groups.filter(({ seq }) => seq !== 5) } } };
+    page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(capture().getByRole("heading", { name: "帧组 12" })).toBeVisible();
+    expect(camera(/CAM-2/).getByText("2012")).toBeVisible();
+
+    await user.keyboard("{Escape}");
+    const latest = () => within(screen.getByRole("region", { name: "CAM-2 帧组 12" }));
+    expect(await latest().findByRole("img", { name: "CAM-2 · 帧组 12" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "返回当前帧组" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "查看首个帧组 5" }));
+    expect(latest().getByRole("img", { name: "CAM-2 · 帧组 12" })).toBeVisible();
+  });
+
+  it("一台相机的叠图尚未返回时连续翻帧 → 只补查末帧且其他相机继续显示量测证据", async () => {
+    const old = deferred<CalibrationFrameView>();
+    const latest = deferred<CalibrationFrameView>();
+    const evidence = (camera: number, seq: number, width: number): CalibrationFrameView => ({
+      segment: 1, corridor: [], searchHalfPx: null, edges: [], partEdges: [],
+      metrics: frameMetrics(camera, seq, {
+        measurementEvidence: {
+          version: 1, stations: [], exactStations: 0, clippedStations: 1, absentStations: 0,
+          unknownStations: 0, maxWidthLowerBoundMm: width, presentRatio: 1,
+        },
+      }),
+    });
+    vi.mocked(burstImageApi.liveView).mockImplementation(async (_, _revision, camera, seq) => {
+      if (camera === 1 && seq === 12) return old.promise;
+      if (camera === 1 && seq === 4) return latest.promise;
+      return camera === 0 && seq === 4 ? evidence(camera, seq, 16) : null;
+    });
+    vi.mocked(burstImageApi.live).mockImplementation(async (_, _revision, camera, seq) => {
+      if (camera === 1 && seq === 4) throw new Error("本帧原图未保留");
+      return { url: "data:,", width: 100, height: 60 };
+    });
+    const cam2Reads = () => vi.mocked(burstImageApi.liveView).mock.calls.filter(([, , camera]) => camera === 1).map(([, , , seq]) => seq);
+    const user = userEvent.setup();
+    try {
+      render(<MemoryRouter><InspectPage /></MemoryRouter>);
+      await waitFor(() => expect(cam2Reads()).toEqual([12]));
+      await user.click(screen.getByRole("button", { name: "帧组 3" }));
+      await user.click(screen.getByRole("button", { name: "帧组 4" }));
+
+      const cam1 = within(screen.getByRole("region", { name: "CAM-1 帧组 4" }));
+      expect(await cam1.findByLabelText("量测证据")).toHaveTextContent("最大可靠下界 ≥ 16.00 mm");
+      const cam2 = within(screen.getByRole("region", { name: "CAM-2 帧组 4" }));
+      expect(await cam2.findByText("本帧原图未保留")).toBeVisible();
+      expect(cam2Reads()).toEqual([12]);
+
+      await act(async () => old.resolve(evidence(1, 12, 30)));
+      await waitFor(() => expect(cam2Reads()).toEqual([12, 4]));
+      expect(cam2.queryByLabelText("量测证据")).not.toBeInTheDocument();
+      await act(async () => latest.resolve(evidence(1, 4, 8)));
+      expect(await cam2.findByLabelText("量测证据")).toHaveTextContent("最大可靠下界 ≥ 8.00 mm");
+      expect(cam2.queryByText(/30\.00 mm/)).not.toBeInTheDocument();
+    } finally {
+      await act(async () => {
+        old.resolve(evidence(1, 12, 30));
+        latest.resolve(evidence(1, 4, 8));
+      });
+    }
+  });
+
+  it("从完整性明细定位后换件 → 在线跟随新件并保留可清除的历史回查位置", async () => {
+    const previous = state.part!;
+    vi.spyOn(historyApi, "idByCycle").mockResolvedValueOnce(null)
+      .mockImplementation(async cycleId => cycleId === previous.cycleId ? 41 : 73);
+    const detail = burstPartDetail();
+    vi.spyOn(historyApi, "overview").mockResolvedValue({ ...detail, burst: null,
+      summary: { ...detail.summary, id: 41, sn: previous.sn, cycleId: previous.cycleId } });
+    vi.spyOn(historyApi, "neighbors").mockResolvedValue({ older: null, newer: null });
+    function Destination() {
+      const { pathname, search } = useLocation();
+      return <><output aria-label="历史定位">{pathname}{search}</output><HistoryDetailPage /></>;
+    }
+    const renderApp = () => <MemoryRouter initialEntries={["/inspect"]}><Routes>
+      <Route path="/inspect" element={<InspectPage />} />
+      <Route path="/history/:id" element={<Destination />} />
+    </Routes></MemoryRouter>;
+    const user = userEvent.setup();
+    const page = render(renderApp());
     const verdict = within(screen.getByRole("region", { name: "整件判定" }));
     expect(verdict.getByText("OK")).toBeVisible();
     await user.click(verdict.getByRole("button", { name: /检测完整性.*检测不完整/ }));
@@ -202,10 +364,30 @@ describe("在线检测段配方", () => {
     const camera = within(screen.getByRole("region", { name: "CAM-2 帧组 5" }));
     expect(camera.getByText("缺帧", { selector: ".wp-image-empty strong" })).toBeVisible();
 
-    state = { ...state, phase: "ACQUIRE", part: burstPartView("next") };
-    page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(screen.queryByRole("button", { name: "继续查看证据" })).not.toBeInTheDocument();
+    state = { ...state, phase: "ACQUIRE", part: burstPartView(previous.sn, "next-cycle") };
+    page.rerender(renderApp());
     expect(screen.queryByRole("region", { name: "检测覆盖明细" })).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "CAM-2 帧组 5" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "CAM-2 帧组 12" })).toBeVisible();
+
+    const saved = within(screen.getByRole("region", { name: "上次定位的检测证据" }));
+    expect(saved.getByText(`SN ${previous.sn} · 帧组 5 · CAM-2`)).toBeVisible();
+    await user.click(saved.getByRole("button", { name: "继续查看证据" }));
+    expect(await saved.findByRole("status")).toHaveTextContent("历史记录暂不可用");
+    await user.click(saved.getByRole("button", { name: "继续查看证据" }));
+    expect(await screen.findByLabelText("历史定位")).toHaveTextContent("/history/41?camera=1&seq=5&view=original");
+    await user.click(await screen.findByRole("button", { name: "返回在线检测" }));
+    expect(screen.getByRole("region", { name: "CAM-2 帧组 12" })).toBeVisible();
+
+    const restored = within(screen.getByRole("region", { name: "上次定位的检测证据" }));
+    expect(restored.getByText(`SN ${previous.sn} · 帧组 5 · CAM-2`)).toBeVisible();
+    await user.click(restored.getByRole("button", { name: "继续查看证据" }));
+    expect(await screen.findByLabelText("历史定位")).toHaveTextContent("/history/41?camera=1&seq=5&view=original");
+    await user.click(await screen.findByRole("button", { name: "返回在线检测" }));
+    await user.click(screen.getByRole("button", { name: "清除回查位置" }));
+    expect(screen.queryByRole("region", { name: "上次定位的检测证据" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "CAM-2 帧组 12" })).toBeVisible();
   });
 
   it("长件的不完整帧组以摘要显示 → 展开分页后可定位原帧号，换件重新收起", async () => {

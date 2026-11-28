@@ -1,7 +1,8 @@
-import { phaseOccupied } from "../cycle/phase";
+import { useCycleControl, type CycleControlState } from "../cycle/control";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createSharedSnapshot } from "../../lib/desktopSnapshot";
 import type {
   ConnectionConfig,
   DataType,
@@ -14,7 +15,6 @@ import type {
   LogQuery,
   PlcConfig,
   PlcHandshakeState,
-  PlcOperationState,
   PlcStatus,
   PointValue,
 } from "./types";
@@ -78,67 +78,116 @@ export const plcApi = {
     call<string>("plc_check_address", { connection, address, dataType }, () => "预览模式不校验"),
   s7Phase1Template: (plcDb: number, pcDb: number) =>
     call<PlcConfig>("plc_s7_phase1_template", { plcDb, pcDb }, () => { throw new Error("重置 S7 通讯配置需要桌面后端"); }),
-  getOperationState: () => call<PlcOperationState | null>("cycle_snapshot", undefined, () => null),
 };
 
-export function usePlcOperationState() {
-  const [operation, setOperation] = useState<{ blockedReason: string; handshake: PlcHandshakeState | null }>({
-    blockedReason: "正在核对生产状态，暂不能更改 PLC 配置或手动写入",
-    handshake: null,
-  });
-  useEffect(() => {
-    let alive = true;
-    let receivedEvent = false;
-    const update = (state: PlcOperationState | null) => {
-      if (!alive) return;
-      setOperation({
-        blockedReason: !state ? "生产状态不可用，已锁定 PLC 配置和手动写入"
-          : (state.plcLocked ?? phaseOccupied(state.phase))
-            ? "生产或结果交付尚未结束，PLC 配置和手动写入已锁定" : "",
-        handshake: state?.plcHandshake ?? null,
-      });
-    };
-    const off = subscribe<PlcOperationState>("cycle://snapshot", state => {
-      receivedEvent = true;
-      update(state);
-    }, () => { receivedEvent = true; update(null); });
-    plcApi.getOperationState().then(state => { if (!receivedEvent) update(state); })
-      .catch(() => { if (!receivedEvent) update(null); });
-    return () => { alive = false; off(); };
-  }, []);
-  return operation;
+interface PlcOperationView {
+  blockedReason: string;
+  handshake: PlcHandshakeState | null;
 }
 
-export function subscribe<T>(event: string, cb: (payload: T) => void, onError?: (error: unknown) => void): () => void {
-  if (!isTauri()) return () => {};
+const pendingOperation: PlcOperationView = {
+  blockedReason: "正在核对生产状态，暂不能更改 PLC 配置或手动写入",
+  handshake: null,
+};
+
+function selectOperation(state: CycleControlState | null): PlcOperationView {
+  return {
+    blockedReason: !state ? "生产状态不可用，已锁定 PLC 配置和手动写入"
+      : state.plcLocked !== false ? "生产或结果交付尚未结束，PLC 配置和手动写入已锁定" : "",
+    handshake: state?.plcHandshake ?? null,
+  };
+}
+
+function sameOperation(current: PlcOperationView, next: PlcOperationView) {
+  const a = current.handshake, b = next.handshake;
+  return current.blockedReason === next.blockedReason && (a === b || (
+    a !== null && b !== null && a.phase === b.phase && a.requestSeq === b.requestSeq &&
+    a.message === b.message && a.connection === b.connection
+  ));
+}
+
+export function usePlcOperationState() {
+  return useCycleControl(selectOperation, pendingOperation, sameOperation);
+}
+
+export function subscribe<T>(event: string, cb: (payload: T) => void, onError?: (error: unknown) => void, onSettled?: () => void): () => void {
+  if (!isTauri()) {
+    onSettled?.();
+    return () => {};
+  }
   let unlisten: UnlistenFn | undefined;
   let disposed = false;
-  listen<T>(event, (e) => cb(e.payload)).then((fn) => {
+  const registration = listen<T>(event, (e) => cb(e.payload)).then((fn) => {
     if (disposed) fn();
     else unlisten = fn;
   }).catch(error => { if (!disposed) onError?.(error); });
+  if (onSettled) void registration.finally(() => { if (!disposed) onSettled(); });
   return () => {
     disposed = true;
     unlisten?.();
   };
 }
 
+const subscribePlcStatus = createSharedSnapshot<PlcStatus>("plc://status", () => plcApi.getStatus(), { readOnListenFailure: true });
+
 export function usePlcStatus() {
   const [status, setStatus] = useState<PlcStatus | null>(null);
-  useEffect(() => {
-    plcApi.getStatus().then(setStatus).catch(() => setStatus(null));
-    return subscribe<PlcStatus>("plc://status", setStatus);
-  }, []);
+  useEffect(() => subscribePlcStatus(setStatus), []);
   return status;
+}
+
+export function usePlcLinkStatus() {
+  const [link, setLink] = useState<Pick<PlcStatus, "state" | "message"> | null>(null);
+  const displayed = useRef(link);
+  useEffect(() => subscribePlcStatus(status => {
+    const previous = displayed.current;
+    if (previous?.state === status?.state && previous?.message === status?.message) return;
+    displayed.current = status ? { state: status.state, message: status.message } : null;
+    setLink(displayed.current);
+  }), []);
+  return link;
 }
 
 export function usePlcValues() {
   const [values, setValues] = useState<Record<string, PointValue>>({});
   useEffect(() => {
-    plcApi.getValues().then(setValues).catch(() => setValues({}));
-    return subscribe<Record<string, PointValue>>("plc://values", (changed) =>
-      setValues((prev) => (Object.keys(changed).length === 0 ? {} : { ...prev, ...changed })),
-    );
+    let active = true, acceptEvents = true, resetCount = 0;
+    let unlisten: UnlistenFn | undefined;
+    let latest: Record<string, PointValue> = {};
+
+    const start = async () => {
+      if (isTauri()) {
+        try {
+          const stop = await listen<Record<string, PointValue>>("plc://values", ({ payload }) => {
+            if (!active || !acceptEvents) return;
+            if (Object.keys(payload).length === 0) {
+              resetCount++;
+              latest = {};
+            } else {
+              latest = { ...latest, ...payload };
+            }
+            setValues(latest);
+          });
+          if (!active) { stop(); return; }
+          unlisten = stop;
+        } catch {
+          acceptEvents = false;
+        }
+      }
+      if (!active) return;
+      const resetCountAtRead = resetCount;
+      try {
+        const initial = await plcApi.getValues();
+        if (active && resetCount === resetCountAtRead) {
+          latest = { ...initial, ...latest };
+          setValues(latest);
+        }
+      } catch {
+        // 已收到的点位事件仍有效。
+      }
+    };
+    void start();
+    return () => { active = false; unlisten?.(); };
   }, []);
   return values;
 }

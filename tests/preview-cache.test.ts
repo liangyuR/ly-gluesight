@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { loadPreview } from "../src/features/workspace/previewCache";
 import type { FrameImage } from "../src/features/workspace/types";
 
@@ -20,4 +20,13 @@ it("快速切帧取消排队旧图 → 当前帧可完成且回看仍取对应�
   expect(await a).toEqual(image("first"));
   expect(await b).toEqual(image("second"));
   expect(await loadPreview("queue-current", async () => image("wrong"))).toEqual(image("current"));
+});
+
+it("预览分配到执行槽后在读图前取消 → 取消的帧不会读取", async () => {
+  const controller = new AbortController();
+  const read = vi.fn(async (): Promise<FrameImage> => ({ url: "obsolete", width: 1, height: 1 }));
+  const cancelled = expect(loadPreview("reserved-aborted-frame", read, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  controller.abort();
+  await cancelled;
+  expect(read).not.toHaveBeenCalled();
 });

@@ -1,7 +1,9 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { errorText } from "../../lib/errors";
 import { subscribe } from "../plc";
-import type { CycleSettings, Maintenance, Readiness, Recipe, RecipeDoc, RecipeSummary, Snapshot } from "./types";
+import type { CycleSettings, Readiness, Recipe, RecipeDoc, RecipeSummary, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["cycle_save_settings","cycle_set_maintenance","cycle_select_recipe"].includes(cmd))
@@ -50,21 +52,35 @@ export const recipeApi = {
   template: () => call<RecipeDoc>("recipe_template", undefined, () => Promise.reject("非桌面环境") as never),
 };
 
-const layoutCache = new Map<string, Promise<Recipe | null>>();
-const recipeListeners = new Set<() => void>();
-let stopRecipeEvents: (() => void) | null = null;
-function notifyRecipes() {
-  layoutCache.clear();
-  recipeListeners.forEach((f) => f());
+const layoutCache = new Map<string, { recipeId: string; request: Promise<Recipe | null> }>();
+const recipeListeners = new Set<(recipeId: string) => void>();
+let recipeEvents: { stop: () => void; ready: Promise<void> } | null = null;
+function notifyRecipes(recipeId: string) {
+  for (const [key, entry] of layoutCache) {
+    if (!recipeId || entry.recipeId === recipeId) layoutCache.delete(key);
+  }
+  recipeListeners.forEach(f => f(recipeId));
 }
-function listenRecipes(f: () => void) {
-  recipeListeners.add(f);
-  stopRecipeEvents ??= subscribe<string>("workspace://changed", notifyRecipes);
+function listenRecipes(listener: (recipeId: string) => void, onReady?: () => void) {
+  recipeListeners.add(listener);
+  if (!recipeEvents) {
+    let registered!: () => void;
+    const ready = new Promise<void>(resolve => { registered = resolve; });
+    let accepting = true;
+    const unsubscribe = subscribe<string>("workspace://changed", recipeId => {
+      if (accepting) notifyRecipes(recipeId);
+    }, undefined, registered);
+    recipeEvents = { ready, stop: () => { accepting = false; unsubscribe(); } };
+  }
+  let alive = true;
+  if (onReady) void recipeEvents.ready.then(() => { if (alive) onReady(); });
   return () => {
-    recipeListeners.delete(f);
-    if (recipeListeners.size === 0 && stopRecipeEvents) {
-      stopRecipeEvents();
-      stopRecipeEvents = null;
+    alive = false;
+    recipeListeners.delete(listener);
+    if (recipeListeners.size === 0 && recipeEvents) {
+      recipeEvents.stop();
+      recipeEvents = null;
+      layoutCache.clear();
     }
   };
 }
@@ -78,27 +94,30 @@ export function useLayout(recipeId: string | null | undefined, revisionId?: stri
   const [gen, setGen] = useState(0);
   const key = recipeId ? `${recipeId}:${revisionId ?? ""}` : "";
   useEffect(() => {
-    return listenRecipes(() => setGen((g) => g + 1));
-  }, []);
+    return listenRecipes(changedId => {
+      if (!changedId || changedId === recipeId) setGen(g => g + 1);
+    });
+  }, [recipeId]);
   useEffect(() => {
     if (!recipeId) return;
-    if (!layoutCache.has(key))
-      layoutCache.set(
-        key,
-        cycleApi.layout(recipeId, revisionId).catch(() => {
-          layoutCache.delete(key);
-          return null;
-        }),
-      );
+    let entry = layoutCache.get(key);
+    if (!entry) {
+      const request = cycleApi.layout(recipeId, revisionId).catch(() => null).then(layout => {
+        if (!layout && layoutCache.get(key)?.request === request) layoutCache.delete(key);
+        return layout;
+      });
+      entry = { recipeId, request };
+      layoutCache.set(key, entry);
+    }
     let alive = true;
-    layoutCache.get(key)!.then(
-      (layout) => alive && setState((prev) => (!layout && prev?.key === key && prev.layout ? prev : { key, id: recipeId, layout })),
-    );
+    void entry.request.then(layout => {
+      if (!alive || (layout && layoutCache.get(key) !== entry)) return;
+      setState(prev => !layout && prev?.key === key && prev.layout ? prev : { key, id: recipeId, layout });
+    });
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, gen]);
+  }, [key, gen, recipeId, revisionId]);
   if (!state) return null;
   return state.key === key || (keepPrevious && state.id === recipeId) ? state.layout : null;
 }
@@ -106,48 +125,95 @@ export function useLayout(recipeId: string | null | undefined, revisionId?: stri
 export function useRecipes() {
   const [recipes, setRecipes] = useState<RecipeSummary[]>([]);
   useEffect(() => {
-    const load = () => cycleApi.recipes().then(setRecipes).catch(() => setRecipes([]));
-    load();
-    return listenRecipes(load);
+    let alive = true;
+    let ready = false;
+    let reading = false;
+    let pending = false;
+    const load = () => {
+      if (!alive || !ready) return;
+      if (reading) { pending = true; return; }
+      reading = true;
+      pending = false;
+      void cycleApi.recipes().then(
+        next => { if (alive && !pending) setRecipes(next); },
+        () => { if (alive && !pending) setRecipes([]); },
+      ).finally(() => {
+        reading = false;
+        if (pending) load();
+      });
+    };
+    const stop = listenRecipes(load, () => { ready = true; load(); });
+    return () => { alive = false; stop(); };
   }, []);
   return recipes;
 }
 
 export function useCycle() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [snapshotCurrent, setSnapshotCurrent] = useState(false);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
   const latest = useRef<Snapshot | null>(null);
+  const retry = useRef<(() => void) | null>(null);
+  const retrySnapshot = useCallback(() => retry.current?.(), []);
 
   useEffect(() => {
-    let alive = true, receivedSnapshot = false;
+    if (!isTauri()) return;
+    let alive = true, receivedSnapshot = false, reading = false, connecting = false;
+    let stopListening: UnlistenFn | undefined;
     const retired = new Set<string>();
     const update = (next: Snapshot) => {
       if (!alive || next.since < (latest.current?.since ?? -Infinity) || (next.part && retired.has(next.part.cycleId))) return;
       const previous = latest.current?.part?.cycleId;
       if (previous && previous !== next.part?.cycleId) retired.add(previous);
       if (retired.size > 128) retired.delete(retired.values().next().value!);
+      if (!receivedSnapshot) {
+        receivedSnapshot = true;
+        setSnapshotError(null);
+        if (stopListening) setSnapshotCurrent(true);
+      }
       latest.current = next;
       setSnapshot(next);
     };
-    const off = subscribe<Snapshot>("cycle://snapshot", value => { receivedSnapshot = true; update(value); });
-    void cycleApi.snapshot().then(value => { if (value && !receivedSnapshot) update(value); }).catch(() => {});
-    return () => { alive = false; off(); };
-  }, []);
-
-  return { snapshot };
-}
-
-export function useMaintenance() {
-  const [maintenance, setMaintenance] = useState<Maintenance | null>(null);
-  useEffect(() => {
-    let alive = true, received = false;
-    const update = (next: Maintenance | null) => {
-      if (alive) setMaintenance(prev => prev?.since === next?.since && prev?.reason === next?.reason ? prev : next);
+    const read = () => {
+      if (!alive || !stopListening || reading || receivedSnapshot) return;
+      reading = true;
+      setSnapshotError(null);
+      void cycleApi.snapshot().then(value => {
+        if (value && !receivedSnapshot) update(value);
+      }).catch(error => {
+        if (alive && !receivedSnapshot) setSnapshotError(errorText(error));
+      }).finally(() => { reading = false; });
     };
-    const off = subscribe<Snapshot>("cycle://snapshot", snapshot => { received = true; update(snapshot.maintenance ?? null); });
-    void cycleApi.snapshot().then(snapshot => { if (!received) update(snapshot?.maintenance ?? null); }).catch(() => {});
-    return () => { alive = false; off(); };
+    const connect = async () => {
+      if (!alive || connecting || stopListening) return;
+      connecting = true;
+      receivedSnapshot = false;
+      setSnapshotCurrent(false);
+      setSubscriptionError(null);
+      setSnapshotError(null);
+      let acceptEvents = true;
+      let stop: UnlistenFn;
+      try {
+        stop = await listen<Snapshot>("cycle://snapshot", event => { if (acceptEvents) update(event.payload); });
+      } catch (error) {
+        acceptEvents = false;
+        if (alive) setSubscriptionError(errorText(error));
+        return;
+      } finally {
+        connecting = false;
+      }
+      if (!alive) { stop(); return; }
+      stopListening = stop;
+      if (receivedSnapshot) setSnapshotCurrent(true);
+      else read();
+    };
+    retry.current = () => { if (stopListening) read(); else void connect(); };
+    void connect();
+    return () => { alive = false; retry.current = null; stopListening?.(); };
   }, []);
-  return maintenance;
+
+  return { snapshot, snapshotCurrent, snapshotError, subscriptionError, retrySnapshot };
 }
 
 /** 开工就绪报告：定时刷新，配方库变化或 refreshKey 变化时立即重查。 */

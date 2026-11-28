@@ -174,15 +174,57 @@ fn measure(
 }
 
 #[test]
+fn corridor_roi_includes_the_endpoint_and_uses_sampled_extrema_at_turns() {
+    let mut doc = burst_doc();
+    doc.inspect[0].segments[0].corridor = vec![[40.0, 80.0], [40.0, 91.0], [40.0, 79.0]];
+
+    let graph = corridor_of(doc, 0);
+    assert_eq!(graph.params["roi"], json!([4, 43, 73, 84]));
+}
+
+#[test]
+fn bent_corridor_with_repeated_vertices_accepts_stations_through_the_rounded_endpoint() {
+    let mut doc = burst_doc();
+    let endpoint = 50.9999;
+    doc.inspect[0].segments[0].corridor = vec![
+        [40.0, 80.0],
+        [40.0, 80.0],
+        [47.0, 80.0],
+        [47.0, 80.0],
+        [47.0, 89.0],
+        [endpoint, 89.0],
+        [endpoint, 89.0],
+    ];
+    let centers = [
+        [40.0, 80.0],
+        [44.0, 80.0],
+        [47.0, 81.0],
+        [47.0, 85.0],
+        [47.0, 89.0],
+        [f64::from(endpoint), 89.0],
+    ];
+    let mut output = corridor_output(&[Some((0.0, 16.0)); 6]);
+    for name in ["runs", "split"] {
+        for (i, center) in centers.iter().enumerate() {
+            output.outputs[name]["value"]["data"]["stations"][i]["center"] = json!(center);
+        }
+    }
+
+    let result = measure(&corridor_of(doc, 0), FRAME, output).unwrap();
+    assert_eq!(result.metrics.state, FrameState::Measured);
+    assert_eq!(result.metrics.widths, vec![Some(4.0); centers.len()]);
+}
+
+#[test]
 fn frame_whose_color_mode_differs_from_the_taught_frame_fails_before_measuring() {
     // 防的回归：相机图像模式改了（灰度示教、彩色生产或反过来），lyFlow 照样能把 RGB 转灰度量，结果却与示教口径不可比，
     // 却不报错地给出判定
     let doc = burst_doc();
     let recipe = doc.build().unwrap();
-    let gray_taught = CorridorSet::build(&recipe, &[FRAME; 3])
+    let gray_taught = CorridorSet::build_for_frame(&recipe, &[[360, 280], FRAME, [420, 320]], 1, 1)
         .unwrap()
-        .with_channels(&[1, 1, 1]);
-    let FrameGraph::Corridor(c) = gray_taught.get(0, 1).unwrap() else {
+        .with_channels(&[3, 1, 3]);
+    let FrameGraph::Corridor(c) = gray_taught.get(1, 1).unwrap() else {
         panic!("应是示教走廊")
     };
     let n = (FRAME[0] * FRAME[1]) as usize;
@@ -825,8 +867,13 @@ fn color_heading_preserves_wide_beads_and_distinguishes_untrusted_paths_from_bac
     let mut doc = burst_doc();
     doc.segments[0].heading = heading_1_11();
     doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
+    doc.inspect[1].segments.clear();
     let recipe = doc.build().unwrap();
-    let g = plan_heading(&recipe.inspect[0], 1, &recipe, FRAME).unwrap();
+    let graphs = CorridorSet::build_for_frame(&recipe, &[FRAME; 3], 0, 1).unwrap();
+    let Some(FrameGraph::Heading(g)) = graphs.get(0, 1) else {
+        panic!("选中帧应使用定向测量图");
+    };
+    assert!(graphs.get(2, 1).is_none());
     let image = FrameImage::rgb(
         FRAME[0],
         FRAME[1],
@@ -837,7 +884,7 @@ fn color_heading_preserves_wide_beads_and_distinguishes_untrusted_paths_from_bac
         (0, 5, StationEvidenceState::Unknown),
         (0, 0, StationEvidenceState::Absent),
     ] {
-        let m = measure_heading_with(&g, &image, 7, |run, frame| {
+        let m = measure_heading_with(g, &image, 7, |run, frame| {
             assert_eq!(run.params["widthPolicy"], "extent");
             let mut result = fake_heading_run(found)(run, frame)?;
             result.outputs["track0"]["value"]["data"]["unknownSteps"] = json!(unknown);
@@ -879,6 +926,9 @@ fn build_available_keeps_usable_pairs_while_build_still_rejects_broken_ones() {
     let (set, unavailable) = CorridorSet::build_available(&recipe, &[FRAME; 3]);
     assert!(set.get(0, 1).is_some() && set.get(1, 1).is_none() && set.get(2, 1).is_some());
     assert_eq!(pairs(&unavailable), vec![(1, true)]);
+    assert!(CorridorSet::build_for_frame(&recipe, &[FRAME; 3], 1, 1)
+        .unwrap_err()
+        .contains("尚未示教检测走廊"));
     assert!(
         CorridorSet::build(&recipe, &[FRAME; 3]).is_ok(),
         "没示教的组合照旧跳过"

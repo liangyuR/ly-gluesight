@@ -1,4 +1,5 @@
 import { errorText } from "../../lib/errors";
+import { createFrameReadQueue } from "../../lib/frameReadQueue";
 import { useEffect, useRef, useState } from "react";
 import { Chip } from "qing-steel";
 import { verdictLabel } from "../history/meta";
@@ -51,30 +52,45 @@ function useLiveImage<R extends LiveJob>(request:R|null,load:(job:R)=>Promise<Fr
 interface BurstLiveRequest extends LiveJob { cycleId:string; revisionId:string; camera:number; seq:number }
 const loadBurstFrame=(job:BurstLiveRequest)=>burstImageApi.live(job.cycleId,job.revisionId,job.camera,job.seq);
 const burstStateTone:Partial<Record<GroupCellState,string>>={ ok:"ok", ng:"ng", error:"fault" };
+const liveViewQueues = new Map<number, ReturnType<typeof createFrameReadQueue>>();
+
+function liveViewQueue(camera: number) {
+  let queue = liveViewQueues.get(camera);
+  if (!queue) {
+    queue = createFrameReadQueue(1);
+    liveViewQueues.set(camera, queue);
+  }
+  return queue;
+}
 
 /** 一帧测到的叠图：测完（含走出走廊）才读，同一帧收尾补测换了走廊或结论变了重读；还没测完或没测成时不画。 */
-function useLiveView(part:PartView,camera:number,seq:number,cell:FrameGroupView["cells"][number]|undefined) {
-  const measured=cell?.status==="measured"||cell?.status==="outOfCorridor";
-  const key=JSON.stringify([part.cycleId,part.recipeRevision,camera,seq,cell?.status,cell?.verdict,cell?.segment]);
-  const [state,setState]=useState<{key:string;view:CalibrationFrameView|null}>({key:"",view:null});
-  useEffect(()=>{
-    if(!measured)return;
-    let alive=true;
-    burstImageApi.liveView(part.cycleId,part.recipeRevision,camera,seq).then(view=>{if(alive)setState({key,view});},()=>{});
-    return()=>{alive=false;};
-  },[key]);
-  return state.key===key?state.view:null;
+function useLiveView(part: PartView, camera: number, seq: number, cell: FrameGroupView["cells"][number] | undefined) {
+  const { cycleId, bundleId, recipeRevision } = part;
+  const measured = cell?.status === "measured" || cell?.status === "outOfCorridor";
+  const key = JSON.stringify([cycleId, bundleId, recipeRevision, camera, seq, cell?.status, cell?.verdict, cell?.segment]);
+  const [state, setState] = useState<{ key: string; view: CalibrationFrameView | null }>({ key: "", view: null });
+  useEffect(() => {
+    if (!measured) return;
+    const request = new AbortController();
+    void liveViewQueue(camera)(() => burstImageApi.liveView(cycleId, recipeRevision, camera, seq), request.signal)
+      .then(view => { if (!request.signal.aborted) setState({ key, view }); }, () => {});
+    return () => request.abort();
+  }, [key, measured, cycleId, recipeRevision, camera, seq]);
+  return state.key === key ? state.view : null;
 }
 
 /** 一台相机在选中帧组里的那一帧：到达（含测量中、出错）才读图，缺帧的相机不读图，只写明本组按其余相机判。 */
-function BurstCameraFrame({part,camera,name,seq,group,regions,focused}:{part:PartView;camera:number;name:string;seq:number;group:FrameGroupView|null;regions?:RegionResult[];focused:boolean}) {
-  const cell=group?.cells[camera];
+function BurstCameraFrame({ part, camera, name, group, regions, focused }: {
+  part: PartView; camera: number; name: string; group: FrameGroupView; regions?: RegionResult[]; focused: boolean;
+}) {
+  const { seq } = group;
+  const cell=group.cells[camera];
   const arrived=!!cell&&cell.status!=="waiting"&&cell.status!=="missing";
   const partScope=JSON.stringify([part.cycleId,part.bundleId,part.recipeRevision]);
   const scope=JSON.stringify([partScope,camera,seq,arrived]);
   const live=useLiveImage(arrived?{scope,part:partScope,cycleId:part.cycleId,revisionId:part.recipeRevision,camera,seq}:null,loadBurstFrame);
   const image=live.current?.image?live.current:live.held;
-  const state:GroupCellState=group?groupCellState(group,camera,regions):"waiting";
+  const state=groupCellState(group,camera,regions);
   const skipped=state==="productionSkipped";
   const shownSeq=image?.job.seq??seq;
   const missing=cell?.status==="missing";
@@ -88,7 +104,7 @@ function BurstCameraFrame({part,camera,name,seq,group,regions,focused}:{part:Par
     <div className="wp-runtime-strip">
       <KV label="帧状态"><Chip className={"frame-state "+(burstStateTone[state]??"")}>{groupCellText[state]}</Chip></KV>
       <KV label="单帧结论">{skipped?"不参与判定":cell?.verdict?verdictLabel[cell.verdict]:"—"}</KV>
-      {skipped&&<KV label="诊断状态">{group?groupCellText[groupCellState(group,camera)]:"—"} · 仅供诊断</KV>}
+      {skipped&&<KV label="诊断状态">{groupCellText[groupCellState(group,camera)]} · 仅供诊断</KV>}
       <KV label="设备帧计数">{cell?.frameCounter??"—"}</KV>
       {focused && state === "ng" && cell?.verdict === "NG_GAP" && view?.metrics && <KV label="最长断胶">{view.metrics.gapMaxMm.toFixed(2)} mm</KV>}
       {view?.metrics?.mixEvidence && <MixSummary evidence={view.metrics.mixEvidence} diagnostic={skipped}/>}
@@ -99,11 +115,15 @@ function BurstCameraFrame({part,camera,name,seq,group,regions,focused}:{part:Par
 }
 
 /** 在线检测的原图区（段配方）：选中帧组 seq 的三台计划相机各一幅，每幅附该帧的状态、单帧结论与设备帧计数。 */
-export function BurstRuntimeFrame({part,seq,regions,focusedCamera}:{part:PartView|null;seq:number|null;regions?:RegionResult[];focusedCamera?:number}) {
-  if(!part||seq==null)return <div className="wp-runtime-frame compact"><div className="wp-image-empty"><strong>等待本件图像</strong><span>帧组到达后显示三台相机的原图；可在下方帧组条切换。</span></div></div>;
-  const burst=part.burst;
-  const group=burst.groups.find(g=>g.seq===seq)??null;
+export function BurstRuntimeFrame({ part, group, regions, focusedCamera }: {
+  part: PartView | null; group: FrameGroupView | null; regions?: RegionResult[]; focusedCamera?: number;
+}) {
+  if (!part || !group) return <div className="wp-runtime-frame compact"><div className="wp-image-empty"><strong>等待本件图像</strong><span>帧组到达后显示三台相机的原图；可在下方帧组条切换。</span></div></div>;
+  const { cameras } = part.burst;
   return <div className="wp-runtime-frame compact burst">
-    <div className="wp-burst-cams" style={{gridTemplateColumns:`repeat(${Math.max(1,burst.cameras.length)}, minmax(0, 1fr))`}}>{burst.cameras.map((name,camera)=><BurstCameraFrame key={name} part={part} camera={camera} name={name} seq={seq} group={group} regions={regions} focused={camera === focusedCamera}/>)}</div>
+    <div className="wp-burst-cams" style={{ gridTemplateColumns: `repeat(${Math.max(1, cameras.length)}, minmax(0, 1fr))` }}>
+      {cameras.map((name, camera) => <BurstCameraFrame key={name} part={part} camera={camera} name={name}
+        group={group} regions={regions} focused={camera === focusedCamera} />)}
+    </div>
   </div>;
 }

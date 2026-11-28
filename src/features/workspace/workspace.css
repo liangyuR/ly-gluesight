@@ -234,7 +234,6 @@
 .wp-picker h2 small { margin-left:6px; color:var(--on-surface-variant); font-size:12px; font-weight:400; }
 .wp-picker-side { display:flex; align-items:center; gap:4px; margin-left:auto; flex-shrink:0; }
 .wp-picker-side .wp-text-link { margin-left:4px; }
-.wp-picker-warn { margin:-4px 4px 0; font-size:12px; }
 .wp-text-link.wp-locked { display:inline-flex; align-items:center; gap:3px; color:var(--outline); }
 .qs-popover.wp-image-info { width:320px; max-width:calc(100vw - 32px); }
 .wp-image-info .wp-kv { padding:6px 0; }

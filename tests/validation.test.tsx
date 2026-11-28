@@ -1,20 +1,23 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ValidationPage from "../src/features/workspace/ValidationPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
-import type { Validation } from "../src/features/workspace/types";
-import { burstRecipe, burstWorkspaceView, workspaceState } from "./fixtures";
+import type { Check, Validation, WorkspaceView } from "../src/features/workspace/types";
+import { errorText } from "../src/lib/errors";
+import { burstRecipe, burstWorkspaceView, deferred, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn(), collectChecks: vi.fn(), publishCollect: vi.fn(), publishChecks: vi.fn() } }));
 const archived: Validation = { revision: 7, passed: true, checkedAt: 1, environmentTag: {}, checks: [] };
+const instanceId = 41;
 let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter><ValidationPage /></MemoryRouter>);
 beforeEach(() => {
   const view = burstWorkspaceView(burstRecipe({ id: "A" }));
   view.workspace.revision = 7;
+  view.workspace.instanceId = instanceId;
   view.plan!.segments.forEach(segment => { segment.expectedFrames = 4; });
   ws = workspaceState(view); vi.mocked(useWorkspace).mockImplementation(() => ws);
   vi.mocked(workspaceApi.publish).mockResolvedValue(ws.data!);
@@ -25,12 +28,16 @@ beforeEach(() => {
 describe("发布页面", () => {
 
   it("发布失败后重试同一待生效版本，不能另发新版", async () => {
-    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, validation: archived, validationSite: "real" };
+    const validation = { ...archived, checks: [{ name: "已核对测量图", passed: true, detail: "本次冻结时的预检" }] };
+    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, validation, validationSite: "real" };
     ws.data!.workspace.publish = { state: "failed", message: "发布包缺失" };
     show();
     expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
+    expect(screen.getByText(/已满足.*已核对测量图/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "重新检查" })).not.toBeInTheDocument();
+    expect(workspaceApi.publishChecks).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "重试发布 / 切换" }));
-    expect(workspaceApi.retryPublish).toHaveBeenCalledWith("A", 7);
+    expect(workspaceApi.retryPublish).toHaveBeenCalledWith("A", 7, instanceId);
     expect(workspaceApi.publish).not.toHaveBeenCalled();
   });
 
@@ -42,7 +49,7 @@ describe("发布页面", () => {
     await userEvent.click(screen.getByRole("button", { name: "放弃待生效版本" }));
     expect(workspaceApi.abandonPublish).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: /确认放弃/ }));
-    expect(workspaceApi.abandonPublish).toHaveBeenCalledWith("A", 7);
+    expect(workspaceApi.abandonPublish).toHaveBeenCalledWith("A", 7, instanceId);
     page.unmount();
     ws.data!.workspace.publish = { state: "uncertain", message: "写盘失败" };
     show();
@@ -59,6 +66,7 @@ describe("发布页面", () => {
     show();
     await userEvent.click(screen.getByRole("button", { name: "发布采集版" }));
     let dialog = await screen.findByRole("dialog");
+    expect(workspaceApi.collectChecks).toHaveBeenLastCalledWith("A", 7, instanceId);
     expect(dialog).toHaveTextContent("采集版只在维护模式下运行，只采图不判定");
     expect(dialog).toHaveTextContent("2 项未满足");
     expect(dialog).toHaveTextContent("相机组里没有 cam2");
@@ -69,7 +77,7 @@ describe("发布页面", () => {
     await userEvent.click(screen.getByRole("button", { name: "发布采集版" }));
     dialog = await screen.findByRole("dialog");
     await userEvent.click(within(dialog).getByRole("button", { name: /确认发布采集版/ }));
-    expect(workspaceApi.publishCollect).toHaveBeenCalledWith("A", 7);
+    expect(workspaceApi.publishCollect).toHaveBeenCalledWith("A", 7, instanceId);
     expect(workspaceApi.publish).not.toHaveBeenCalled();
   });
 
@@ -84,6 +92,48 @@ describe("发布页面", () => {
     expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
   });
 
+  it("环境修复后重新检查 → 同一修订在新结果通过后恢复发布", async () => {
+    const request = deferred<Check[]>();
+    vi.mocked(workspaceApi.publishChecks)
+      .mockResolvedValueOnce([{ name: "图像核心库", passed: false, detail: "尚未加载兼容运行库" }])
+      .mockReturnValueOnce(request.promise);
+    show();
+    expect(await screen.findByText("尚未加载兼容运行库")).toBeVisible();
+    const publish = screen.getByRole("button", { name: "发布生产配方" });
+    const retry = screen.getByRole("button", { name: "重新检查" });
+    expect(publish).toBeDisabled();
+    await userEvent.click(retry);
+    expect(screen.getByText("检查中")).toBeVisible();
+    expect(publish).toBeDisabled();
+    expect(retry).toBeDisabled();
+    expect(screen.getByRole("button", { name: "发布采集版" })).toBeEnabled();
+    expect(workspaceApi.publishChecks).toHaveBeenLastCalledWith("A", 7, instanceId);
+
+    await act(async () => request.resolve([{ name: "图像核心库", passed: true, detail: "兼容运行库已加载" }]));
+    expect(publish).toBeEnabled();
+    expect(retry).toBeEnabled();
+  });
+
+  it("重新检查期间换成同编号同修订的候选 → 迟到的旧通过结果不能放行", async () => {
+    const previous = deferred<Check[]>(), replacement = deferred<Check[]>();
+    const page = show();
+    const publish = screen.getByRole("button", { name: "发布生产配方" });
+    await waitFor(() => expect(publish).toBeEnabled());
+    vi.mocked(workspaceApi.publishChecks).mockReturnValueOnce(previous.promise).mockReturnValueOnce(replacement.promise);
+    await userEvent.click(screen.getByRole("button", { name: "重新检查" }));
+    expect(publish).toBeDisabled();
+    expect(workspaceApi.publishChecks).toHaveBeenLastCalledWith("A", 7, instanceId);
+
+    ws.data!.workspace.instanceId++;
+    page.rerender(<MemoryRouter><ValidationPage /></MemoryRouter>);
+    await waitFor(() => expect(workspaceApi.publishChecks).toHaveBeenLastCalledWith("A", 7, instanceId + 1));
+    await act(async () => replacement.resolve([{ name: "测量图", passed: false, detail: "新候选的测量图构建失败" }]));
+    expect(screen.getByText("新候选的测量图构建失败")).toBeVisible();
+    await act(async () => previous.resolve([{ name: "测量图", passed: true, detail: "旧候选的测量图已构建" }]));
+    expect(screen.getByText("新候选的测量图构建失败")).toBeVisible();
+    expect(publish).toBeDisabled();
+  });
+
   // 防的回归（D-SB-59）：示教帧上部分段没测成只是提醒，却把发布拦住；或发布确认时不再提醒这些段生产不测
   it("发布前检查只有提醒项未满足 → 仍可发布，确认框列出不测的段", async () => {
     vi.mocked(workspaceApi.publishChecks).mockResolvedValue([{ name: "示教帧试测", passed: false, advisory: true, detail: "第 2 段相机 cam1：runs：n_map（bad_param）" }]);
@@ -93,11 +143,46 @@ describe("发布页面", () => {
     expect(await screen.findByRole("dialog")).toHaveTextContent("第 2 段相机 cam1：runs：n_map（bad_param）");
   });
 
+  it("正式发布生成包失败 → 弹窗先显示生成状态，再说明失败并可重试", async () => {
+    const submission = deferred<WorkspaceView>();
+    const reason = "写入发布包失败，磁盘空间不足";
+    ws.act = vi.fn(async request => {
+      try {
+        return await request();
+      } catch (error) {
+        ws.error = errorText(error);
+        return null;
+      }
+    });
+    vi.mocked(workspaceApi.publish).mockReturnValueOnce(submission.promise);
+    const user = userEvent.setup();
+    show();
+    const publish = screen.getByRole("button", { name: "发布生产配方" });
+    await waitFor(() => expect(publish).toBeEnabled());
+    await user.click(publish);
+    const dialog = within(screen.getByRole("dialog", { name: "发布生产配方" }));
+    const submit = dialog.getByRole("button", { name: /确认发布/ });
+    await user.dblClick(submit);
+
+    expect(screen.getByRole("dialog", { name: "发布生产配方" })).toHaveTextContent("正在生成发布包");
+    expect(dialog.getByRole("button", { name: "取消" })).toBeDisabled();
+    expect(workspaceApi.publish).toHaveBeenCalledExactlyOnceWith("A", 7, instanceId);
+    await act(async () => submission.reject(new Error(reason)));
+
+    expect(dialog.getByRole("alert")).toHaveTextContent(reason);
+    expect(screen.getByRole("dialog", { name: "发布生产配方" })).not.toHaveTextContent("正在生成发布包");
+    const retry = dialog.getByRole("button", { name: /确认发布|重试发布/ });
+    expect(retry).toBeEnabled();
+    await user.click(retry);
+    expect(workspaceApi.publish).toHaveBeenCalledTimes(2);
+    expect(workspaceApi.publish).toHaveBeenLastCalledWith("A", 7, instanceId);
+  });
+
   it("确认期间候选修订变更必须重新核对发布前检查和确认",async()=>{
     const page=show();await waitFor(()=>expect(screen.getByRole("button",{name:"发布生产配方"})).toBeEnabled());await userEvent.click(screen.getByRole("button",{name:"发布生产配方"}));
     ws.data!.workspace.revision++;page.rerender(<MemoryRouter><ValidationPage/></MemoryRouter>);
     await waitFor(()=>expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    await waitFor(()=>expect(workspaceApi.publishChecks).toHaveBeenLastCalledWith("A",8));
+    await waitFor(()=>expect(workspaceApi.publishChecks).toHaveBeenLastCalledWith("A", 8, instanceId));
     expect(workspaceApi.publish).not.toHaveBeenCalled();
   });
 });

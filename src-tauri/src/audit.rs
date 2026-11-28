@@ -467,10 +467,6 @@ impl Audit {
         self.persist(events)
     }
 
-    pub fn delivery(&self, cycle_id: &str, delivery: PlcDelivery) {
-        self.persist(vec![Event::Delivery(cycle_id.into(), delivery)])
-    }
-
     pub fn submission(&self, cycle_id: &str, delivery: PlcDelivery, drain_ms: Option<u64>) {
         self.persist(vec![Event::Submission(cycle_id.into(), delivery, drain_ms)])
     }

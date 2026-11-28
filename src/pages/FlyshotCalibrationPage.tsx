@@ -1,22 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { CalibPanel, cameraApi, useRigStatus, type CameraConfig } from "../features/camera";
 import CameraList, { type CalibrationSummary } from "../features/camera/components/CameraList";
 import type { CalibInfo } from "../features/camera/components/CalibPanel";
 import { useRigConfig } from "../features/camera/useRigConfig";
-import { useCycle } from "../features/cycle";
+import { useProductionBusy } from "../features/cycle/control";
 import { desktopAvailable } from "../lib/desktop";
 import { Notice } from "../features/workspace/components";
 import StationCapture, { type StationView } from "../features/workspace/StationCapture";
 import type { CaptureNavigationState } from "../features/workspace/captureNavigation";
 import { ReturnButton } from "../features/workspace/returnNavigation";
-import { productionBusy } from "../features/cycle/phase";
 
 async function calibrationSummary(config: CameraConfig, cam: number): Promise<CalibrationSummary> {
   if(config.source==="sim")return {tone:"ok",text:"内置标定 · 0.08 mm/px"};
   const views=config.viewCount===3?[1,2,3]:[1];
   try{
-    const infos=await Promise.all(views.map(view=>cameraApi.calibInfo(cam,view)));
+    const infos=await Promise.all(views.map(view=>cameraApi.calibInfo(cam,config.id,view)));
     const done=infos.filter(info=>info?.mmPerPx!=null);
     if(!done.length)return {tone:"warn",text:"未标定"};
     if(done.length<views.length)return {tone:"warn",text:`已标定 ${done.length}/${views.length}`};
@@ -31,16 +30,19 @@ export default function FlyshotCalibrationPage() {
   const captureReturn=(location.state as CaptureNavigationState | null)?.captureReturn;
   const navigationState:CaptureNavigationState={...(location.state as CaptureNavigationState | null)};
   const {statuses}=useRigStatus();
-  const {snapshot}=useCycle();
+  const busy=useProductionBusy();
   const {configs,cam,setCam,error,loading,reload}=useRigConfig({withReferences:false,preferredId:captureReturn?.cameraIds[0]});
-  const [calibView,setCalibView]=useState(1);
-  const [sample,setSample]=useState<StationView|null>(null);
+  const config=configs[cam]??null;
+  const [viewChoice,setViewChoice]=useState<{cameraId:string;view:number}|null>(null);
+  const calibView = config && viewChoice?.cameraId === config.id && viewChoice.view <= config.viewCount ? viewChoice.view : 1;
+  const scope = config ? JSON.stringify([cam, config, calibView]) : "";
+  const [sample,setSample]=useState<{scope:string;value:StationView}|null>(null);
   const [calibMm,setCalibMm]=useState<number|null>(null);
-  const [calibInfo,setCalibInfo]=useState<CalibInfo|null>(null);
+  const [calibResult,setCalibResult]=useState<{scope:string;value:CalibInfo}|null>(null);
+  const setCalibInfo = useCallback((value: CalibInfo | null) => setCalibResult(value ? { scope, value } : null), [scope]);
   const [calibration,setCalibration]=useState<Record<string,CalibrationSummary>>();
   const [calibReload,setCalibReload]=useState(0),[calibLoading,setCalibLoading]=useState(false);
-  useEffect(()=>setSample(null),[cam,configs[cam],calibView]);
-  useEffect(()=>setCalibView(1),[cam]);
+  useEffect(()=>setSample(previous=>previous?.scope===scope?previous:null),[scope]);
   useEffect(()=>{
     if(!desktopAvailable())return;
     let alive=true;
@@ -50,27 +52,25 @@ export default function FlyshotCalibrationPage() {
       .finally(()=>{if(alive)setCalibLoading(false);});
     return()=>{alive=false;};
   },[configs,calibMm,calibReload]);
-  const config=configs[cam]??null;
-  // 切换相机、视图时新的取样区会先于清空样本挂载：只认属于当前相机与视图的样本，取样区才会去载入标定原图
-  const current=sample&&sample.metadata.camera===config?.id&&sample.metadata.view===calibView?sample:null;
+  const current=sample?.scope===scope?sample.value:null;
+  const calibInfo=calibResult?.scope===scope?calibResult.value:null;
   const corners=calibInfo?.sampleId!=null&&calibInfo.sampleId===current?.metadata.id?calibInfo.corners:null;
   const marks=useMemo(()=>corners?.map((at,i)=>({at,color:i===0?"var(--ov-ok)":"var(--ov-line)"})),[corners]);
-  const status=statuses.find(s=>s.cam===cam)??null;
-  const busy=productionBusy(snapshot);
+  const status=statuses.find(s=>s.cam===cam&&s.id===config?.id)??null;
   const notice=error?<Notice title="操作未完成" tone="warn">{error}</Notice>:busy?<Notice title="当前工件正在检测">取样与标定在工件结束后可操作。</Notice>:null;
 
   return <div className="cam-page calib-page">
     <ReturnButton hint="标定完成后返回继续。"/>
     {notice&&<div className="cam-notice">{notice}</div>}
-    <CameraList configs={configs} statuses={statuses} selected={cam} onSelect={setCam} onRefresh={()=>{void reload();setCalibReload(n=>n+1);}} refreshing={loading||calibLoading} calibration={calibration}/>
+    <CameraList configs={configs} statuses={statuses} selected={cam} onSelect={index=>{if(index!==cam){setViewChoice(null);setCam(index);}}} onRefresh={()=>{void reload();setCalibReload(n=>n+1);}} refreshing={loading||calibLoading} calibration={calibration}/>
     {config?<main className="cam-main">
       <div className="cam-body">
         <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area cam-image-area">
-          <StationCapture key={config.id+":"+calibView} cam={cam} view={calibView} multiView={config.viewCount===3} sample={current} onSample={setSample} cameraReady={status?.ready ?? false} marks={marks}/>
+          <StationCapture key={scope} cam={cam} cameraId={config.id} view={calibView} multiView={config.viewCount===3} sample={current} onSample={value=>setSample(value?{scope,value}:null)} cameraReady={status?.ready ?? false} marks={marks}/>
         </fieldset>
         <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area">
-          {config.viewCount===3&&<label className="field"><span>标定图像</span><select className="input" aria-label="标定图像" value={calibView} onChange={e=>{setSample(null);setCalibView(Number(e.target.value));}}>{[1,2,3].map(v=><option key={v} value={v}>图 {v}</option>)}</select></label>}
-          <CalibPanel key={config.id+":"+calibView} cam={cam} view={calibView} multiView={config.viewCount===3} isSim={config.source==="sim"&&current?.metadata.source!=="import"&&current?.metadata.source!=="calib"} imageId={current?.metadata.id} onMmPerPx={setCalibMm} onCalibration={setCalibInfo}/>
+          {config.viewCount===3&&<label className="field"><span>标定图像</span><select className="input" aria-label="标定图像" value={calibView} onChange={e=>setViewChoice({cameraId:config.id,view:Number(e.target.value)})}>{[1,2,3].map(v=><option key={v} value={v}>图 {v}</option>)}</select></label>}
+          <CalibPanel key={scope} cam={cam} cameraId={config.id} view={calibView} multiView={config.viewCount===3} isSim={config.source==="sim"&&current?.metadata.source!=="import"&&current?.metadata.source!=="calib"} imageId={current?.metadata.id} onMmPerPx={setCalibMm} onCalibration={setCalibInfo}/>
         </fieldset>
       </div>
     </main>:<main className="cam-main"><Notice title={loading?"正在读取相机配置":"尚未添加相机"} tone="warn">在<Link to="/camera" state={navigationState}>相机</Link>页添加相机并绑定设备。</Notice></main>}

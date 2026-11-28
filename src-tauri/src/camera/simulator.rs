@@ -133,9 +133,9 @@ pub(super) fn open(slot: &CameraSlot, config: &CameraConfig) -> Result<String, S
     }
     std::thread::spawn(move || {
         let result = receive(&mut stream, &shared, session, first, channels, &mut bytes);
-        if shared.session.load(Ordering::SeqCst) == session {
+        if !shared.is_retired() && shared.session.load(Ordering::SeqCst) == session {
             shared.disconnected.store(true, Ordering::SeqCst);
-            shared.rig.gate.forget(shared.cam);
+            shared.gate.forget(shared.cam);
             if let Err(error) = result {
                 super::cycle::log("err", "模拟器相机", error);
             }
@@ -172,7 +172,7 @@ fn receive(
     let mut previous_frame = None;
     let mut previous_clock = None;
     loop {
-        if shared.session.load(Ordering::SeqCst) != session {
+        if shared.is_retired() || shared.session.load(Ordering::SeqCst) != session {
             return Ok(());
         }
         let now = Instant::now();
@@ -187,12 +187,11 @@ fn receive(
         }
         if gate != Some(header.gate_high) {
             shared
-                .rig
                 .gate
                 .edge(shared.cam, header.gate_high, header.timestamp_ns, now);
             gate = Some(header.gate_high);
         }
-        shared.rig.gate.observe(shared.cam, header.gate_high, now);
+        shared.gate.observe(shared.cam, header.gate_high, now);
         if header.payload_length > 0 {
             if previous_clock.is_some_and(|clock| header.timestamp_ns < clock) {
                 return Err("模拟器图像时间戳回退，请重连".into());
@@ -225,7 +224,6 @@ fn receive(
                     image.channels = count as u8;
                     let image: Arc<FrameImage> = Arc::new(image);
                     delivered.images.push(image);
-                    shared.set_previews(session, &delivered.images);
                     shared.deliver(delivered);
                 }
                 Err(_) => shared.discard_over_budget(delivered),

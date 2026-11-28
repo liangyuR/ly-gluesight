@@ -1,16 +1,19 @@
 mod admission;
 mod burst;
+mod daily_stats;
 mod interrupted;
+mod maintenance_progress;
 pub mod readiness;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use chrono::{Local, NaiveDate};
 use ly_plc::{now_ms, PlcEngine};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, value::RawValue};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, UnboundedReceiver, UnboundedSender};
 
@@ -29,14 +32,16 @@ use crate::plc::PlcHost;
 use crate::plc_session::{
     PartSite, PartTiming, PlcSession, SessionEvent, SessionPhase, SessionView,
 };
-use crate::recipe::{Recipe, RecipeStore, TriggerMode};
+use crate::recipe::{Recipe, RecipeStore, TeachingPieceRef, TriggerMode};
 use crate::recorder::{Recorder, Recorders, Recording};
 use crate::recording_health::{AlarmChange, RecordingAlarm, RecordingHealth};
 use crate::settings::{CycleSettings, ProductSource};
 use crate::shot_router::{arm_frames, ArmCam, Floor, FrameMeta, Ledgers, Policy};
 use crate::store::{
-    BurstRecord, HistoryScope, PlcDelivery, PlcDeliveryState, RecordSource, Store, VerdictCounts,
+    HistoryScope, PartMode, PlcDelivery, PlcDeliveryState, RecordSource, Store, VerdictCounts,
 };
+use daily_stats::DailyStats;
+use maintenance_progress::MaintenanceProgress;
 
 pub enum Input {
     /// 段配方一台相机一帧的测量结果（FramePool 交来）
@@ -111,6 +116,8 @@ pub struct FrameView {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PartView {
+    #[serde(skip)]
+    settled_json: Option<OnceLock<Option<Box<RawValue>>>>,
     pub cycle_id: String,
     pub bundle_id: Option<String>,
     pub sn: String,
@@ -170,13 +177,41 @@ pub struct FrameCellView {
     pub segment: Option<u32>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum FrameGroupCells {
+    Inline([FrameCellView; crate::plan::PLAN_CAMERAS]),
+    Dynamic(Vec<FrameCellView>),
+}
+
+impl FrameGroupCells {
+    fn from_cells(mut cells: impl ExactSizeIterator<Item = FrameCellView>) -> Self {
+        if cells.len() == crate::plan::PLAN_CAMERAS {
+            Self::Inline(std::array::from_fn(|_| cells.next().expect("帧格数已核对")))
+        } else {
+            Self::Dynamic(cells.collect())
+        }
+    }
+}
+
+impl std::ops::Deref for FrameGroupCells {
+    type Target = [FrameCellView];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Inline(cells) => cells,
+            Self::Dynamic(cells) => cells,
+        }
+    }
+}
+
 /// 一个帧组：cells 按计划相机顺序。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameGroupView {
     pub seq: u64,
     pub incomplete: bool,
-    pub cells: Vec<FrameCellView>,
+    pub cells: FrameGroupCells,
 }
 
 /// 段配方在途件（IPC 契约见 docs/decisions/segment-burst.md 5.2）。
@@ -250,7 +285,7 @@ impl From<VerdictCounts> for Stats {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub stats_scope: HistoryScope,
@@ -263,7 +298,8 @@ pub struct Snapshot {
     pub product_source: ProductSource,
     pub active_recipe_id: Option<String>,
     pub trigger_mode: Option<TriggerMode>,
-    pub part: Option<PartView>,
+    #[serde(serialize_with = "serialize_snapshot_part")]
+    pub part: Option<Arc<PartView>>,
     pub result: Option<ResultView>,
     pub stats: Stats,
     pub stray_frames: u64,
@@ -274,6 +310,53 @@ pub struct Snapshot {
     pub collection: Vec<crate::store::CollectionProgress>,
     /// 维护试判统计，按配方（最新正式版本）
     pub trial: Vec<crate::store::TrialProgress>,
+}
+
+fn serialize_snapshot_part<S: serde::Serializer>(
+    part: &Option<Arc<PartView>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let raw = part.as_deref().and_then(|view| {
+        view.settled_json
+            .as_ref()?
+            .get_or_init(|| serde_json::value::to_raw_value(view).ok())
+            .as_deref()
+    });
+    match raw {
+        Some(raw) => serializer.serialize_some(raw),
+        None => part.serialize(serializer),
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlState {
+    production_busy: bool,
+    plc_locked: bool,
+    plc_handshake: Option<SessionView>,
+    maintenance: Option<crate::settings::Maintenance>,
+}
+
+impl Snapshot {
+    fn production_busy(&self) -> bool {
+        !matches!(self.phase, Phase::Idle | Phase::Fault)
+    }
+
+    fn control_state(&self) -> ControlState {
+        ControlState {
+            production_busy: self.production_busy(),
+            plc_locked: self.plc_locked,
+            plc_handshake: self.plc_handshake.clone(),
+            maintenance: self.maintenance.clone(),
+        }
+    }
+
+    fn control_state_changed(&self, previous: &Self) -> bool {
+        self.production_busy() != previous.production_busy()
+            || self.plc_locked != previous.plc_locked
+            || self.plc_handshake != previous.plc_handshake
+            || self.maintenance != previous.maintenance
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -295,15 +378,14 @@ pub struct RecipeSummary {
     /// 已标定（expected_total 非空）
     pub calibrated: bool,
     /// 示教件来源（RB-7）：取自生产配方文档；旧流程发布的配方为空
-    pub teaching_piece: Option<crate::recipe::TeachingPieceRef>,
+    pub teaching_piece: Option<TeachingPieceRef>,
 }
 
 impl RecipeSummary {
-    /// 配方库里一份生产配方的摘要，带配方文档里的示教件来源。
-    pub fn listed(store: &RecipeStore, r: &Recipe) -> Self {
+    pub(crate) fn listed(recipe: &Recipe, teaching_piece: Option<TeachingPieceRef>) -> Self {
         Self {
-            teaching_piece: store.doc(&r.id).and_then(|d| d.teaching_piece),
-            ..Self::from(r)
+            teaching_piece,
+            ..Self::from(recipe)
         }
     }
 }
@@ -335,7 +417,7 @@ impl From<&Recipe> for RecipeSummary {
 }
 
 struct Shared {
-    snapshot: Option<Snapshot>,
+    snapshot: Option<Arc<Snapshot>>,
     /// 当前（或刚结束的）一件用的配方快照
     part_recipe: Option<Arc<Recipe>>,
     settings: CycleSettings,
@@ -348,6 +430,8 @@ pub struct CycleHost {
     pub link_gate: tokio::sync::Mutex<()>,
     /// 接件与配置门：接件登记、切换生产配方与相机重配置、配方/设置/标定修改互斥。节拍只在接件到登记在途、切换待生效配方时持有。
     pub config_gate: tokio::sync::Mutex<()>,
+    /// 工件配方包导入与项目切换互斥，先于 link_gate 或 config_gate 取得。
+    pub(crate) recipe_import_gate: Arc<tokio::sync::Mutex<()>>,
     pub camera: CameraRig,
     pub recipes: RecipeStore,
     pub recorders: Recorders,
@@ -458,6 +542,7 @@ impl CycleHost {
             tx,
             link_gate: tokio::sync::Mutex::new(()),
             config_gate: tokio::sync::Mutex::new(()),
+            recipe_import_gate: Arc::default(),
             recipes: RecipeStore::open_with_floors(
                 data.join("recipes"),
                 &app.state::<crate::store::Store>().recipe_version_floors()?,
@@ -522,6 +607,7 @@ impl CycleHost {
         }
         tauri::async_runtime::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(20));
+            let mut drain_wake = None;
             machine.publish();
             loop {
                 tokio::select! {
@@ -530,7 +616,23 @@ impl CycleHost {
                         None => break,
                     },
                     Some(frame) = frames.recv() => machine.on_frame(frame),
-                    _ = tick.tick() => machine.on_tick().await,
+                    _ = async {
+                        if let Some(deadline) = drain_wake {
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                        } else {
+                            std::future::pending().await
+                        }
+                    } => {
+                        drain_wake = None;
+                        machine.on_tick().await;
+                    },
+                    _ = tick.tick() => {
+                        machine.on_tick().await;
+                        drain_wake = match (machine.phase, &machine.part) {
+                            (Phase::Drain, Some(part)) => part.next_drain_wake(Instant::now()),
+                            _ => None,
+                        };
+                    },
                 }
                 // 快照最多 20 次/秒
                 if machine.dirty && machine.published.elapsed() >= Duration::from_millis(50) {
@@ -685,12 +787,7 @@ pub fn repair_history(app: &AppHandle) {
 }
 
 /// 启动时握手日志里有已绑定身份的在途件，而历史与追溯暂存里都没有它：进程在检测中途退出，补一条 ERR 记录。
-pub(crate) fn record_interrupted_part(
-    app: &AppHandle,
-    s7: &PlcSession,
-    stats: &mut Stats,
-    scope: HistoryScope,
-) {
+fn record_interrupted_part(app: &AppHandle, s7: &PlcSession, stats: &mut DailyStats, now: i64) {
     let (Some(cycle_id), Some(request)) = (s7.cycle_id(), s7.request()) else {
         return;
     };
@@ -709,7 +806,7 @@ pub(crate) fn record_interrupted_part(
         .and_then(|pending| {
             let store = app.state::<Store>();
             Ok(pending
-                || store.detail_by_cycle(cycle_id)?.is_some()
+                || store.id_by_cycle(cycle_id)?.is_some()
                 || store.history_cycle_deleted(cycle_id)?)
         });
     match known {
@@ -736,17 +833,12 @@ pub(crate) fn record_interrupted_part(
         &interrupted,
         s7.recipe_id().and_then(|id| host.recipe(id)),
         app.package_info().version.to_string(),
-        now_ms(),
+        now,
     );
     let label = site.source.label();
-    let counted = part.mode == crate::store::PartMode::Production
-        && interrupted::counts_in_stats(part.source, part.ts, scope, history::local_midnight_ms());
+    stats.record(part.mode, part.ts, part.judgement.verdict);
     let outcome = interrupted::recording(cycle_id, site.record);
     host.audit.insert(part);
-    if counted {
-        stats.total += 1;
-        stats.err += 1;
-    }
     host.audit.recording(outcome);
     log_with(
         "warn",
@@ -840,16 +932,6 @@ struct Part {
 }
 
 impl Part {
-    /// 计划帧数 ΣN_exp（未标定为 0）。
-    fn n(&self) -> usize {
-        self.recipe.expected_total().map_or(0, |n| n as usize)
-    }
-
-    /// PLC 报的 deviceTriggers（partEnd 前为 0）。
-    fn triggers(&self) -> u64 {
-        self.device_triggers.map_or(0, u64::from)
-    }
-
     /// 用本件已经观察到的 SDK 帧号更新下一件基线。
     fn close_routing(&mut self, ledgers: &mut Ledgers) {
         if self.routing_closed {
@@ -874,14 +956,15 @@ impl Part {
     fn view(&self) -> PartView {
         let burst = self.burst_view();
         PartView {
+            settled_json: None,
             cycle_id: self.cycle_id.clone(),
             bundle_id: self.bundle_id.clone(),
             sn: self.sn.clone(),
             recipe_id: self.recipe.id.clone(),
             recipe_revision: self.recipe.revision_id.clone(),
-            n: self.n(),
+            n: burst.expected_total.unwrap_or_default() as usize,
             received: burst.camera_frames.iter().map(|&n| n as usize).sum(),
-            triggers: self.triggers(),
+            triggers: burst.device_triggers.map_or(0, u64::from),
             queue: burst.pending_measure,
             measured_frames: burst.measured_frames,
             burst,
@@ -948,8 +1031,6 @@ pub fn run_kind(recipe: &Recipe, maintenance: bool) -> Result<RunKind, String> {
     ready_to_run(recipe)?;
     Ok(RunKind::Production)
 }
-
-const COLLECTION_REFRESH: Duration = Duration::from_secs(5);
 
 /// 没能建立检测的件：照常采图，工件结束后回 ERR（维护模式回 0）。
 struct Uninspected {
@@ -1072,15 +1153,10 @@ struct Machine {
     fault_at: Option<i64>,
     fault_repeat: Option<FaultRepeat>,
     result: Option<ResultView>,
-    stats: Stats,
-    /// 维护采集进度、试判统计与上次从记录库读取的时刻（录制收尾是异步的，定时刷新）
-    collection: (
-        Vec<crate::store::CollectionProgress>,
-        Vec<crate::store::TrialProgress>,
-        Option<Instant>,
-    ),
-    stats_day: i64,
-    stats_scope: HistoryScope,
+    stats: DailyStats,
+    maintenance_progress: MaintenanceProgress,
+    stats_checked: Instant,
+    history_purge_day: NaiveDate,
     stray: u64,
     stray_times: VecDeque<Instant>,
     alarms: Vec<String>,
@@ -1106,12 +1182,14 @@ struct Machine {
 
 impl Machine {
     fn new(app: AppHandle, frame_pool: FramePool) -> Self {
-        let mut stats = today_stats(&app, HistoryScope::Real);
+        let started_at = Local::now();
+        let day = started_at.date_naive();
+        let mut stats = DailyStats::new(day, today_stats(&app, day));
         let mut s7 = PlcSession::open(crate::storage::state(&app).join("plc-handshake.json"));
         if let Some(notice) = s7.archived() {
             log("warn", "S7 握手日志归档", notice.to_owned());
         }
-        record_interrupted_part(&app, &s7, &mut stats, HistoryScope::Real);
+        record_interrupted_part(&app, &s7, &mut stats, started_at.timestamp_millis());
         s7.forget_previous();
         host(&app).store_busy(Phase::Fault, &s7);
         Self {
@@ -1129,9 +1207,9 @@ impl Machine {
             fault_repeat: None,
             result: None,
             stats,
-            collection: (Vec::new(), Vec::new(), None),
-            stats_day: history::local_day(),
-            stats_scope: HistoryScope::Real,
+            maintenance_progress: MaintenanceProgress::default(),
+            stats_checked: Instant::now(),
+            history_purge_day: day,
             stray: 0,
             stray_times: VecDeque::new(),
             alarms: Vec::new(),
@@ -1154,7 +1232,7 @@ impl Machine {
 
     /// 原图录制失败不停产，告警独立于每件清空的 alarms，跟着当前场景的录制结果走。
     fn sync_recording_alarm(&mut self) {
-        let alarm = host(&self.app).recording_health.alarm(self.stats_scope);
+        let alarm = host(&self.app).recording_health.alarm(HistoryScope::Real);
         if alarm != self.recording_alarm {
             self.recording_alarm = alarm;
             self.dirty = true;
@@ -1409,37 +1487,28 @@ impl Machine {
         self.dirty = false;
         self.published = Instant::now();
         let host = host(&self.app);
-        if host.settings().maintenance.is_none() {
-            self.collection = (Vec::new(), Vec::new(), None);
-        } else if self
-            .collection
-            .2
-            .is_none_or(|at| at.elapsed() > COLLECTION_REFRESH)
-        {
-            let store = self.app.state::<Store>();
-            self.collection = (
-                store
-                    .collection_progress(self.stats_scope)
-                    .unwrap_or_default(),
-                store.trial_progress(self.stats_scope).unwrap_or_default(),
-                Some(Instant::now()),
-            );
-        }
+        let settings = host.settings();
+        let progress = self
+            .maintenance_progress
+            .snapshot(settings.maintenance.as_ref());
         let active = self.current_recipe();
-        let snapshot = Snapshot {
-            stats_scope: self.stats_scope,
+        let snapshot = Arc::new(Snapshot {
+            stats_scope: HistoryScope::Real,
             measurement_workers: self.frame_pool.health().snapshot(),
             phase: self.phase,
             plc_locked: host.busy(),
             plc_handshake: Some(self.s7.view()),
             since: self.since,
             fault: self.fault.clone(),
-            product_source: host.settings().product_source,
+            product_source: settings.product_source,
             active_recipe_id: active.as_ref().map(|r| r.id.clone()),
             trigger_mode: active.as_ref().map(|r| r.trigger_mode),
-            part: self.part.as_ref().map(Part::view),
+            part: self
+                .part
+                .as_ref()
+                .map(|part| part.published_view(self.phase)),
             result: self.result.clone(),
-            stats: self.stats.clone(),
+            stats: self.stats.snapshot(),
             stray_frames: self.stray,
             alarms: self
                 .alarms
@@ -1450,12 +1519,26 @@ impl Machine {
                 .chain(self.recording_alarm.as_ref().map(RecordingAlarm::message))
                 .collect(),
             recording_alarm: self.recording_alarm.clone(),
-            maintenance: host.settings().maintenance,
-            collection: self.collection.0.clone(),
-            trial: self.collection.1.clone(),
-        };
-        host.shared.lock().unwrap().snapshot = Some(snapshot.clone());
-        let _ = self.app.emit("cycle://snapshot", snapshot);
+            maintenance: settings.maintenance,
+            collection: progress.collection,
+            trial: progress.trial,
+        });
+        let previous = host
+            .shared
+            .lock()
+            .unwrap()
+            .snapshot
+            .replace(Arc::clone(&snapshot));
+        let control_changed = previous
+            .as_deref()
+            .is_none_or(|previous| snapshot.control_state_changed(previous));
+        drop(previous);
+        if control_changed {
+            let _ = self
+                .app
+                .emit("cycle://control-state", snapshot.control_state());
+        }
+        let _ = self.app.emit("cycle://snapshot", snapshot.as_ref());
     }
 
     async fn on_input(&mut self, input: Input) {
@@ -1475,11 +1558,6 @@ impl Machine {
         self.set_phase(Phase::Validate);
         self.part = None;
         self.uninspected = None;
-        let scope = HistoryScope::of(RecordSource::Real);
-        if scope != self.stats_scope {
-            self.stats_scope = scope;
-            self.stats = today_stats(&self.app, scope);
-        }
         self.current_cycle_id = None;
         self.result = None;
         crate::workspace::clear_live(&self.app);
@@ -1881,17 +1959,21 @@ impl Machine {
     }
 
     fn on_frame(&mut self, f: Frame) {
+        let Some(slot) = host(&self.app).camera.slot(f.cam as usize) else {
+            return;
+        };
+        if !slot.matches_session(f.session) {
+            return;
+        }
         let meta = FrameMeta::from(&f);
         self.ledgers.observe(&meta);
         let accepting = matches!(self.phase, Phase::Acquire | Phase::Drain);
-        let slot = host(&self.app).camera.slot(f.cam as usize);
         if f.manual {
             if accepting {
                 if let Some(part) = self.part.as_mut() {
-                    let current = slot.as_ref().is_some_and(|slot| {
-                        slot.routing_state()
-                            .is_ok_and(|state| state.0.session == f.session)
-                    });
+                    let current = slot
+                        .routing_state()
+                        .is_ok_and(|state| state.0.session == f.session);
                     let burst = &mut part.burst;
                     // 接件后的手动帧丢弃并告警，不判 ERR（它占了这台相机一个帧号，此后的帧组可能错开一格）
                     if let Some(camera) = burst
@@ -1927,7 +2009,7 @@ impl Machine {
             self.stray_times.push_back(now);
             self.stray_times
                 .retain(|t| now.duration_since(*t) < Duration::from_secs(60));
-            let camera = slot.map_or_else(|| format!("#{}", f.cam + 1), |s| s.config().id);
+            let camera = slot.config().id;
             let msg = format!(
                 "空闲时收到相机 {camera} 的帧（帧计数 {}），已记入设备计数账",
                 f.frame_counter
@@ -2098,9 +2180,13 @@ impl Machine {
         };
         let (ms, queue_ms, engine_ms) = (m.ms, m.queue_ms, m.engine_ms);
         let (segment, overlay) = (m.segment, m.trace.take());
-        let Some(metrics) = part.apply_burst(m) else {
+        let Some(key) = part.apply_burst(m) else {
             return;
         };
+        let metrics = part
+            .burst
+            .frame_metrics(key)
+            .expect("已接收的帧缺少测量指标");
         if let Some(overlay) = overlay {
             crate::workspace::retain_live_view(
                 &self.app,
@@ -2108,7 +2194,7 @@ impl Machine {
                 &part.recipe,
                 segment,
                 overlay,
-                &metrics,
+                metrics,
             );
         }
         self.dirty = true;
@@ -2116,7 +2202,7 @@ impl Machine {
         let seq = metrics.seq;
         let fields = Fields { cycle_id: Some(part.cycle_id.clone()), camera: Some(camera.clone()), seq: Some(seq), ..Fields::default() }.with_stage("measured")
             .with_data(json!({"ms": ms, "queueMs": queue_ms, "engineMs": engine_ms, "state": metrics.state, "error": metrics.error}));
-        let why = metrics.error.clone().unwrap_or_default();
+        let why = metrics.error.as_deref().unwrap_or_default();
         let untested = part
             .production
             .as_ref()
@@ -2163,10 +2249,24 @@ impl Machine {
     }
 
     async fn on_tick(&mut self) {
+        if self.stats_checked.elapsed() >= Duration::from_secs(1) {
+            self.refresh_stats_day();
+        }
         let app = self.app.clone();
         self.flush_noise();
         let _link = host(&app).link_gate.lock().await;
         let settings = host(&app).settings();
+        let progress_app = app.clone();
+        self.dirty |= self.maintenance_progress.poll(
+            settings.maintenance.as_ref(),
+            Instant::now(),
+            move || {
+                progress_app
+                    .state::<Store>()
+                    .maintenance_statistics(HistoryScope::Real)
+                    .unwrap_or_default()
+            },
+        );
         self.s7.set_maintenance(settings.maintenance.is_some());
         if !host(&app).busy() && matches!(self.phase, Phase::Idle | Phase::Fault) {
             // 配置操作进行中就留到下一拍，不让空闲节拍排队
@@ -2176,12 +2276,6 @@ impl Machine {
                     self.dirty = true;
                 }
             }
-        }
-        let scope = HistoryScope::Real;
-        if scope != self.stats_scope {
-            self.stats_scope = scope;
-            self.stats = today_stats(&app, scope);
-            self.dirty = true;
         }
         self.sync_recording_alarm();
         let cameras = match self.phase {
@@ -2484,9 +2578,10 @@ impl Machine {
         self.close_routing();
         let app = self.app.clone();
         let mut drain_ms = None;
+        let recorded_at = now_ms();
         let pending = PlcDelivery {
             state: PlcDeliveryState::Pending,
-            updated_at: now_ms(),
+            updated_at: recorded_at,
             message: None,
         };
         let record = self.recorded_part(
@@ -2560,9 +2655,7 @@ impl Machine {
             None => log("err", "PLC 交付", "缺少工件身份，交付状态未记录"),
         }
         let r = sent.map_err(|error| format!("回写 PLC 失败：{error}"));
-        if mode == crate::store::PartMode::Production {
-            self.count(judgement.verdict);
-        }
+        self.count(mode, recorded_at, judgement.verdict);
         let level = match judgement.verdict {
             Verdict::Ok | Verdict::OkWithExcursion => "ok",
             Verdict::ErrInspect => "err",
@@ -2691,7 +2784,7 @@ impl Machine {
         judgement: &Judgement,
         drain_ms: Option<u64>,
         delivery: PlcDelivery,
-        mode: crate::store::PartMode,
+        mode: PartMode,
     ) -> Result<RecordedPart, String> {
         let Some(cycle_id) = self.current_cycle_id.clone() else {
             return Err("工件身份尚未持久分配，不能关联历史与原图".into());
@@ -2700,7 +2793,12 @@ impl Machine {
         let recipe = part
             .map(|p| p.recipe.clone())
             .or_else(|| recipe_id.and_then(|id| host(&self.app).recipe(id)));
-        let burst = self.burst_outcome(sn, recipe.as_deref(), judgement);
+        let burst = match part {
+            Some(part) => Some(part.burst_record(judgement)),
+            None => recipe
+                .as_deref()
+                .map(|recipe| burst::empty_record(recipe, judgement)),
+        };
         // 预期帧数取 ΣN_exp（待标定为 0），收到的帧数取帧组数，触发数取 PLC 报的 deviceTriggers
         let frames_expected = burst
             .as_ref()
@@ -2713,7 +2811,7 @@ impl Machine {
         });
         let source = part.map_or_else(|| RecordSource::Real, |p| p.source);
         Ok(RecordedPart {
-            ts: now_ms(),
+            ts: delivery.updated_at,
             sn: sn.to_owned(),
             recipe,
             judgement: judgement.clone(),
@@ -2732,19 +2830,6 @@ impl Machine {
             burst,
             mode,
         })
-    }
-
-    /// 帧与区域记录：在途件按它的帧组与判定给出；没有在途件（接件时就不能检测）时按配方给出没有帧的记录；没有配方为 None。
-    fn burst_outcome(
-        &self,
-        sn: &str,
-        recipe: Option<&Recipe>,
-        judgement: &Judgement,
-    ) -> Option<BurstRecord> {
-        match self.part.as_ref().filter(|p| p.sn == sn) {
-            Some(part) => Some(part.burst_record(judgement)),
-            None => recipe.map(|recipe| burst::empty_record(recipe, judgement)),
-        }
     }
 
     fn record_without_part(&self, sn: &str, judgement: &Judgement) -> Result<(), String> {
@@ -2785,15 +2870,15 @@ impl Machine {
     }
 
     /// 没建立检测的件（拒收或维护模式未检）按会话锁存的模式记。
-    fn part_mode(&self, sn: &str) -> crate::store::PartMode {
+    fn part_mode(&self, sn: &str) -> PartMode {
         self.part
             .as_ref()
             .filter(|part| part.sn == sn)
             .map(|part| part.mode)
             .unwrap_or(if self.s7.part_maintenance() {
-                crate::store::PartMode::MaintenanceCollect
+                PartMode::MaintenanceCollect
             } else {
-                crate::store::PartMode::Production
+                PartMode::Production
             })
     }
 
@@ -2804,31 +2889,29 @@ impl Machine {
         judgement: &Judgement,
         drain_ms: Option<u64>,
         delivery: PlcDelivery,
+        mode: PartMode,
     ) -> Result<(), String> {
-        host(&self.app).audit.insert(self.recorded_part(
-            sn,
-            recipe_id,
-            judgement,
-            drain_ms,
-            delivery,
-            self.part_mode(sn),
-        )?);
+        host(&self.app)
+            .audit
+            .insert(self.recorded_part(sn, recipe_id, judgement, drain_ms, delivery, mode)?);
         self.record_without_part(sn, judgement)
     }
 
-    fn count(&mut self, v: Verdict) {
-        let today = history::local_day();
-        if today != self.stats_day {
-            self.stats_day = today;
-            self.stats = Stats::default();
+    fn refresh_stats_day(&mut self) -> NaiveDate {
+        self.stats_checked = Instant::now();
+        let today = Local::now().date_naive();
+        if self.stats.advance(today) {
+            self.dirty = true;
+        }
+        today
+    }
+
+    fn count(&mut self, mode: PartMode, recorded_at: i64, verdict: Verdict) {
+        let today = self.refresh_stats_day();
+        if self.stats.record(mode, recorded_at, verdict) && self.history_purge_day != today {
+            self.history_purge_day = today;
             let app = self.app.clone();
             tauri::async_runtime::spawn_blocking(move || purge_history(&app));
-        }
-        self.stats.total += 1;
-        match v {
-            Verdict::Ok | Verdict::OkWithExcursion => self.stats.ok += 1,
-            Verdict::ErrInspect => self.stats.err += 1,
-            _ => self.stats.ng += 1,
         }
     }
 
@@ -2896,12 +2979,13 @@ impl Machine {
                 fault::DEVICE_LOST
             };
             let judgement = Judgement::error(code, format!("{reason}，结果未回写"));
-            self.count(judgement.verdict);
             let delivery = PlcDelivery {
                 state: PlcDeliveryState::Failed,
                 updated_at: now_ms(),
                 message: Some(reason.to_owned()),
             };
+            let mode = self.part_mode(&sn);
+            self.count(mode, delivery.updated_at, judgement.verdict);
             let plc_write = self.s7.part_timing().map(|timing| PlcWriteTrace {
                 timing,
                 state: PlcWriteState::NotWritten,
@@ -2914,6 +2998,7 @@ impl Machine {
                 &judgement,
                 None,
                 delivery,
+                mode,
             ) {
                 log("err", "中断工件审计持久化失败", error);
             }
@@ -2925,8 +3010,9 @@ impl Machine {
                 Fields::stage("result"),
             );
             let burst = self
-                .burst_outcome(&sn, self.part.as_ref().map(|p| &*p.recipe), &judgement)
-                .map(|record| record.judgement);
+                .part
+                .as_ref()
+                .map(|part| part.burst_record_judgement(&judgement));
             let mode = self.part_mode(&sn);
             self.result = Some(ResultView {
                 cycle_id: self.current_cycle_id.clone(),
@@ -3029,27 +3115,30 @@ fn burst_warnings(
     out
 }
 
-/// 今日统计只算当前站点的范围：真机只算真机件，离线只算离线件。
-
-fn today_stats(app: &AppHandle, scope: HistoryScope) -> Stats {
+fn today_stats(app: &AppHandle, day: NaiveDate) -> Stats {
     app.state::<Store>()
-        .counts_since(history::local_midnight_ms(), scope)
+        .counts_since(history::local_midnight_ms(day), HistoryScope::Real)
         .map(Stats::from)
         .unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn cycle_snapshot(cycle: State<'_, CycleHost>) -> Option<Snapshot> {
+pub fn cycle_snapshot(cycle: State<'_, CycleHost>) -> Option<Arc<Snapshot>> {
     cycle.shared.lock().unwrap().snapshot.clone()
+}
+
+#[tauri::command]
+pub fn cycle_control_state(cycle: State<'_, CycleHost>) -> Option<ControlState> {
+    cycle_snapshot(cycle).map(|snapshot| snapshot.control_state())
 }
 
 #[tauri::command]
 pub fn cycle_recipes(cycle: State<'_, CycleHost>) -> Vec<RecipeSummary> {
     cycle
         .recipes
-        .list()
-        .iter()
-        .map(|r| RecipeSummary::listed(&cycle.recipes, r))
+        .list_with_teaching_piece()
+        .into_iter()
+        .map(|(recipe, teaching_piece)| RecipeSummary::listed(&recipe, teaching_piece))
         .collect()
 }
 

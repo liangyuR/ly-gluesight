@@ -1,6 +1,162 @@
+use chrono::{Local, NaiveDate, TimeZone};
+
+use super::daily_stats::DailyStats;
+use super::maintenance_progress::MaintenanceProgress;
 use super::*;
 use crate::frame::CounterSource;
 use crate::offline::Scenario;
+use crate::store::PartMode;
+
+fn local_noon(date: NaiveDate) -> i64 {
+    Local
+        .from_local_datetime(&date.and_hms_opt(12, 0, 0).unwrap())
+        .single()
+        .unwrap()
+        .timestamp_millis()
+}
+
+#[test]
+fn midnight_clears_totals_and_late_writeback_keeps_the_record_date() {
+    let yesterday = NaiveDate::from_ymd_opt(2025, 2, 8).unwrap();
+    let today = yesterday.succ_opt().unwrap();
+    let mut daily = DailyStats::new(
+        yesterday,
+        Stats {
+            total: 8,
+            ok: 4,
+            ng: 2,
+            err: 2,
+        },
+    );
+
+    assert!(daily.advance(today));
+    let cleared = daily.snapshot();
+    assert_eq!(
+        (cleared.total, cleared.ok, cleared.ng, cleared.err),
+        (0, 0, 0, 0)
+    );
+    assert!(!daily.record(
+        PartMode::Production,
+        local_noon(yesterday),
+        Verdict::ErrInspect
+    ));
+    assert!(daily.record(
+        PartMode::Production,
+        local_noon(today),
+        Verdict::OkWithExcursion
+    ));
+    let stats = daily.snapshot();
+    assert_eq!((stats.total, stats.ok, stats.ng, stats.err), (1, 1, 0, 0));
+}
+
+#[test]
+fn interrupted_maintenance_parts_leave_production_totals_unchanged() {
+    let today = NaiveDate::from_ymd_opt(2025, 2, 9).unwrap();
+    let at = local_noon(today);
+    let mut daily = DailyStats::new(today, Stats::default());
+
+    for mode in [PartMode::MaintenanceCollect, PartMode::MaintenanceShadow] {
+        assert!(!daily.record(mode, at, Verdict::ErrInspect));
+    }
+    assert!(daily.record(PartMode::Production, at, Verdict::ErrInspect));
+
+    let stats = daily.snapshot();
+    assert_eq!((stats.total, stats.ok, stats.ng, stats.err), (1, 0, 0, 1));
+}
+
+#[tokio::test]
+async fn maintenance_reentry_waits_for_the_old_read_and_publishes_only_fresh_progress() {
+    use std::sync::mpsc::{channel, TryRecvError};
+
+    use tokio::sync::oneshot;
+
+    use crate::settings::Maintenance;
+    use crate::store::{CollectionProgress, MaintenanceStatistics, TrialProgress};
+
+    const TIMEOUT: Duration = Duration::from_secs(5);
+
+    fn data(recorded: u32) -> MaintenanceStatistics {
+        MaintenanceStatistics {
+            collection: vec![CollectionProgress {
+                recipe_id: "test".into(),
+                recorded,
+                usable: recorded,
+            }],
+            trial: vec![TrialProgress {
+                recipe_id: "test".into(),
+                recipe_version: 1,
+                counts: VerdictCounts {
+                    ok: u64::from(recorded),
+                    ..VerdictCounts::default()
+                },
+                ng: Vec::new(),
+            }],
+        }
+    }
+
+    async fn wait_until(mut ready: impl FnMut() -> bool) {
+        tokio::time::timeout(TIMEOUT, async {
+            while !ready() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("维护统计未返回");
+    }
+
+    let old_mode = Maintenance {
+        since: 1,
+        reason: "第一次维护".into(),
+    };
+    let new_mode = Maintenance {
+        since: 2,
+        reason: "第二次维护".into(),
+    };
+    let mut progress = MaintenanceProgress::default();
+    let now = Instant::now();
+    wait_until(|| {
+        progress.poll(Some(&old_mode), now, || data(1));
+        progress.snapshot(Some(&old_mode)) == data(1)
+    })
+    .await;
+
+    let later = now + Duration::from_secs(6);
+    let (started, observed_start) = oneshot::channel();
+    let (release, wait_for_release) = channel();
+    progress.poll(Some(&old_mode), later, move || {
+        started.send(()).unwrap();
+        wait_for_release.recv_timeout(TIMEOUT).unwrap();
+        data(2)
+    });
+    tokio::time::timeout(TIMEOUT, observed_start)
+        .await
+        .unwrap()
+        .unwrap();
+    progress.poll(None, later, MaintenanceStatistics::default);
+    assert!(progress.snapshot(None) == MaintenanceStatistics::default());
+
+    let (overlap, observed_overlap) = channel();
+    progress.poll(Some(&new_mode), later, move || {
+        overlap.send(()).unwrap();
+        data(3)
+    });
+    assert!(progress.snapshot(Some(&new_mode)) == MaintenanceStatistics::default());
+    assert_eq!(observed_overlap.try_recv(), Err(TryRecvError::Disconnected));
+
+    release.send(()).unwrap();
+    wait_until(|| {
+        let changed = progress.poll(Some(&new_mode), later, || data(3));
+        let snapshot = progress.snapshot(Some(&new_mode));
+        if snapshot == data(3) {
+            assert!(changed);
+            true
+        } else {
+            assert!(snapshot == MaintenanceStatistics::default());
+            false
+        }
+    })
+    .await;
+}
 
 /// 段配方在途件：samples_burst（cam1–cam3 共用触发、一个直线段 N_exp = 4），相机组序号 0–2、会话 11–13，
 /// 按计数账定帧计数基线（模拟相机本会话没见过帧时从 0 起）。
@@ -283,7 +439,12 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             (None, None, None),
             "{case}：测完后不再是送测中"
         );
-        assert_eq!(p.view().burst.groups[5].cells[0].verdict, Some(Verdict::Ok));
+        let acquired = p.published_view(Phase::Acquire);
+        assert_eq!(
+            (acquired.measured_frames, acquired.burst.measured_frames),
+            (36, 36)
+        );
+        assert_eq!(acquired.burst.groups[5].cells[0].verdict, Some(Verdict::Ok));
         let recording_dir = crate::offline::test_dir::TestDir::new("cycle-post", case);
         if keep_images {
             let recorder = crate::recorder::Recorder::new(vec![recording_dir.to_path_buf()], None);
@@ -334,11 +495,21 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             };
             assert_eq!(jobs, expected, "{case}");
             assert!(!p.complete(), "{case}：补测完之前不收尾");
+            let draining = p.published_view(Phase::Drain);
+            let remaining = 36 - expected.len();
+            assert_eq!(
+                (
+                    draining.measured_frames,
+                    draining.burst.measured_frames,
+                    draining.burst.pending_measure
+                ),
+                (remaining, remaining, expected.len()),
+                "{case}"
+            );
             let remeasures_visible_frame =
                 jobs.iter().any(|&(camera, seq, _)| camera == 0 && seq == 6);
             if remeasures_visible_frame {
-                let view = p.view();
-                let cell = &view.burst.groups[5].cells[0];
+                let cell = &draining.burst.groups[5].cells[0];
                 assert_eq!(
                     (cell.status, cell.verdict),
                     (FrameCellStatus::Measuring, None)
@@ -356,9 +527,19 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
                 };
                 p.apply_burst(result).unwrap();
             }
+            let remeasured = p.published_view(Phase::Drain);
+            assert_eq!(
+                (
+                    remeasured.measured_frames,
+                    remeasured.burst.measured_frames,
+                    remeasured.burst.pending_measure
+                ),
+                (36, 36, 0),
+                "{case}"
+            );
             if remeasures_visible_frame {
                 assert_eq!(
-                    p.view().burst.groups[5].cells[0].verdict,
+                    remeasured.burst.groups[5].cells[0].verdict,
                     Some(Verdict::NgGap)
                 );
             }
@@ -474,6 +655,114 @@ fn no_frame_from_any_camera_is_err_91() {
 }
 
 #[test]
+fn frame_group_cells_serialize_in_camera_order_for_each_length() {
+    for count in [0, 1, 2, 3, 4] {
+        let group = FrameGroupView {
+            seq: 1,
+            incomplete: false,
+            cells: FrameGroupCells::from_cells((0..count).map(|camera| FrameCellView {
+                status: FrameCellStatus::Measuring,
+                verdict: None,
+                unjudged: false,
+                frame_counter: Some(100 + camera as u64),
+                segment: None,
+            })),
+        };
+        let json = serde_json::to_value(group).unwrap();
+        let counters: Vec<_> = json["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|cell| cell["frameCounter"].as_u64().unwrap())
+            .collect();
+        assert_eq!(counters, (100..100 + count as u64).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn sparse_snapshot_preserves_a_later_frames_camera_and_verdict() {
+    let mut part = burst_part("sparse-snapshot", &Ledgers::default());
+    for seq in 1..=4 {
+        for camera in 0..3 {
+            if (camera, seq) != (1, 2) {
+                assert_eq!(
+                    deliver(&mut part, camera, seq),
+                    burst::Arrival::Accepted {
+                        camera: camera as usize,
+                        seq
+                    }
+                );
+            }
+        }
+    }
+    let acquiring = &part.published_view(Phase::Acquire).burst;
+    assert_eq!(acquiring.groups[1].seq, 2);
+    assert!(acquiring.groups[1].incomplete);
+    assert_eq!(
+        acquiring.groups[1].cells[1].status,
+        FrameCellStatus::Waiting
+    );
+    assert_eq!(acquiring.groups[2].cells[1].frame_counter, Some(3));
+    assert_eq!(acquiring.groups[2].cells[1].verdict, Some(Verdict::Ok));
+
+    end(&mut part, Some(4), true);
+    judge_burst(&mut part);
+    let settled = &part.published_view(Phase::Idle).burst;
+    assert_eq!(settled.groups[1].cells[1].status, FrameCellStatus::Missing);
+    assert_eq!(settled.groups[2].seq, 3);
+    assert_eq!(settled.groups[2].cells[1].frame_counter, Some(3));
+    assert_eq!(settled.groups[2].cells[1].verdict, Some(Verdict::Ok));
+}
+
+#[test]
+fn snapshot_part_json_preserves_null_active_and_settled_views() {
+    #[derive(Serialize)]
+    struct PartJson {
+        #[serde(serialize_with = "serialize_snapshot_part")]
+        part: Option<Arc<PartView>>,
+    }
+
+    let mut part = burst_part("snapshot-json", &Ledgers::default());
+    part.sn = "SN \"引号\" \\ 行\n二".into();
+    deliver_groups(&mut part, 4);
+    let active = part.published_view(Phase::Acquire);
+    end(&mut part, Some(4), true);
+    judge_burst(&mut part);
+    let settled = part.published_view(Phase::Idle);
+
+    for part in [None, Some(active), Some(settled)] {
+        let expected = format!("{{\"part\":{}}}", serde_json::to_string(&part).unwrap());
+        let snapshot = PartJson { part };
+        assert_eq!(serde_json::to_string(&snapshot).unwrap(), expected);
+        assert_eq!(serde_json::to_string(&snapshot).unwrap(), expected);
+    }
+}
+
+#[test]
+fn unjudged_part_snapshot_still_reflects_the_drain_deadline() {
+    let mut part = burst_part("unjudged-snapshot", &Ledgers::default());
+    part.drain_timeout = Duration::from_secs(1);
+    deliver(&mut part, 0, 1);
+    end(&mut part, Some(1), false);
+    let before = part.published_view(Phase::Idle);
+    assert_eq!(
+        before.burst.groups[0].cells[1].status,
+        FrameCellStatus::Waiting
+    );
+
+    end(&mut part, Some(1), true);
+    let after = part.published_view(Phase::Idle);
+    assert_eq!(
+        after.burst.groups[0].cells[1].status,
+        FrameCellStatus::Missing
+    );
+    assert_eq!(
+        before.burst.groups[0].cells[1].status,
+        FrameCellStatus::Waiting
+    );
+}
+
+#[test]
 fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result() {
     let mut p = burst_part("tail-measurement", &Ledgers::default());
     deliver_groups(&mut p, 4);
@@ -502,6 +791,9 @@ fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result(
     assert!(p.complete());
     let judgement = judge_burst(&mut p);
     let record = p.burst_record(&burst::summary(&judgement));
+    let view = p.burst_view();
+    let tail = view.groups.iter().find(|group| group.seq == 5).unwrap();
+    assert_eq!(tail.cells[0].status, FrameCellStatus::Measured);
     assert_eq!(
         record
             .frames
@@ -511,6 +803,61 @@ fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result(
             .status,
         FrameState::Measured
     );
+}
+
+#[test]
+fn pending_measurement_timeout_allows_finish_and_rejects_late_result() {
+    let mut part = burst_part("measurement-timeout", &Ledgers::default());
+    deliver_groups(&mut part, 3);
+    assert_eq!(
+        part.receive_burst(&burst_frame(0, 4)),
+        Some(burst::Arrival::Accepted { camera: 0, seq: 4 })
+    );
+    deliver(&mut part, 1, 4);
+    deliver(&mut part, 2, 4);
+    end(&mut part, Some(4), true);
+    assert!(!part.complete());
+    let pending = part.published_view(Phase::Drain);
+    assert_eq!(pending.received, 12);
+    assert_eq!(
+        (pending.measured_frames, pending.burst.measured_frames),
+        (11, 11)
+    );
+    assert_eq!(pending.burst.pending_measure, 1);
+
+    let expired_at = Instant::now() + part.proc_timeout;
+    assert_eq!(part.expire_burst(expired_at, part.proc_timeout), [(0, 4)]);
+    let measured = measure::simulate_frame(Scenario::Normal, 0, 4, 1, &part.recipe);
+    let late = frame_result(&part, 0, 4, Ok(measured));
+    assert!(part.apply_burst(late).is_none());
+    assert!(part.complete());
+
+    let judgement = judge_burst(&mut part);
+    assert_eq!(judgement.verdict, Verdict::Ok);
+    assert!(judgement.flags.incomplete);
+    let view = part.published_view(Phase::Idle);
+    assert_eq!((view.measured_frames, view.burst.measured_frames), (12, 12));
+    assert_eq!(view.burst.pending_measure, 0);
+    let cells = &view.burst.groups[3].cells;
+    assert_eq!(cells[0].status, FrameCellStatus::Unmeasured);
+    assert_eq!(cells[1].status, FrameCellStatus::Measured);
+}
+
+#[test]
+fn maintenance_collection_counts_received_frames_without_measuring_them() {
+    let mut part = burst_part("maintenance-collect-snapshot", &Ledgers::default());
+    part.mode = PartMode::MaintenanceCollect;
+    part.burst.collect = true;
+    assert_eq!(
+        part.receive_burst(&burst_frame(0, 1)),
+        Some(burst::Arrival::Accepted { camera: 0, seq: 1 })
+    );
+
+    let view = part.published_view(Phase::Acquire);
+    assert_eq!(view.received, 1);
+    assert_eq!(view.burst.groups[0].cells[0].frame_counter, Some(1));
+    assert_eq!((view.measured_frames, view.burst.measured_frames), (0, 0));
+    assert_eq!(view.burst.pending_measure, 0);
 }
 
 /// 防的回归（D-SB-54）：PLC 报结束后不管门控已关闭都固定等满收尾窗口；或门控还开着（还有帧要来）就提前收尾、丢掉后面的帧。
@@ -707,4 +1054,54 @@ fn production_splits_passes_by_gate_pause_and_skips_each_pass_head() {
             (FrameCellStatus::Measured, None, true)
         );
     }
+}
+
+#[test]
+fn arrival_corridor_uses_taught_pass_when_live_pass_lengths_differ() {
+    use crate::plan::{new_segment, PathSegment, SegmentKind};
+
+    let mut doc = crate::recipe::samples_burst();
+    doc.segments = (1..=3)
+        .map(|index| PathSegment {
+            expected_frames: Some(3),
+            ..new_segment(index, SegmentKind::Straight, &doc.segment_defaults)
+        })
+        .collect();
+    doc.pass_frames = Some(vec![3, 3, 3]);
+    let mut part = armed_part_with(
+        doc.build().unwrap(),
+        "taught-pass-prediction",
+        &Ledgers::default(),
+        Some(CounterSource::Synthetic),
+        Policy::burst_offline(None),
+    );
+    let period = crate::frame_clock::SYNTH_PERIOD_NS;
+    let mut counter = 0;
+    let mut corridors = Vec::new();
+    for (start, count) in [(period, 2), (9 * period + period / 2, 4), (19 * period, 1)] {
+        for slot in 0..count {
+            counter += 1;
+            let frame = Frame {
+                dev_ts: Some(start + slot * period),
+                ..burst_frame(0, counter)
+            };
+            let Some(burst::Arrival::Accepted { camera, seq }) = part.receive_burst(&frame) else {
+                panic!("帧 {counter} 应被接受");
+            };
+            corridors.push(part.burst.arrival_corridor(camera, seq));
+        }
+    }
+
+    assert_eq!(
+        corridors,
+        [
+            Some(1),
+            Some(1),
+            Some(2),
+            Some(2),
+            Some(2),
+            Some(2),
+            Some(3)
+        ]
+    );
 }

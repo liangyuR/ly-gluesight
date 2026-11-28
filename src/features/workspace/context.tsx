@@ -1,5 +1,5 @@
 import { errorText } from "../../lib/errors";
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from "react";
 import { cameraApi, type CameraConfig } from "../camera";
 import { recipeApi, type UnavailableRecipe } from "../cycle/api";
 import type { Recipe, RecipeDoc, RecipeSummary } from "../cycle/types";
@@ -8,7 +8,7 @@ import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import type { CameraTeachDraft } from "../plan/types";
 import type { NavigationMapData } from "./navigation/types";
-import type { Workspace, WorkspaceView } from "./types";
+import type { WorkspaceCatalogEntry, WorkspaceView } from "./types";
 import { corridorStationError, draftKey, sameCorridor, savedDraft, withCorridor } from "./teach";
 import { useSnackbar, type SnackbarMessage } from "qing-steel";
 import type { WorkbenchDraft } from "./workbenchDraft";
@@ -20,7 +20,7 @@ export type SnackMessage = string | SnackbarMessage;
 export interface NavigationDraft { map: NavigationMapData; revision: number }
 
 interface WorkspaceContextValue {
-  list: RecipeSummary[]; drafts: Workspace[]; cameras: CameraConfig[]; unavailable: UnavailableRecipe[];
+  list: RecipeSummary[]; drafts: WorkspaceCatalogEntry[]; cameras: CameraConfig[]; unavailable: UnavailableRecipe[];
   selectedId: string | null; data: WorkspaceView | null; doc: RecipeDoc | null; preview: Recipe | null;
   /** busy：显式操作或自动保存进行中；saving：其中的自动保存（期间可以继续编辑，改动并入下一次保存）；acting：只算显式操作 */
   previewError: string; error: string; busy: boolean; saving: boolean; acting: boolean; dirty: boolean; frameDirty: boolean;
@@ -39,19 +39,21 @@ interface WorkspaceContextValue {
   discardDrafts: () => boolean;
   setDoc: (doc: RecipeDoc) => void;
   setCorridorDraft: (key: string, draft: CameraTeachDraft) => void;
-  act: (request: () => Promise<WorkspaceView>, message?: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => Promise<WorkspaceView | null>;
+  act: (request: () => Promise<WorkspaceView | null>, message?: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => Promise<WorkspaceView | null>;
   saveDoc: (doc?: RecipeDoc) => Promise<WorkspaceView | null>;
   saveState: "saved" | "saving" | "failed" | "pending"; retrySave: () => void;
   setError: (message: string) => void;
 }
 const Context = createContext<WorkspaceContextValue | null>(null);
-const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const equal = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b);
+type CatalogRefresh = { queued: boolean; promise: Promise<void> };
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [list, setList] = useState<RecipeSummary[]>([]);
   const [unavailable, setUnavailable] = useState<UnavailableRecipe[]>([]);
   const [recipeErrors, setRecipeErrors] = useState("");
-  const [drafts, setDrafts] = useState<Workspace[]>([]);
+  const [catalogError, setCatalogError] = useState("");
+  const [drafts, setDrafts] = useState<WorkspaceCatalogEntry[]>([]);
   const [cameras, setCameras] = useState<CameraConfig[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [data, setData] = useState<WorkspaceView | null>(null);
@@ -71,6 +73,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [urgent, setUrgent] = useState(false);
   const failedSave = useRef("");
   const requestSerial = useRef(0);
+  const catalogScope = useRef<{ inFlight: CatalogRefresh | null } | null>(null);
   const acting = useRef(false);
   const selected = useRef<string | null>(null);
   const dirtyRef = useRef(false);
@@ -83,14 +86,24 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const cameraSources=useRef<Record<string, string>>({});
   const dirty = !!doc && !!data && !equal(doc, data.workspace.doc);
   const latestDoc = useRef(doc); latestDoc.current = doc;
-  // 草稿与候选里已保存的走廊比较（按 f32），不同才算未保存
-  const savedCorridor = (key: string) => savedDraft(data?.workspace.doc, key);
-  const frameDirty = Object.keys(corridorDrafts).some(key => !sameCorridor(corridorDrafts[key], savedCorridor(key)));
+  const savedDoc = data?.workspace.doc;
+  const spacing = doc?.spacing;
+  const { frameDirty, pendingCorridor, unsavable } = useMemo(() => {
+    let frameDirty = false;
+    let pendingCorridor: [string, CameraTeachDraft] | undefined;
+    let unsavable = false;
+    for (const entry of Object.entries(corridorDrafts)) {
+      const [key, draft] = entry;
+      if (sameCorridor(draft, savedDraft(savedDoc, key))) continue;
+      frameDirty = true;
+      if (spacing === undefined) break;
+      if (corridorStationError(draft, spacing)) unsavable = true;
+      else pendingCorridor ??= entry;
+      if (pendingCorridor && unsavable) break;
+    }
+    return { frameDirty, pendingCorridor, unsavable };
+  }, [corridorDrafts, savedDoc, spacing]);
   const navigationDirty = !!navigationDraft && !equal(navigationDraft.map, data?.navigation?.map);
-  // 按站距不足三站的走廊草稿不自动保存（lyFlow 会把有胶的帧测成无胶），原因在示教页显示
-  const changedDrafts = Object.entries(corridorDrafts).filter(([key, draft]) => !sameCorridor(draft, savedCorridor(key)));
-  const pendingCorridor = doc ? changedDrafts.find(([, draft]) => !corridorStationError(draft, doc.spacing)) : undefined;
-  const unsavable = !!doc && changedDrafts.some(([, draft]) => !!corridorStationError(draft, doc.spacing));
   const pendingSave = dirty || saving || !!pendingCorridor;
   navigationDirtyRef.current = navigationDirty;
   segmentDirtyRef.current = segmentDirty;
@@ -135,12 +148,42 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const reloadList = useCallback(async () => {
-    if (!desktopAvailable()) return;
-    const [recipes, workspaces, configs] = await Promise.all([recipeApi.list(), workspaceApi.list(), cameraApi.rigConfig()]);
-    setList(recipes.recipes); setDrafts(workspaces); setCameras(configs);
-    setUnavailable(recipes.unavailable ?? []);
-    setRecipeErrors(recipes.errors.join("；"));
+  const reloadList = useCallback((): Promise<void> => {
+    const scope = catalogScope.current;
+    if (!scope) return Promise.resolve();
+    if (scope.inFlight) {
+      scope.inFlight.queued = true;
+      return scope.inFlight.promise;
+    }
+
+    const run = async (): Promise<void> => {
+      try {
+        while (catalogScope.current === scope) {
+          refresh.queued = false;
+          const [recipes, workspaces, configs] = await Promise.allSettled([
+            recipeApi.list(), workspaceApi.list(), cameraApi.rigConfig(),
+          ]);
+          if (catalogScope.current !== scope) return;
+          if (refresh.queued) continue;
+          if (recipes.status === "rejected") throw recipes.reason;
+          if (workspaces.status === "rejected") throw workspaces.reason;
+          if (configs.status === "rejected") throw configs.reason;
+
+          setList(recipes.value.recipes);
+          setDrafts(workspaces.value);
+          setCameras(configs.value);
+          setUnavailable(recipes.value.unavailable ?? []);
+          setRecipeErrors(recipes.value.errors.join("；"));
+          setCatalogError("");
+          return;
+        }
+      } finally {
+        scope.inFlight = null;
+      }
+    };
+    const refresh: CatalogRefresh = { queued: false, promise: Promise.resolve().then(run) };
+    scope.inFlight = refresh;
+    return refresh.promise;
   }, []);
 
   const select = useCallback(async (id: string) => {
@@ -163,11 +206,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!desktopAvailable()) return;
-    let alive = true;
-    // 不自动打开任何配方：打开哪个由配方页的地址决定（/recipe/<编号>/…）
-    reloadList().catch(e => { if (alive) setError(errorText(e)); });
+    const scope = { inFlight: null };
+    catalogScope.current = scope;
+    const report = (error: unknown) => { if (catalogScope.current === scope) setCatalogError(errorText(error)); };
     const refresh = (id: string) => {
-      void reloadList().catch(e => setError(errorText(e)));
+      if (catalogScope.current !== scope) return;
+      void reloadList().catch(report);
       if (id && id === selected.current) {
         pendingRefresh.current = id;
         setRefreshRevision(revision => revision + 1);
@@ -177,8 +221,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const offCameras = subscribe<unknown>("camera://changed", () => refresh(selected.current ?? ""));
     const offCalibration = subscribe<unknown>("calibration://changed", () => refresh(selected.current ?? ""));
     const offSettings = subscribe<unknown>("cycle://settings-changed", () => refresh(selected.current ?? ""));
-    return () => { alive = false; requestSerial.current++; off(); offCameras(); offCalibration(); offSettings(); };
-  }, [reloadList, select, accept]);
+    // 不自动打开任何配方：打开哪个由配方页的地址决定（/recipe/<编号>/…）
+    void reloadList().catch(report);
+    return () => {
+      catalogScope.current = null;
+      requestSerial.current++;
+      off(); offCameras(); offCalibration(); offSettings();
+    };
+  }, [reloadList]);
 
   useEffect(() => {
     const id = pendingRefresh.current;
@@ -204,7 +254,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => { alive = false; clearTimeout(timer); };
   }, [doc, data?.workspace.doc]);
 
-  const act = useCallback(async (request: () => Promise<WorkspaceView>, message: SnackMessage | ((next: WorkspaceView) => SnackMessage) = "") => {
+  const act = useCallback(async (request: () => Promise<WorkspaceView | null>, message: SnackMessage | ((next: WorkspaceView) => SnackMessage) = "") => {
     if (acting.current || savingRef.current) return null;
     acting.current = true; setBusy(true); setError(""); clearSnack();
     const originalId = selected.current;
@@ -212,6 +262,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const current = () => originalId === selected.current && serial === requestSerial.current;
     try {
       const next = await request();
+      if (next === null) return null;
       if (current()) {
         if (next.workspace.doc.id !== originalId) throw new Error("候选响应与当前配方不一致，请重试操作");
         accept(next);
@@ -228,15 +279,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const saveDoc = useCallback((draft?: RecipeDoc) => {
     const current = draft ?? doc;
     if (!current || !data) return Promise.resolve(null);
-    return act(() => workspaceApi.saveDoc(current.id, data.workspace.revision, current), "候选配置已保存，生产版本保持不变");
+    const { revision, instanceId } = data.workspace;
+    return act(() => workspaceApi.saveDoc(current.id, revision, instanceId, current), "候选配置已保存，生产版本保持不变");
   }, [doc, data, act]);
 
   // 自动保存不经 act：不锁编辑、不重读配方列表；保存期间的新改动在结果回来后保留，再保存一次
   useEffect(() => {
     if (!data || !doc || busy || saving || !desktopAvailable()) return;
+    const { revision, instanceId } = data.workspace;
     const corridor = pendingCorridor;
     if (!dirty && !corridor) { setUrgent(false); setSaveState(frameDirty ? "pending" : "saved"); return; }
-    const signature = JSON.stringify([doc, corridor, saveRetry]);
+    const makeSignature = () => JSON.stringify([instanceId, revision, doc, corridor, saveRetry]);
+    const signature = failedSave.current ? makeSignature() : undefined;
     if (failedSave.current === signature) return;
     setSaveState("pending");
     const timer = setTimeout(async () => {
@@ -248,9 +302,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const current = () => id === selected.current && serial === requestSerial.current;
       savingRef.current = true; setSaving(true); setSaveState("saving");
       try {
-        const next = await workspaceApi.saveDoc(id, data.workspace.revision, sent);
+        const next = await workspaceApi.saveDoc(id, revision, instanceId, sent);
         if (!current()) return;
-        if (next.workspace.doc.id !== id) throw new Error("候选响应与当前配方不一致，请重试保存");
+        if (next.workspace.doc.id !== id || next.workspace.instanceId !== instanceId) {
+          throw new Error("保存响应与正在编辑的候选不一致，请重试保存");
+        }
         failedSave.current = "";
         // 保存期间又改了配方：留住本地改动；只存走廊时本地配方还没有这条走廊，补进去，下一轮一起保存
         const edited = !equal(latestDoc.current, doc);
@@ -258,13 +314,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         if (edited && !dirty) setDoc(previous => previous && withCorridor(previous, corridor![0], corridor![1]));
         setError("");
       } catch (e) {
-        if (current()) { failedSave.current = signature; setSaveState("failed"); setError(errorText(e)); }
+        if (current()) { failedSave.current = signature ?? makeSignature(); setSaveState("failed"); setError(errorText(e)); }
       } finally { savingRef.current = false; setSaving(false); }
     }, urgent ? 0 : 900);
     return () => clearTimeout(timer);
   }, [doc, data, corridorDrafts, dirty, frameDirty, busy, saving, saveRetry, urgent, accept]);
 
-  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || recipeErrors, busy: busy || saving, saving, acting: busy, pendingSave, unsavable, saveNow: () => setUrgent(true), dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft, segmentDraft, segmentDirty, setSegmentDraft,
+  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || catalogError || recipeErrors, busy: busy || saving, saving, acting: busy, pendingSave, unsavable, saveNow: () => setUrgent(true), dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft, segmentDraft, segmentDirty, setSegmentDraft,
     clearSelection:()=>{if(dirtyRef.current){setError("当前草稿尚未保存，请先保存或撤销修改");return;}pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setCorridorDrafts({});setNavigationDraft(null);setSegmentDraft(null);setError("");clearSnack();},
     discardDrafts:()=>{if(acting.current||savingRef.current)return false;dirtyRef.current=false;navigationDirtyRef.current=false;segmentDirtyRef.current=false;failedSave.current="";setDoc(data?.workspace.doc??null);setPreview(data?.layout??null);setPreviewError("");setCorridorDrafts({});setNavigationDraft(null);setSegmentDraft(null);setError("");return true;},
     corridorDrafts, select, reloadList, setDoc,

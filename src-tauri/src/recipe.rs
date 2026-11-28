@@ -1409,6 +1409,15 @@ impl RecipeStore {
             .collect()
     }
 
+    pub(crate) fn list_with_teaching_piece(&self) -> Vec<(Arc<Recipe>, Option<TeachingPieceRef>)> {
+        self.inner
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(doc, recipe)| (Arc::clone(recipe), doc.teaching_piece.clone()))
+            .collect()
+    }
+
     pub fn errors(&self) -> Vec<String> {
         self.errors.read().unwrap().clone()
     }
@@ -1549,15 +1558,14 @@ impl RecipeStore {
         Ok(recipe)
     }
 
-    pub fn delete(&self, id: &str) -> Result<(), String> {
+    pub fn delete(&self, id: &str, revision_id: &str) -> Result<(), String> {
         let mut inner = self.inner.write().unwrap();
-        let version = inner
+        let (doc, _) = inner
             .iter()
             .find(|(d, _)| d.id == id)
-            .ok_or("配方不存在")?
-            .0
-            .version;
-        self.retire_version(id, version)?;
+            .filter(|(_, recipe)| recipe.revision_id == revision_id)
+            .ok_or("生产配方已变化，请刷新配方库后重新确认删除")?;
+        self.retire_version(id, doc.version)?;
         std::fs::remove_file(self.file(id)).map_err(|e| format!("删除配方文件失败：{e}"))?;
         inner.retain(|(d, _)| d.id != id);
         Ok(())
@@ -1594,6 +1602,85 @@ mod tests {
         let second = store.save_published(doc.clone()).unwrap();
         assert_eq!(second.revision_id, "EXPLICIT-PUBLISHED-v8");
         assert_eq!(store.save(doc, None).unwrap().version, 9);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recipe_listing_keeps_each_revision_with_its_own_teaching_piece() {
+        let dir = std::env::temp_dir().join(format!(
+            "gluesight-recipe-listing-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let source = |record_id| TeachingPieceRef {
+            cycle_id: format!("teaching-cycle-{record_id}"),
+            record_id,
+            sn: format!("TEACH-{record_id}"),
+            ts: 1000 + record_id,
+        };
+        let first_source = source(1);
+        let next_source = source(2);
+        let mut doc = samples_burst();
+        doc.teaching_piece = Some(first_source.clone());
+        let first_release = store.save_published(doc.clone()).unwrap();
+
+        let mut legacy_doc = samples_burst();
+        legacy_doc.id = "OLDER-RELEASE".into();
+        legacy_doc.product_code = 15;
+        let legacy = store.save_published(legacy_doc).unwrap();
+        let before = store.list_with_teaching_piece();
+
+        doc.version += 1;
+        doc.teaching_piece = Some(next_source.clone());
+        let next_release = store.save_published(doc).unwrap();
+        let after = store.list_with_teaching_piece();
+
+        for (listing, release, teaching) in [
+            (before, first_release, first_source),
+            (after, next_release, next_source),
+        ] {
+            let (recipe, piece) = listing
+                .iter()
+                .find(|(recipe, _)| recipe.id == release.id)
+                .unwrap();
+            assert_eq!(recipe.revision_id, release.revision_id);
+            assert_eq!(piece.as_ref(), Some(&teaching));
+            let (recipe, piece) = listing
+                .iter()
+                .find(|(recipe, _)| recipe.id == legacy.id)
+                .unwrap();
+            assert_eq!(recipe.revision_id, legacy.revision_id);
+            assert!(piece.is_none());
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stale_production_revision_cannot_delete_the_new_release() {
+        let dir = std::env::temp_dir().join(format!(
+            "gluesight-delete-revision-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let mut doc = samples_burst();
+        let original = store.save_published(doc.clone()).unwrap();
+        doc.version += 1;
+        let latest = store.save_published(doc).unwrap();
+        let path = store.file(&latest.id);
+        let before = std::fs::read(&path).unwrap();
+
+        assert!(store.delete(&latest.id, &original.revision_id).is_err());
+        assert_eq!(
+            store.get(&latest.id).unwrap().revision_id,
+            latest.revision_id
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        store.delete(&latest.id, &latest.revision_id).unwrap();
+        assert!(store.get(&latest.id).is_none());
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

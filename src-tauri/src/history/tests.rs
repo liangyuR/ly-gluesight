@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::operation::{Operation, Operations, CANCELLED_MESSAGE};
 use crate::recipe::RecipeDoc;
 use crate::segmentation::Region;
 use crate::store::burst_fixture;
@@ -32,7 +33,7 @@ fn burst_row(recipe: &Recipe) -> (StoredMeasurement, Vec<FrameRecord>) {
         .iter_mut()
         .find(|frame| (frame.camera, frame.seq) == (0, 5))
         .unwrap()
-        .metrics = Some(burst_fixture::measured(0, 5, 2.0));
+        .metrics = Some(Arc::new(burst_fixture::measured(0, 5, 2.0)));
     let regions = vec![
         Region {
             kind: RegionKind::Straight { segment: 1 },
@@ -104,12 +105,16 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_limit_only_change() {
         let candidate = Arc::new(doc.build().unwrap());
         let (row, frames) = burst_row(&original);
         let result = rejudge_rows(
-            vec![row],
+            RejudgeSelection {
+                rows: std::iter::once(Ok(row)),
+                limit_hit: false,
+            },
             &request,
             "default",
             |_, _| Ok(Some(original.clone())),
             |_| Some(candidate.clone()),
             |_| Ok(frames.clone()),
+            None,
         )
         .unwrap();
         match rejudged {
@@ -133,4 +138,269 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_limit_only_change() {
             ),
         }
     }
+}
+
+#[test]
+fn rejudge_counts_arrived_but_uninspected_frame_as_present() {
+    let recipe = Arc::new(burst_doc().build().unwrap());
+    let (row, mut frames) = burst_row(&recipe);
+    let frame = frames
+        .iter_mut()
+        .find(|frame| (frame.camera, frame.seq) == (2, 2))
+        .unwrap();
+    frame.status = FrameState::NotInspected;
+    frame.frame_counter = Some(2);
+    frame.trigger_counter = Some(2);
+    let mut metrics = burst_fixture::measured(frame.camera, frame.seq, 4.0);
+    metrics.state = frame.status;
+    frame.metrics = Some(Arc::new(metrics));
+    let request = RejudgeRequest {
+        overrides: Overrides {
+            corner: KindOverride {
+                tol_lower: Some(3.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let result = rejudge_rows(
+        RejudgeSelection {
+            rows: std::iter::once(Ok(row)),
+            limit_hit: false,
+        },
+        &request,
+        "default",
+        |_, _| Ok(Some(recipe.clone())),
+        |_| None,
+        |_| Ok(frames.clone()),
+        None,
+    )
+    .unwrap();
+    let [change] = result.changes.as_slice() else {
+        panic!("弯道允差放宽后应有一件判定变化");
+    };
+    assert_eq!(change.to, Verdict::Ok);
+    assert!(change.flags.as_ref().is_some_and(|flags| !flags.incomplete));
+}
+
+#[test]
+fn rejudge_skips_reversed_region_and_processes_the_rest_of_the_batch() {
+    let recipe = Arc::new(burst_doc().build().unwrap());
+    let (healthy, frames) = burst_row(&recipe);
+    let healthy_id = healthy.id;
+    let (mut damaged, _) = burst_row(&recipe);
+    damaged.id = healthy.id + 1;
+    let damaged_id = damaged.id;
+    let region = &mut damaged.burst.as_mut().unwrap().regions[0].region;
+    std::mem::swap(&mut region.first_seq, &mut region.last_seq);
+    let mut frame_reads = Vec::new();
+
+    let result = rejudge_rows(
+        RejudgeSelection {
+            rows: [damaged, healthy].into_iter().map(Ok),
+            limit_hit: false,
+        },
+        &RejudgeRequest::default(),
+        "default",
+        |_, _| Ok(Some(recipe.clone())),
+        |_| None,
+        |id| {
+            frame_reads.push(id);
+            Ok(frames.clone())
+        },
+        None,
+    )
+    .unwrap();
+
+    assert_eq!((result.total, result.skipped), (1, 1));
+    assert_eq!(frame_reads, [healthy_id]);
+    let [skip] = result.skip_reasons.as_slice() else {
+        panic!("只应跳过区域倒置的工件");
+    };
+    assert_eq!((skip.id, skip.kind), (damaged_id, SkipKind::LayoutMismatch));
+    let [cell] = result.matrix.as_slice() else {
+        panic!("其余工件应照常完成重判");
+    };
+    assert_eq!(
+        (cell.from, cell.to, cell.count),
+        (Verdict::NgWidth, Verdict::NgWidth, 1)
+    );
+}
+
+#[test]
+fn cancelling_rejudge_during_a_read_counts_finished_and_skipped_records_then_stops() {
+    let recipe = Arc::new(burst_doc().build().unwrap());
+    let (row, frames) = burst_row(&recipe);
+    let id = row.id;
+    let (mut skipped, _) = burst_row(&recipe);
+    skipped.id = id - 1;
+    skipped.verdict = Verdict::ErrInspect;
+    let (mut remaining, _) = burst_row(&recipe);
+    remaining.id = id + 1;
+
+    let operations = Operations::default();
+    let task_id = "cancel-history-rejudge";
+    let operation =
+        Operation::with_events(operations.clone(), Some(task_id.into()), |_| {}).unwrap();
+    let mut candidates_read = Vec::new();
+    let mut reads = Vec::new();
+    let result = operation.run(|operation| {
+        rejudge_rows(
+            RejudgeSelection {
+                rows: [skipped, row, remaining].into_iter().map(|row| {
+                    candidates_read.push(row.id);
+                    Ok(row)
+                }),
+                limit_hit: false,
+            },
+            &RejudgeRequest::default(),
+            "default",
+            |_, _| Ok(Some(recipe.clone())),
+            |_| None,
+            |record_id| {
+                reads.push(record_id);
+                if record_id == id {
+                    assert!(operations.cancel(task_id));
+                }
+                Ok(frames.clone())
+            },
+            Some(operation),
+        )
+    });
+    assert_eq!(result.unwrap_err(), CANCELLED_MESSAGE);
+    assert_eq!(candidates_read, [id - 1, id]);
+    assert_eq!(reads, [id]);
+    let progress = serde_json::to_value(operations.status(task_id).unwrap()).unwrap();
+    assert_eq!(progress["stage"], "cancelled");
+    assert_eq!(progress["completed"], 2);
+    assert_eq!(progress["skipped"], 1);
+    assert_eq!(progress["total"], 3);
+}
+
+#[test]
+fn rejudge_limit_counts_the_oldest_row_without_decoding_it() {
+    struct TestDir(std::path::PathBuf);
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let directory = std::env::temp_dir().join(format!(
+        "gluesight-rejudge-limit-{}-{}",
+        std::process::id(),
+        ly_plc::now_ms()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let directory = TestDir(directory);
+    let path = directory.0.join("parts.sqlite");
+    let store = Store::open(&path).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let last = (REJUDGE_LIMIT + 1) as i64;
+    let judgement =
+        r#"{"verdict":"OK","plcCode":1,"faultCode":0,"reason":"合格","segments":[],"gaps":[]}"#;
+    conn.execute(
+        "WITH RECURSIVE ids(id) AS (
+             VALUES(1) UNION ALL SELECT id + 1 FROM ids WHERE id < ?1
+         )
+         INSERT INTO parts (id, project_id, ts, sn, verdict, plc_code, fault_code, reason,
+             frames_expected, frames_received, triggers, software_version, judgement, frames,
+             cycle_id, delivery_state, delivery_updated_at, source, burst_judgement)
+         SELECT id, ?2, 1234, printf('SN-%d', id), 'OK', 1, 0, '合格', 0, 0, 0, 'fixture',
+             ?3, '[]', printf('rejudge-limit-%d', id), 'notRequired', 0, 'real',
+             CASE WHEN id = 1 THEN '[' ELSE NULL END
+         FROM ids",
+        rusqlite::params![last, store.project(), judgement],
+    )
+    .unwrap();
+
+    let request = RejudgeRequest::default();
+    let result = rejudge_history(&store, &request, |_| None, None).unwrap();
+    assert!(result.limit_hit);
+    assert_eq!(result.total, 0);
+    assert_eq!(result.skipped, REJUDGE_LIMIT as u64);
+    assert!(result.matrix.is_empty());
+    let skipped_ids: Vec<_> = result.skip_reasons.iter().map(|row| row.id).collect();
+    assert_eq!(skipped_ids, (last - 299..=last).rev().collect::<Vec<_>>());
+    assert!(result
+        .skip_reasons
+        .iter()
+        .all(|row| row.kind == SkipKind::NoTable));
+
+    conn.execute("DELETE FROM parts WHERE id = ?1", [last])
+        .unwrap();
+    assert!(rejudge_history(&store, &request, |_| None, None).is_err());
+}
+
+#[test]
+fn rejudge_keeps_layout_checks_separate_for_revisions_of_the_same_recipe() {
+    let doc = burst_doc();
+    let original_a = Arc::new(doc.build().unwrap());
+    let mut changed_doc = doc.clone();
+    changed_doc.version = original_a.version + 1;
+    changed_doc.inspect[0].segments[0].corridor[0][0] += 5.0;
+    let original_b = Arc::new(changed_doc.build().unwrap());
+    let mut current_doc = doc;
+    current_doc.version = original_b.version + 1;
+    current_doc.segments[1].checks.width.tol_lower = 3.0;
+    let current = Arc::new(current_doc.build().unwrap());
+
+    let (mut first_a, frames_a) = burst_row(&original_a);
+    let (mut row_b, frames_b) = burst_row(&original_b);
+    let (last_a, _) = burst_row(&original_a);
+    first_a.id = last_a.id + 2;
+    row_b.id = last_a.id + 1;
+    first_a.sn = "SN-A-NEW".into();
+    row_b.sn = "SN-B".into();
+    let (first_a_id, b_id, last_a_id) = (first_a.id, row_b.id, last_a.id);
+    let request = RejudgeRequest {
+        use_current_recipe: true,
+        ..Default::default()
+    };
+    let result = rejudge_rows(
+        RejudgeSelection {
+            rows: [first_a, row_b, last_a].into_iter().map(Ok),
+            limit_hit: false,
+        },
+        &request,
+        "default",
+        |_, revision| {
+            Ok([&original_a, &original_b]
+                .into_iter()
+                .find(|recipe| recipe.revision_id == revision)
+                .cloned())
+        },
+        |id| (id == current.id.as_str()).then(|| current.clone()),
+        |id| {
+            Ok(if id == b_id {
+                frames_b.clone()
+            } else {
+                frames_a.clone()
+            })
+        },
+        None,
+    )
+    .unwrap();
+
+    assert_eq!((result.total, result.skipped), (2, 1));
+    let [skip] = result.skip_reasons.as_slice() else {
+        panic!("只有修改了走廊的原修订应跳过");
+    };
+    assert_eq!((skip.id, skip.kind), (b_id, SkipKind::LayoutChanged));
+    let [cell] = result.matrix.as_slice() else {
+        panic!("两件布局兼容的工件应汇入同一单元");
+    };
+    assert_eq!(
+        (cell.from, cell.to, cell.count),
+        (Verdict::NgWidth, Verdict::Ok, 2)
+    );
+    assert_eq!(
+        result
+            .changes
+            .iter()
+            .map(|change| change.id)
+            .collect::<Vec<_>>(),
+        [first_a_id, last_a_id]
+    );
 }

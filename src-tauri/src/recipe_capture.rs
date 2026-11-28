@@ -137,6 +137,7 @@ pub type RecordingLookup = Arc<dyn Fn(&str) -> Result<Option<PathBuf>, String> +
 pub struct RecipeCaptureHost {
     root: PathBuf,
     recordings: RecordingLookup,
+    cached_index: std::sync::Mutex<Option<Arc<burst::CachedRoundIndex>>>,
 }
 
 /// 一轮段配方采集轮次（序列化为 CaptureRoundV2 的形状）。
@@ -211,18 +212,17 @@ impl RecipeCaptureHost {
                 Err(_) => backup_broken(&path)?,
             }
         }
-        Ok(Arc::new(Self { root, recordings }))
+        Ok(Arc::new(Self {
+            root,
+            recordings,
+            cached_index: Default::default(),
+        }))
     }
 
     /// 按轮次 ID 读一轮，经记录核对；旧拍照点配方的采集轮次已停用，按无效记录报错。
     pub fn get_any(&self, round_id: &str) -> Result<AnyRound, String> {
-        let dir = self.safe_round_path(round_id)?;
-        if crate::fsio::read_text(&dir.join("round.json")).is_ok_and(|text| !burst::is_v2(&text)) {
-            return Err(format!(
-                "采集轮次 {round_id} 是旧拍照点配方的采集记录，已停用"
-            ));
-        }
-        self.get_burst(round_id).map(AnyRound::Burst)
+        self.load_supported_burst(round_id, true)
+            .map(AnyRound::Burst)
     }
 
     /// 段配方轮次的 ID（round.json 为 format 2 或 3 的目录）。
@@ -324,7 +324,7 @@ pub fn history_cycles(root: &Path) -> Result<std::collections::BTreeSet<String>,
             continue;
         }
         let text = crate::fsio::read_text(&path).map_err(|e| format!("{}：{e}", path.display()))?;
-        let Ok(round) = serde_json::from_str::<serde_json::Value>(&text) else {
+        let Ok(round) = crate::history_metadata::capture_round(text.as_bytes()) else {
             continue;
         };
         if round

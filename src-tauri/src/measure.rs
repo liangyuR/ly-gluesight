@@ -361,9 +361,9 @@ impl FrameMeasured {
     }
 
     /// 写进整件的帧指标：没测成的帧按原因记 Unmeasured 或 Error，原因放 `error`，数值为空。
-    pub fn metrics(&self) -> FrameMetrics {
-        match &self.result {
-            Ok(metrics) => metrics.clone(),
+    pub fn into_metrics(self) -> FrameMetrics {
+        match self.result {
+            Ok(metrics) => metrics,
             Err(error) => FrameMetrics {
                 camera: self.camera_idx,
                 seq: self.seq,
@@ -783,9 +783,9 @@ mod tests {
             .unwrap();
         let recovered = next_frame(&mut results).await;
         assert_eq!(recovered.seq, 4);
-        assert_eq!(recovered.metrics().state, FrameState::Measured);
         assert!(recovered.queue_ms.is_some());
         assert!(recovered.engine_ms.is_some());
+        assert_eq!(recovered.into_metrics().state, FrameState::Measured);
         assert_eq!(entered.load(Ordering::SeqCst), 2);
         drop(tx);
         dispatcher.await.unwrap();
@@ -854,18 +854,14 @@ mod tests {
             (rejected.seq, rejected.result.clone().unwrap_err()),
             (5, MeasureError::QueueFull)
         );
-        assert_eq!(rejected.metrics().state, FrameState::Unmeasured);
+        assert_eq!(rejected.into_metrics().state, FrameState::Unmeasured);
         release.0.release();
         let mut measured: Vec<u64> = Vec::new();
         for _ in 1..=4 {
             let frame = next_frame(&mut results).await;
-            assert_eq!(
-                frame.metrics().state,
-                FrameState::Measured,
-                "帧 {}",
-                frame.seq
-            );
-            measured.push(frame.seq);
+            let seq = frame.seq;
+            assert_eq!(frame.into_metrics().state, FrameState::Measured, "帧 {seq}");
+            measured.push(seq);
         }
         measured.sort();
         assert_eq!(measured, [1, 2, 3, 4]);

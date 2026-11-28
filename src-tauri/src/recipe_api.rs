@@ -30,11 +30,11 @@ pub struct RecipeEntry {
 pub fn recipe_list(cycle: State<'_, CycleHost>) -> RecipeListing {
     let recipes = cycle
         .recipes
-        .list()
-        .iter()
-        .map(|r| RecipeEntry {
-            summary: RecipeSummary::listed(&cycle.recipes, r),
-            stage: r.stage,
+        .list_with_teaching_piece()
+        .into_iter()
+        .map(|(recipe, teaching_piece)| RecipeEntry {
+            summary: RecipeSummary::listed(&recipe, teaching_piece),
+            stage: recipe.stage,
         })
         .collect();
     RecipeListing {
@@ -136,9 +136,10 @@ pub fn recipe_delete(
     app: AppHandle,
     cycle: State<'_, CycleHost>,
     id: String,
+    revision_id: String,
 ) -> Result<(), String> {
-    let data = serde_json::json!({"id": id});
-    let result = recipe_delete_inner(app.clone(), cycle, id);
+    let data = serde_json::json!({"id": id, "revisionId": revision_id});
+    let result = recipe_delete_inner(app.clone(), cycle, id, revision_id);
     crate::cycle::log_op(&crate::applog::events::OP_RECIPE_DELETE, data, &result);
     result
 }
@@ -147,6 +148,7 @@ fn recipe_delete_inner(
     app: AppHandle,
     cycle: State<'_, CycleHost>,
     id: String,
+    revision_id: String,
 ) -> Result<(), String> {
     let gate = cycle
         .config_gate
@@ -167,7 +169,7 @@ fn recipe_delete_inner(
         return Err("该配方正在检测中，工件结束后再删".into());
     }
     let settings = cycle.settings();
-    cycle.recipes.delete(&id)?;
+    cycle.recipes.delete(&id, &revision_id)?;
     // 删掉的正是人工选中的配方：清掉选择，下一件报"未选择配方"而不是拿着一个不存在的编号
     if settings.manual_recipe_id.as_deref() == Some(id.as_str()) {
         cycle.save_settings_locked(

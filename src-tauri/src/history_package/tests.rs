@@ -4,8 +4,9 @@ use crate::recipe::{Recipe, RecipeStore};
 use crate::store::{
     burst_fixture, PartMode, PartRecord, PlcDelivery, PlcDeliveryState, RecordingEvidence,
 };
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::Arc;
+use zip::ZipArchive;
 
 struct TempDir(PathBuf);
 
@@ -57,6 +58,10 @@ fn saved_recipe(dir: &Path) -> Arc<Recipe> {
 
 /// 在当前项目下记一件录制完整的段配方记录：原图在 `<录制根>/20261107/<目录>/`，每帧内容不同。返回记录编号。
 fn recorded(m: &Machine, recipe: &Recipe, cycle: &str, sn: &str) -> i64 {
+    recorded_at(m, recipe, cycle, sn, ly_plc::now_ms())
+}
+
+fn recorded_at(m: &Machine, recipe: &Recipe, cycle: &str, sn: &str, ts: i64) -> i64 {
     let directory = format!("20261107_120000_001_OK_cycle_{cycle}");
     let path = m.root.join("20261107").join(&directory);
     std::fs::create_dir_all(&path).unwrap();
@@ -80,7 +85,7 @@ fn recorded(m: &Machine, recipe: &Recipe, cycle: &str, sn: &str) -> i64 {
     m.store
         .insert(&PartRecord {
             mode: PartMode::Production,
-            ts: ly_plc::now_ms(),
+            ts,
             sn,
             recipe: Some(recipe),
             judgement: &judgement,
@@ -132,6 +137,23 @@ fn export(m: &Machine, ids: &[i64], scratch: &Path, target: &Path) -> PackageMan
         &operation(),
     )
     .unwrap()
+}
+
+fn import(m: &Machine, path: &Path) -> Result<Imported, String> {
+    let preview = preview_package(&m.store, path)?;
+    import_confirmed(m, &preview)
+}
+
+fn import_confirmed(m: &Machine, preview: &HistoryPackagePreview) -> Result<Imported, String> {
+    import_package(
+        &m.store,
+        m.project,
+        &m.root,
+        Path::new(&preview.path),
+        &preview.manifest_sha256,
+        30,
+        &operation(),
+    )
 }
 
 fn count(m: &Machine) -> u64 {
@@ -210,7 +232,7 @@ fn exported_parts_import_on_another_machine_with_same_measurements_and_images_un
     drop(conn);
 
     let b = machine(&temp.0.join("b"), "line-b");
-    let result = import_package(&b.store, b.project, &b.root, &package, &operation()).unwrap();
+    let result = import(&b, &package).unwrap();
     assert_eq!(
         (result.imported, result.skipped.len(), result.ids.len()),
         (2, 0, 2)
@@ -316,7 +338,7 @@ fn idle_compressed_part_exports_original_pgm_bytes_and_imports_as_plain_pgm() {
     }
 
     let b = machine(&temp.0.join("b"), "line-b");
-    let result = import_package(&b.store, b.project, &b.root, &package, &operation()).unwrap();
+    let result = import(&b, &package).unwrap();
     assert_eq!(result.imported, 1);
     for (name, original) in &originals {
         assert_eq!(
@@ -343,8 +365,8 @@ fn importing_known_parts_skips_them_and_adds_only_new_ones() {
     export(&a, &[one, two], &temp.0.join("s2"), &both);
     let b = machine(&temp.0.join("b"), "line-b");
 
-    import_package(&b.store, b.project, &b.root, &first, &operation()).unwrap();
-    let partial = import_package(&b.store, b.project, &b.root, &both, &operation()).unwrap();
+    import(&b, &first).unwrap();
+    let partial = import(&b, &both).unwrap();
     assert_eq!(partial.imported, 1);
     assert_eq!(
         partial
@@ -354,10 +376,54 @@ fn importing_known_parts_skips_them_and_adds_only_new_ones() {
             .collect::<Vec<_>>(),
         ["SN-1"]
     );
-    let again = import_package(&b.store, b.project, &b.root, &both, &operation()).unwrap();
+    let again = import(&b, &both).unwrap();
     assert_eq!((again.imported, again.skipped.len()), (0, 2));
     assert_eq!(count(&b), 2);
     assert_eq!(imported_entries(&b).len(), 2);
+}
+
+#[test]
+fn replacing_the_previewed_package_requires_confirmation_before_import_or_deduplication() {
+    let temp = TempDir::new("replaced-preview");
+    let a = machine(&temp.0.join("a"), "line-a");
+    let recipe = saved_recipe(&temp.0.join("a"));
+    let first = recorded(&a, &recipe, "c-original", "SN-A");
+    let replacement = recorded_at(
+        &a,
+        &recipe,
+        "c-replacement",
+        "SN-B",
+        ly_plc::now_ms() - 31 * 86_400_000,
+    );
+    let path = temp.0.join("selected.zip");
+    export(&a, &[first], &temp.0.join("s1"), &path);
+    let b = machine(&temp.0.join("b"), "line-b");
+    let original_preview = preview_package(&b.store, &path).unwrap();
+
+    export(&a, &[replacement], &temp.0.join("s2"), &path);
+    assert_eq!(
+        import_confirmed(&b, &original_preview).unwrap_err(),
+        PREVIEW_CHANGED
+    );
+    assert_eq!(count(&b), 0);
+    assert!(imported_entries(&b).is_empty());
+
+    let refreshed = preview_package(&b.store, &path).unwrap();
+    let result = import_confirmed(&b, &refreshed).unwrap();
+    assert_eq!(result.imported, 1);
+    assert!(result
+        .notes
+        .iter()
+        .any(|note| note.starts_with("1 件早于历史保留期")));
+    assert!(b.store.detail_by_cycle("c-replacement").unwrap().is_some());
+    assert!(b.store.detail_by_cycle("c-original").unwrap().is_none());
+    assert_eq!(
+        import_confirmed(&b, &original_preview).unwrap_err(),
+        PREVIEW_CHANGED
+    );
+    let deduplicated = import_confirmed(&b, &refreshed).unwrap();
+    assert_eq!((deduplicated.imported, deduplicated.skipped.len()), (0, 1));
+    assert!(deduplicated.notes.is_empty());
 }
 
 #[test]
@@ -399,7 +465,7 @@ fn broken_or_conflicting_package_is_rejected_without_leaving_records_or_images()
             recorded(&b, &changed, "c-local", "SN-L");
         }
         let before = (count(&b), imported_entries(&b));
-        let error = import_package(&b.store, b.project, &b.root, &path, &operation()).unwrap_err();
+        let error = import(&b, &path).unwrap_err();
         assert!(error.contains(expected), "{label}：{error}");
         assert_eq!((count(&b), imported_entries(&b)), before, "{label}");
     }
@@ -433,7 +499,7 @@ fn snapshot_differing_only_by_retired_plan_version_is_not_a_conflict() {
     )
     .unwrap();
     drop(db);
-    let imported = import_package(&b.store, b.project, &b.root, &package, &operation()).unwrap();
+    let imported = import(&b, &package).unwrap();
     assert_eq!(imported.imported, 1);
 }
 
@@ -446,7 +512,7 @@ fn interrupted_import_keeps_committed_images_and_removes_uncommitted_ones() {
     let package = temp.0.join("parts.zip");
     export(&a, &[id], &temp.0.join("scratch"), &package);
     let b = machine(&temp.0.join("b"), "line-b");
-    import_package(&b.store, b.project, &b.root, &package, &operation()).unwrap();
+    import(&b, &package).unwrap();
     let imported = b.root.join(IMPORTED);
     let kept = imported.join(&imported_entries(&b)[0]);
     let orphan = imported.join("x_cycle_c-orphan");
@@ -472,7 +538,7 @@ fn expired_imported_parts_hand_their_images_to_cleanup_but_local_recordings_stay
     export(&a, &[id], &temp.0.join("scratch"), &package);
     let b = machine(&temp.0.join("b"), "line-b");
     recorded(&b, &saved_recipe(&temp.0.join("b")), "c-local", "SN-L");
-    import_package(&b.store, b.project, &b.root, &package, &operation()).unwrap();
+    import(&b, &package).unwrap();
 
     let (deleted, orphaned) = b
         .store
@@ -495,7 +561,7 @@ fn expired_parts_referenced_by_teaching_rounds_keep_their_record_and_recording()
     export(&a, &[id], &temp.0.join("scratch"), &package);
     let b = machine(&temp.0.join("b"), "line-b");
     recorded(&b, &saved_recipe(&temp.0.join("b")), "c-local", "SN-L");
-    import_package(&b.store, b.project, &b.root, &package, &operation()).unwrap();
+    import(&b, &package).unwrap();
 
     let keep = std::collections::BTreeSet::from(["c-imported".to_string()]);
     let (deleted, orphaned) = b.store.purge_before(ly_plc::now_ms() + 1, &keep).unwrap();

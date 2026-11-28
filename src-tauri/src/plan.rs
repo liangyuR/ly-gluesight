@@ -222,35 +222,17 @@ impl PathSegment {
     }
 }
 
-/// 一段实际参与判定的相机（按计划相机顺序）：段没指定时为全部计划相机；不检测的段没有。
-pub fn segment_cameras(segment: &PathSegment, plan_cameras: &[String]) -> Vec<String> {
-    if segment.skip {
-        return Vec::new();
-    }
-    plan_cameras
-        .iter()
-        .filter(|camera| segment.cameras.is_empty() || segment.cameras.contains(camera))
-        .cloned()
-        .collect()
+fn allows_camera(segment: &PathSegment, camera: &str) -> bool {
+    !segment.skip && (segment.cameras.is_empty() || segment.cameras.iter().any(|id| id == camera))
 }
 
-/// 帧到达时预测它属于哪一段（D-SB-45），返回段在列表里的下标：按累计 N_exp，第 seq 帧属于满足 seq ≤ C_k 的第一段，
-/// 超过 ΣN_exp 的帧归最后一段；单段配方恒为第 1 段。多段配方有段 N_exp 未标定时无法预测，返回 None。
-pub fn predicted_segment(segments: &[PathSegment], seq: u64) -> Option<usize> {
-    if segments.len() == 1 {
-        return Some(0);
-    }
-    if segments.iter().any(|s| s.expected_frames.is_none()) {
-        return None;
-    }
-    let mut cumulative = 0u64;
-    for (k, segment) in segments.iter().enumerate() {
-        cumulative += u64::from(segment.expected_frames.unwrap_or_default());
-        if seq <= cumulative {
-            return Some(k);
-        }
-    }
-    segments.len().checked_sub(1)
+/// 一段实际参与判定的相机（按计划相机顺序）：段没指定时为全部计划相机；不检测的段没有。
+pub fn segment_cameras(segment: &PathSegment, plan_cameras: &[String]) -> Vec<String> {
+    plan_cameras
+        .iter()
+        .filter(|camera| allows_camera(segment, camera))
+        .cloned()
+        .collect()
 }
 
 /// 这台相机检测第 `index` 段（`PathSegment.index`）。
@@ -260,21 +242,71 @@ pub fn detects(
     camera: &str,
     plan_cameras: &[String],
 ) -> bool {
-    segments
-        .iter()
-        .find(|s| s.index == index)
-        .is_some_and(|s| segment_cameras(s, plan_cameras).iter().any(|c| c == camera))
+    plan_cameras.iter().any(|id| id == camera)
+        && segments
+            .iter()
+            .find(|s| s.index == index)
+            .is_some_and(|s| allows_camera(s, camera))
 }
 
-/// 帧到达时这台相机该用哪一段的走廊测（D-SB-45）：预测段由它检测时为该段，否则不测（None）。
-pub fn arrival_corridor(
-    segments: &[PathSegment],
-    plan_cameras: &[String],
-    camera: usize,
-    seq: u64,
-) -> Option<u32> {
-    let index = segments.get(predicted_segment(segments, seq)?)?.index;
-    detects(segments, index, plan_cameras.get(camera)?, plan_cameras).then_some(index)
+/// 到帧时按累计 N_exp 选择区段与检测相机（D-SB-45）。
+#[derive(Default)]
+pub struct ArrivalRouting {
+    routes: Vec<(u64, u32)>,
+    enabled: Vec<bool>,
+    camera_count: usize,
+}
+
+impl ArrivalRouting {
+    pub fn new(segments: &[PathSegment], cameras: &[String]) -> Self {
+        if segments.is_empty()
+            || cameras.is_empty()
+            || (segments.len() > 1 && segments.iter().any(|s| s.expected_frames.is_none()))
+        {
+            return Self::default();
+        }
+        let mut routes = Vec::with_capacity(segments.len());
+        let mut enabled = Vec::with_capacity(segments.len() * cameras.len());
+        let mut end = 0;
+        let index_in_order = segments
+            .windows(2)
+            .all(|pair| pair[0].index < pair[1].index);
+        for segment in segments {
+            end += u64::from(segment.expected_frames.unwrap_or_default());
+            routes.push((end, segment.index));
+            let membership = if index_in_order {
+                segment
+            } else {
+                segments
+                    .iter()
+                    .find(|s| s.index == segment.index)
+                    .unwrap_or(segment)
+            };
+            enabled.extend(
+                cameras
+                    .iter()
+                    .map(|camera| allows_camera(membership, camera)),
+            );
+        }
+        Self {
+            routes,
+            enabled,
+            camera_count: cameras.len(),
+        }
+    }
+
+    pub fn corridor(&self, camera: usize, seq: u64) -> Option<u32> {
+        if camera >= self.camera_count {
+            return None;
+        }
+        let last = self.routes.len() - 1;
+        let route = if last == 0 {
+            0
+        } else {
+            self.routes.partition_point(|&(end, _)| end < seq).min(last)
+        };
+        self.enabled[route * self.camera_count + camera].then_some(self.routes[route].1)
+    }
 }
 
 /// 整件标定：整件帧组数统计（不依赖分段）。候选不再写入（N_exp 逐段取自示教件）；已发布的旧配方里可能有，
@@ -806,6 +838,48 @@ mod tests {
         let mut p = plan();
         edit(&mut p);
         p
+    }
+
+    #[test]
+    fn arrival_routing_preserves_calibration_boundaries_and_camera_eligibility() {
+        let cameras = ["camA", "camB", "camC"].map(String::from);
+        let defaults = KindDefaults::default();
+        let mut segments: Vec<_> = [2, 3, 1, 0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, frames)| PathSegment {
+                expected_frames: Some(frames),
+                ..new_segment(i as u32 + 1, SegmentKind::Straight, &defaults)
+            })
+            .collect();
+        segments[1].cameras = vec![cameras[1].clone()];
+        segments[2].skip = true;
+
+        let routing = ArrivalRouting::new(&segments, &cameras);
+        for (camera, seq, expected) in [
+            (0, 2, Some(1)),
+            (0, 3, None),
+            (1, 5, Some(2)),
+            (1, 6, None),
+            (2, 7, Some(4)),
+            (3, 1, None),
+        ] {
+            assert_eq!(
+                routing.corridor(camera, seq),
+                expected,
+                "相机 {camera}，帧组 {seq}"
+            );
+        }
+
+        segments[0].expected_frames = None;
+        assert_eq!(
+            ArrivalRouting::new(&segments, &cameras).corridor(0, 1),
+            None
+        );
+        assert_eq!(
+            ArrivalRouting::new(&segments[..1], &cameras).corridor(0, 20),
+            Some(1)
+        );
     }
 
     /// 规格 §1 段模型约束；检测限值按旧 ShotLimits 的范围规则校验（D-SB-1 新路径不丢旧约束），停用的检测项不校验限值。

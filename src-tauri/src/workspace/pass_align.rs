@@ -878,6 +878,7 @@ pub(super) fn alignment_check(w: &Workspace) -> Option<Check> {
         return Some(Check {
             advisory: false,
             name: "按笔对照".into(),
+            teaching_targets: Vec::new(),
             passed: false,
             detail: format!("{summary}；逐笔对照还没确认：先在分段页确认"),
         });
@@ -891,6 +892,7 @@ pub(super) fn alignment_check(w: &Workspace) -> Option<Check> {
     Some(Check {
         advisory: false,
         name: "按笔对照".into(),
+        teaching_targets: Vec::new(),
         passed: pending.is_empty(),
         detail: if pending.is_empty() {
             format!("{summary}；改动与新增的段已重新示教，沿用的段已确认")

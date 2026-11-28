@@ -118,7 +118,21 @@ impl MixEvidence {
 
     pub fn omit_observation(&mut self) {
         self.observation = None;
-        self.shift_runs.clear();
+        self.shift_runs = Vec::new();
+    }
+
+    pub(crate) fn summary_heap_bytes(&self) -> usize {
+        self.model_id
+            .iter()
+            .chain(&self.dataset_kind)
+            .chain(&self.reason)
+            .map(String::capacity)
+            .sum::<usize>()
+            + if self.directions.is_empty() {
+                0
+            } else {
+                16 * std::mem::size_of::<usize>()
+            }
     }
 
     pub fn from_observation(

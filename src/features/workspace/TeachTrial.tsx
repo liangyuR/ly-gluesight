@@ -60,7 +60,10 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
     try {
       const result = await operation.run(taskId => workspaceApi.teachPreviewSegment(id, camera, segment, round, taskId));
       setBatch({ result, revision: at, error: "", running: false });
-    } catch (e) { setBatch(previous => ({ ...previous, running: false, error: errorText(e) })); }
+    } catch (e) {
+      const error = operation.snapshot()?.progress.stage === "cancelled" ? "" : errorText(e);
+      setBatch(previous => ({ ...previous, running: false, error }));
+    }
   };
   useEffect(() => {
     if (!queued || waiting) return;
@@ -139,6 +142,8 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
   const edges = (view?.edges ?? []).flatMap(edge => edge ? [{ from: edge[0], to: edge[1], color: "var(--ov-line)" }] : []);
   const counts = batch.result ? trialOrder.map(item => [item, cells.filter(cell => !cell.skipReason && cell.state === item).length] as const).filter(([, n]) => n > 0) : [];
   const skippedCount = cells.filter(cell => cell.skipReason).length;
+  const operationState = operation.snapshot();
+  const cancelled = operationState?.progress.stage === "cancelled";
   const finished = !!batch.result && !batch.running && !queued && !batch.error;
   const details = !finished || expanded;
 
@@ -166,11 +171,11 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
         {seq != null && <Button size="sm" variant="text" onClick={() => onSeq(null)}>回到示教帧</Button>}
         {side && <span className="wp-trial-actions">{side}</span>}
       </div>
-      {details && <OperationStatus operation={operation} label="全段试测" />}
+      {(details || cancelled) && <OperationStatus operation={operation} label="全段试测" />}
       {locked && <p className="muted hint">{locked}</p>}
-      {batch.error && batch.error !== operation.snapshot()?.error && <p className="c-warn" role="alert">{batch.error}</p>}
+      {batch.error && batch.error !== operationState?.error && <p className="c-warn" role="alert">{batch.error}</p>}
       {(batch.result || skippedCount > 0) && <div className="wp-trial-legend" aria-label="试测统计">
-        {finished && <strong>全段试测已完成</strong>}
+        {finished && <strong>{cancelled ? "上次试测结果" : "全段试测已完成"}</strong>}
         {skippedCount > 0 && <span><i style={{ background: skipColor }} aria-hidden="true" />生产跳过 {skippedCount}</span>}
         {batch.result && <span>其余帧试测：</span>}
         {counts.map(([item, n]) => <span key={item}><i style={{ background: trialColor[item] }} aria-hidden="true" />{trialText[item]} {n}</span>)}

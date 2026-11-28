@@ -8,13 +8,13 @@ import { AppliedPanel } from "../features/camera/components/FramePreview";
 import { cameraHealth, StateBadge } from "../features/camera/components/health";
 import type { CameraConfigHandle } from "../features/camera/components/CameraConfigPanel";
 import { useRigConfig } from "../features/camera/useRigConfig";
+import { useCameraFrames } from "../features/camera/frames";
 import { useUnsavedGuard } from "../features/camera/useUnsavedGuard";
-import { useCycle } from "../features/cycle";
+import { useProductionBusy } from "../features/cycle/control";
 import { desktopAvailable } from "../lib/desktop";
 import { Notice } from "../features/workspace/components";
 import type { CaptureNavigationState } from "../features/workspace/captureNavigation";
 import { ReturnButton } from "../features/workspace/returnNavigation";
-import { productionBusy } from "../features/cycle/phase";
 import { errorText } from "../lib/errors";
 import "../features/camera/camera-group.css";
 
@@ -22,9 +22,10 @@ export default function CameraPage() {
   const location=useLocation();
   const captureReturn=(location.state as CaptureNavigationState | null)?.captureReturn;
   const navigationState:CaptureNavigationState={...(location.state as CaptureNavigationState | null)};
-  const {statuses,lastFrame}=useRigStatus();
-  const {snapshot}=useCycle();
-  const {configs,error,setError,loading,references,referencesReady,referenceError,reload}=useRigConfig({withReferences:true,preferredId:captureReturn?.cameraIds[0]});
+  const {statuses}=useRigStatus();
+  const busy=useProductionBusy();
+  const {configs,error,setError,loading,configReady,references,referencesReady,referenceError,refreshReferences,reload}=useRigConfig({withReferences:true,preferredId:captureReturn?.cameraIds[0]});
+  const frames = useCameraFrames(configs);
   const [detailId,setDetailId]=useState<string|null>(captureReturn?.cameraIds[0]??null);
   const [action,setAction]=useState("");
   const [removeError,setRemoveError]=useState("");
@@ -36,11 +37,10 @@ export default function CameraPage() {
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   const {guard,dialog}=useUnsavedGuard({dirty,save:()=>form.current?.save()??Promise.resolve(true),discard:()=>form.current?.discard()});
 
-  const statusOf=(i:number)=>statuses.find(s=>s.cam===i)??null;
+  const statusOf=(i:number)=>statuses.find(s=>s.cam===i&&s.id===configs[i]?.id)??null;
   const cam=detailId==null?-1:configs.findIndex(c=>c.id===detailId);
   const config=configs[cam]??null;
   const status=config?statusOf(cam):null;
-  const busy=productionBusy(snapshot);
   const desktop=desktopAvailable();
   const referencedBy=config?references[config.id]??[]:[];
   const lockedReason=busy?"工件结束后可修改":!desktop?"需要桌面后端":"";
@@ -61,21 +61,35 @@ export default function CameraPage() {
     }catch(e){if(mounted.current)setError(errorText(e));}
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
-  const removeBlocked=!referencesReady?(referenceError||"相机引用尚未读取"):referencedBy.length?`被 ${referencedBy.join("、")} 引用，先在配方中改选相机`:configs.length<=1?"至少保留一台相机":"";
+  const removeBlocked=!configReady?(error||"相机配置尚未读取"):!referencesReady?(referenceError||"相机引用尚未读取"):referencedBy.length?`被 ${referencedBy.join("、")} 引用，先在配方中改选相机`:configs.length<=1?"至少保留一台相机":"";
   const remove=async()=>{
     if(!config||pending.current||loading||configSaving||locked||removeBlocked)return;
     if(!window.confirm("从相机组移除「"+config.name+"」？"))return;
     pending.current=true;setAction("remove");setRemoveError("");
-    try{await cameraApi.remove(cam);if(!mounted.current)return;await reload();if(mounted.current)setDetailId(null);}
-    catch(e){if(mounted.current)setRemoveError(errorText(e));}
+    try {
+      await cameraApi.remove(cam, config.id);
+      if (!mounted.current) return;
+      await reload();
+      if (mounted.current) setDetailId(null);
+    } catch (e) {
+      if (!mounted.current) return;
+      const message = errorText(e);
+      setRemoveError(message);
+      refreshReferences();
+      const next = await reload();
+      if (mounted.current && next && !next.some(camera => camera.id === config.id)) {
+        setDetailId(null);
+        setError(message);
+      }
+    }
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
   const released=!!status?.released;
-  const handOverBlocked=!desktop||busy||!!action||configSaving||loading;
+  const handOverBlocked=!desktop||!status||busy||!!action||configSaving||loading;
   const handOver=async()=>{
     if(!config||config.source!=="mvs"||!config.serial||pending.current||handOverBlocked)return;
     pending.current=true;setAction(released?"reconnect":"release");setHandError("");
-    try{if(released)await cameraApi.reconnect(cam);else await cameraApi.release(cam);}
+    try{if(released)await cameraApi.reconnect(cam, config.id);else await cameraApi.release(cam, config.id);}
     catch(e){if(mounted.current)setHandError(errorText(e));}
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
@@ -93,8 +107,8 @@ export default function CameraPage() {
   if(!config)return <div className="cg-page">
     <ReturnButton disabled={!!action} guard={guard} hint="配置后保存并应用，再返回继续。"/>
     {notice}
-    <CameraOverview configs={configs} statuses={statuses} lastFrame={lastFrame} lockedReason={lockedReason} canReconnect={desktop&&!busy} loading={loading} adding={action==="add"} error={error}
-      onOpen={open} onRefresh={()=>void reload()} onAdd={()=>void add()} onReconnect={i=>cameraApi.reconnect(i)}
+    <CameraOverview configs={configs} statuses={statuses} frames={frames} lockedReason={lockedReason} canReconnect={desktop&&!busy} loading={loading} adding={action==="add"} error={error}
+      onOpen={open} onRefresh={()=>{void reload();refreshReferences();}} onAdd={()=>void add()} onReconnect={cameraApi.reconnect}
       footer={<div className="cg-row" style={{justifyContent:"flex-end"}}>{calibration("前往标定")}</div>}/>
     {dialog}
   </div>;
@@ -124,7 +138,7 @@ export default function CameraPage() {
     <CameraConfigPanel ref={form} key={config.id+":"+config.source} cam={cam} initial={config} status={status} group={{configs,statuses}} locked={locked} saveBlocked={released?"已释放给 MVS，重新连接后再保存":""}
       onSaved={()=>void reload()} onGroupSaved={()=>void reload()} onSavingChange={setConfigSaving} onDirtyChange={setDirty} leading={leading} footer={calibration(locked?"前往标定":"保存后前往标定")}
       side={<>
-        <FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config} actions={handOverButton}
+        <FramePreview key={config.id} cam={cam} status={status} frames={frames} config={config} actions={handOverButton}
           blockedReason={busy?"工件检测中":!desktop?"需要桌面后端":mvs&&!config.serial?"未绑定设备":released?"已释放给 MVS，在海康 MVS 客户端调焦、调光圈，完成后关闭 MVS 再重新连接":dirty?"先保存并应用再测试":""}/>
         {handError&&<Alert tone="ng">{handError}</Alert>}
         <AppliedPanel config={config} status={status}/>

@@ -12,13 +12,12 @@ use std::sync::atomic::Ordering;
 use super::*;
 use crate::burst_judge::{FrameMetrics, FrameState};
 use crate::calibration;
-use crate::frame_group::FrameGroup;
 use crate::plan::{
     OffsetMeasure, OffsetRef, PartCalib, PathSegment, PlanExport, SegmentCalib, SegmentKind,
 };
 use crate::recipe::CameraInspect;
 use crate::recipe_capture::{CaptureCamera, CaptureRoundV2, CaptureState};
-use crate::segmentation::{Proportional, SegInput, SegOutcome, Segmenter};
+use crate::segmentation::SegOutcome;
 use progress::StepStatus;
 
 /// 每轮标定的每帧特征与分段结果放在候选目录 `calibration/<轮次>/` 下（供分段算法与重新标定使用）。
@@ -542,6 +541,46 @@ pub(super) fn teaching_applies(
         })
 }
 
+fn calibration_segment_counts(
+    w: &Workspace,
+    round: &str,
+    group_count: u64,
+) -> Result<Vec<u32>, String> {
+    capture_review::confirmed_segment_counts(&w.doc, &w.capture_review.rounds, round, group_count)
+        .ok_or_else(|| format!("采集轮次 {round} 还没有确认分段：先在分段步骤确认示教件边界"))
+}
+
+pub(super) fn calibration_frame_segment(
+    w: &Workspace,
+    round: &str,
+    group_count: u64,
+    camera: &str,
+    seq: u64,
+) -> Result<(usize, Option<u32>), String> {
+    let cameras = w.doc.plan_cameras();
+    let index = cameras
+        .iter()
+        .position(|c| c == camera)
+        .ok_or_else(|| format!("相机 {camera} 不是计划相机"))?;
+    if !(1..=group_count).contains(&seq) {
+        return Err(format!("这一轮只有 {group_count} 个帧组，没有第 {seq} 个"));
+    }
+
+    let segments = &w.doc.segments;
+    let segment = if let [segment] = segments.as_slice() {
+        segment.index
+    } else {
+        let counts = calibration_segment_counts(w, round, group_count)?;
+        let (position, _) = crate::passes::locate(&counts, seq)
+            .ok_or_else(|| format!("采集轮次 {round} 的第 {seq} 个帧组没有所属段"))?;
+        segments[position].index
+    };
+    Ok((
+        index,
+        crate::plan::detects(segments, segment, camera, &cameras).then_some(segment),
+    ))
+}
+
 /// 测量按段选走廊（D-SB-45）：按本轮已确认的分段，每帧只由所在段的检测相机用该段走廊测量，其余相机不测（None）。
 /// 单段配方所有帧属于第 1 段；多段配方本轮没有确认手动分段时报错。按计划相机、seq（1..=帧组数）给出段号。
 pub(super) fn calibration_corridors(
@@ -550,32 +589,25 @@ pub(super) fn calibration_corridors(
     group_count: u64,
 ) -> Result<Vec<Vec<Option<u32>>>, String> {
     let segments = &w.doc.segments;
-    let owner: Vec<u32> = if segments.len() == 1 {
-        vec![segments[0].index; group_count as usize]
+    let counts: Vec<usize> = if segments.len() == 1 {
+        vec![group_count as usize]
     } else {
-        let counts = capture_review::confirmed_segment_counts(
-            &w.doc,
-            &w.capture_review.rounds,
-            round,
-            group_count,
-        )
-        .ok_or_else(|| format!("采集轮次 {round} 还没有确认分段：先在分段步骤确认示教件边界"))?;
-        segments
-            .iter()
-            .zip(counts)
-            .flat_map(|(s, n)| std::iter::repeat_n(s.index, n as usize))
+        calibration_segment_counts(w, round, group_count)?
+            .into_iter()
+            .map(|count| count as usize)
             .collect()
     };
     let cameras = w.doc.plan_cameras();
     Ok(cameras
         .iter()
         .map(|camera| {
-            owner
-                .iter()
-                .map(|&segment| {
-                    crate::plan::detects(segments, segment, camera, &cameras).then_some(segment)
-                })
-                .collect()
+            let mut row = Vec::with_capacity(group_count as usize);
+            for (segment, &count) in segments.iter().zip(&counts) {
+                let selection = crate::plan::detects(segments, segment.index, camera, &cameras)
+                    .then_some(segment.index);
+                row.resize(row.len() + count, selection);
+            }
+            row
         })
         .collect())
 }
@@ -793,6 +825,7 @@ pub(super) fn segment_range(
 /// 段走廊的示教帧（D-SB-45）：这台相机是该段的检测相机；示教轮次已确认手动分段（单段配方不需要），帧组落在这一段内；
 /// 与这台相机已有的示教帧同尺寸。同一相机同一段只留一帧，已画的走廊原样保留。相机还没有像素当量时用 `default_scale`
 /// （设备标定的当量）。
+#[cfg(test)]
 pub(super) fn apply_segment_teaching(
     w: &mut Workspace,
     teaching: CameraTeaching,
@@ -1729,15 +1762,6 @@ pub(super) fn check_round(doc: &RecipeDoc, round: &CaptureRoundV2) -> Result<(),
 
 /// 量一轮的每一帧：按计划相机、帧组序号 1..=帧组数排列；缺帧记 Missing，`measure` 失败的帧记 Error（规格 §0 所有帧都测）。
 /// `measure(计划相机下标, 相机编号, seq)`。
-pub(super) fn measure_round(
-    cameras: &[String],
-    round: &CaptureRoundV2,
-    measure: impl FnMut(usize, &str, u64) -> Result<FrameMetrics, String>,
-) -> Vec<FrameMetrics> {
-    measure_round_with_operation(cameras, round, measure, None)
-        .expect("无取消任务的测量总会返回帧结果")
-}
-
 pub(super) fn measure_round_with_operation(
     cameras: &[String],
     round: &CaptureRoundV2,
@@ -1780,28 +1804,6 @@ pub(super) fn measure_round_with_operation(
         }
     }
     Ok(metrics)
-}
-
-/// 用比例分段器分段（D-SB-40；各段 N_exp 未全部标定时为未分段），结果写进 boundaries.json 供追溯。
-pub(super) fn segment_round(
-    segments: &[PathSegment],
-    cameras: usize,
-    group_count: u64,
-    metrics: &[FrameMetrics],
-) -> SegOutcome {
-    let mut groups = super::burst_history::frame_groups(metrics, cameras);
-    groups.resize_with(group_count as usize, || FrameGroup {
-        seq: 0,
-        incomplete: true,
-        present: vec![false; cameras],
-    });
-    for (index, group) in groups.iter_mut().enumerate() {
-        group.seq = index as u64 + 1;
-    }
-    Proportional.segment(&SegInput {
-        groups: &groups,
-        segments,
-    })
 }
 
 /// features.jsonl 读回的一行。
@@ -2132,7 +2134,7 @@ pub struct CalibrationFrameView {
     pub edges: Vec<Option<[[f32; 2]; 2]>>,
     /// 胶边距线（ToEdge，找到零件边的站：胶中心 → 零件边）；不找边时为空
     pub part_edges: Vec<[[f32; 2]; 2]>,
-    pub metrics: FrameMetrics,
+    pub metrics: Arc<FrameMetrics>,
 }
 
 /// 用当前段走廊重测示教件里一台相机的一帧（只读，不改候选）：按示教件已确认的分段选走廊，
@@ -2158,19 +2160,8 @@ pub async fn workspace_calibration_frame(
             .iter()
             .find(|r| r.round_id == round)
             .ok_or_else(|| format!("采集轮次 {round} 还没有测量"))?;
-        let cameras = w.doc.plan_cameras();
-        let index = cameras
-            .iter()
-            .position(|c| *c == camera)
-            .ok_or_else(|| format!("相机 {camera} 不是计划相机"))?;
-        if !(1..=entry.group_count).contains(&seq) {
-            return Err(format!(
-                "这一轮只有 {} 个帧组，没有第 {seq} 个",
-                entry.group_count
-            ));
-        }
-        let segment =
-            calibration_corridors(&w, &round, entry.group_count)?[index][(seq - 1) as usize];
+        let (index, segment) =
+            calibration_frame_segment(&w, &round, entry.group_count, &camera, seq)?;
         let Some(segment) = segment else {
             return Ok(CalibrationFrameView {
                 segment: None,
@@ -2178,12 +2169,16 @@ pub async fn workspace_calibration_frame(
                 search_half_px: None,
                 edges: Vec::new(),
                 part_edges: Vec::new(),
-                metrics: frame_without_metrics(index, seq, FrameState::NotInspected, None),
+                metrics: Arc::new(frame_without_metrics(
+                    index,
+                    seq,
+                    FrameState::NotInspected,
+                    None,
+                )),
             });
         };
         let recipe = w.doc.build()?;
-        let graphs = vision::CorridorSet::build(&recipe, &teaching_sizes(&w)?)?
-            .with_channels(&teaching_channels(&w));
+        let graphs = preview_graphs(&w, &recipe, index, segment)?;
         segment_frame_view(
             &app,
             &recipe,
@@ -2282,11 +2277,11 @@ pub(super) fn frame_view(
         search_half_px,
         edges: measured.edges,
         part_edges: measured.part_edges,
-        metrics: FrameMetrics {
+        metrics: Arc::new(FrameMetrics {
             camera: index,
             seq,
             ..measured.metrics
-        },
+        }),
     })
 }
 
@@ -2405,6 +2400,25 @@ pub(super) fn taught_sizes(w: &Workspace) -> Vec<[u32; 2]> {
         .collect()
 }
 
+pub(super) fn preview_graphs(
+    w: &Workspace,
+    recipe: &Recipe,
+    camera: usize,
+    segment: u32,
+) -> Result<vision::CorridorSet, String> {
+    let inspect = recipe.inspect.get(camera).ok_or("相机下标超出计划相机")?;
+    if camera_frame_size(&w.camera_teaching, &inspect.camera).is_none() {
+        return Err(format!(
+            "相机 {} 还没有示教帧：先完成走廊示教",
+            inspect.camera
+        ));
+    }
+    Ok(
+        vision::CorridorSet::build_for_frame(recipe, &taught_sizes(w), camera, segment)?
+            .with_channels(&teaching_channels(w)),
+    )
+}
+
 fn workspace_clone(app: &AppHandle, id: &str) -> Result<Workspace, String> {
     let host = app.state::<WorkspaceHost>();
     let items = host.items.lock().unwrap();
@@ -2466,8 +2480,7 @@ async fn preview_teaching_frame(
         }
         let index = teach_frame_index(&app, &w, &camera, segment, &round, seq)?;
         let recipe = w.doc.build()?;
-        let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?
-            .with_channels(&teaching_channels(&w));
+        let graphs = preview_graphs(&w, &recipe, index, segment)?;
         segment_frame_view(
             &app,
             &recipe,
@@ -2523,8 +2536,7 @@ pub(crate) fn flow_debug_frame(
     let w = workspace_clone(app, id)?;
     let index = teach_frame_index(app, &w, camera, segment, round, seq)?;
     let recipe = w.doc.build()?;
-    let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?
-        .with_channels(&teaching_channels(&w));
+    let graphs = preview_graphs(&w, &recipe, index, segment)?;
     let cycle = app.state::<CycleHost>();
     crate::camera::check_idle(&cycle)?;
     let image = crate::image_file::load(
@@ -2560,31 +2572,7 @@ pub struct TeachPreviewRange {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn measure_teaching_range(
-    w: &Workspace,
-    round: &CaptureRoundV2,
-    camera: &str,
-    segment: u32,
-    from: Option<u64>,
-    to: Option<u64>,
-    expected_revision: Option<u64>,
-    measure: impl FnMut(u64) -> Result<FrameMetrics, String>,
-) -> Result<TeachPreviewRange, String> {
-    measure_teaching_range_operation(
-        w,
-        round,
-        camera,
-        segment,
-        from,
-        to,
-        expected_revision,
-        measure,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn measure_teaching_range_operation(
+pub(super) fn measure_teaching_range_operation(
     w: &Workspace,
     round: &CaptureRoundV2,
     camera: &str,
@@ -2705,11 +2693,8 @@ async fn preview_range_operation(
             let scope = teach_preview_scope(&w, &captured, &camera, segment)?;
             preview_window(&scope, from, to)?;
             let recipe = w.doc.build()?;
-            let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?
-                .with_channels(&teaching_channels(&w));
-            if graphs.get(scope.index, segment).is_none() {
-                return Err(format!("第 {segment} 段相机 {camera} 还没有示教走廊"));
-            }
+            let graphs = preview_graphs(&w, &recipe, scope.index, segment)?;
+            let graph = graphs.get(scope.index, segment).ok_or("走廊测量图缺失")?;
             crate::camera::check_idle(&cycle)?;
             let engine = app
                 .state::<vision::VisionHost>()
@@ -2731,7 +2716,6 @@ async fn preview_range_operation(
                         .iter()
                         .find(|c| c.camera_id == camera)
                         .and_then(|c| c.mix_capture());
-                    let graph = graphs.get(scope.index, segment).ok_or("走廊测量图缺失")?;
                     vision::measure_frame(
                         &engine,
                         graph,

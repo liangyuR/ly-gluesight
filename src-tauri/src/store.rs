@@ -1,17 +1,21 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{
+    params, params_from_iter, Connection, OpenFlags, OptionalExtension, Statement, Transaction,
+    TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::burst_judge::{BurstJudgement, Flags, FrameMetrics, FrameState};
+use crate::burst_judge::{BurstJudgement, Flags, FrameMetrics, FrameState, FrameVerdict};
 use crate::cycle::{FrameStatus, FrameView};
 use crate::judge::{Judgement, PointState, Verdict};
 use crate::plan::PathSegment;
 use crate::recipe::Recipe;
+use crate::segmentation::Region;
 
 /// 一件工件的完整结果，入库一行。
 ///
@@ -68,7 +72,7 @@ pub struct FrameRecord {
     /// `BurstJudgement.regions` 的下标；不在任何区域为 None
     pub region: Option<usize>,
     /// 缺帧时为 None
-    pub metrics: Option<FrameMetrics>,
+    pub metrics: Option<Arc<FrameMetrics>>,
     /// 录制根内相对路径；未录制或录制队满丢弃为 None。入库后只增不换
     pub raw_file: Option<String>,
 }
@@ -228,6 +232,7 @@ pub struct HistoryQuery {
     pub from: Option<i64>,
     pub to: Option<i64>,
     pub verdicts: Vec<Verdict>,
+    pub include_verdict_facets: bool,
     pub sn: Option<String>,
     pub tag: Option<String>,
     pub recipe_id: Option<String>,
@@ -293,6 +298,12 @@ pub struct TrialProgress {
     pub ng: Vec<VerdictCount>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MaintenanceStatistics {
+    pub collection: Vec<CollectionProgress>,
+    pub trial: Vec<TrialProgress>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct VerdictCount {
     pub verdict: Verdict,
@@ -318,10 +329,50 @@ impl VerdictCounts {
     }
 }
 
+const HISTORY_VERDICTS: [Verdict; 7] = [
+    Verdict::Ok,
+    Verdict::OkWithExcursion,
+    Verdict::NgPosition,
+    Verdict::NgWidth,
+    Verdict::NgAbsolute,
+    Verdict::NgGap,
+    Verdict::ErrInspect,
+];
+
+// 这组已知可解码的字面值属于局部索引定义。扩展结论枚举时仍可复用该索引。
+const VERDICT_TEXT_CHECK: &str = "COALESCE(verdict NOT IN (\
+    'OK', 'OK_WITH_EXCURSION', 'NG_POSITION', 'NG_WIDTH', 'NG_ABSOLUTE', 'NG_GAP', 'ERR_INSPECT'), 1)";
+
+struct VerdictHistogram {
+    total: u64,
+    exact: [u64; HISTORY_VERDICTS.len()],
+}
+
+impl VerdictHistogram {
+    fn summarize(&self, selected: &[Verdict]) -> (u64, VerdictCounts) {
+        let mut total = 0;
+        let mut counts = VerdictCounts::default();
+        for (verdict, count) in HISTORY_VERDICTS.into_iter().zip(self.exact) {
+            if selected.is_empty() || selected.contains(&verdict) {
+                counts.add(verdict, count);
+                total += count;
+            }
+        }
+        if selected.is_empty() {
+            counts.err += self.total - total;
+            total = self.total;
+        }
+        (total, counts)
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HistoryPage {
     pub total: u64,
     pub counts: VerdictCounts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict_facets: Option<VerdictCounts>,
     pub items: Vec<PartSummary>,
 }
 
@@ -352,6 +403,21 @@ pub struct PartDetail {
     pub burst: Option<PartDetailBurst>,
 }
 
+pub(crate) enum HistoryCompareInput {
+    StoredMetrics,
+    RawImages,
+}
+
+enum DetailScope<'a> {
+    Full,
+    Overview,
+    ComparisonOptions,
+    ComparisonInput(HistoryCompareInput),
+    Frame(usize, u64),
+    FrameByCamera(&'a str, u64),
+    WithoutFrameVerdicts,
+}
+
 /// 重判用：一件工件的判定输入。
 pub struct StoredMeasurement {
     pub id: i64,
@@ -361,15 +427,110 @@ pub struct StoredMeasurement {
     pub recipe_id: Option<String>,
     pub recipe_revision: Option<String>,
     pub verdict: Verdict,
-    /// 段配方记录当时的区域判定（区域、丢帧告警）；没有帧记录的为 None。逐帧指标按需用 `Store::burst_frames` 读
+    /// 段配方记录当时的区域判定（区域、丢帧告警）；没有帧记录的为 None。逐帧指标按需用 `RejudgeReader::burst_frames` 读
     pub burst: Option<BurstJudgement>,
+}
+
+pub(crate) struct RejudgeSelection<R> {
+    pub rows: R,
+    pub limit_hit: bool,
 }
 
 pub struct Store {
     conn: Mutex<Connection>,
+    checked_recipe_snapshot: Mutex<Option<CheckedRecipeSnapshot>>,
+    history_recipe_snapshot: Mutex<Option<HistoryRecipeSnapshot>>,
+    checked_history_frame_metrics: Mutex<Option<Arc<CheckedHistoryFrameMetrics>>>,
+    path: PathBuf,
     backup_path: Option<PathBuf>,
     /// 当前项目：新记录归它，统计与候选实例按它
     project: String,
+}
+
+pub(crate) struct RejudgeReader {
+    conn: Connection,
+}
+
+const HISTORY_FRAME_METRICS_CACHE_BYTES: usize = 16 * 1024 * 1024;
+
+struct CheckedHistoryFrameMetrics {
+    part_id: i64,
+    texts: Vec<Option<String>>,
+    overview: Option<HistoryFrameOverview>,
+}
+
+struct HistoryFrameOverview {
+    recipe: Weak<Recipe>,
+    regions: Vec<Region>,
+    metrics: Vec<Option<Arc<FrameMetrics>>>,
+    verdicts: Vec<FrameVerdict>,
+}
+
+impl HistoryFrameOverview {
+    fn capture(
+        input: HistoryFrameVerdictInput<'_>,
+        frames: &[FrameRecord],
+        verdicts: &[FrameVerdict],
+        remaining_bytes: usize,
+    ) -> Option<Self> {
+        let metrics_bytes = frames
+            .iter()
+            .filter_map(|frame| frame.metrics.as_deref())
+            .map(|metrics| {
+                std::mem::size_of::<FrameMetrics>()
+                    + 2 * std::mem::size_of::<usize>()
+                    + metrics
+                        .error
+                        .iter()
+                        .chain(&metrics.fallback_reason)
+                        .map(String::capacity)
+                        .sum::<usize>()
+                    + metrics
+                        .mix_evidence
+                        .as_ref()
+                        .map_or(0, |mix| mix.summary_heap_bytes())
+            })
+            .sum::<usize>();
+        let bytes = frames.len() * std::mem::size_of::<Option<Arc<FrameMetrics>>>()
+            + std::mem::size_of_val(input.regions)
+            + std::mem::size_of_val(verdicts)
+            + metrics_bytes;
+        (bytes <= remaining_bytes).then(|| Self {
+            recipe: Arc::downgrade(input.recipe),
+            regions: input.regions.to_vec(),
+            metrics: frames.iter().map(|frame| frame.metrics.clone()).collect(),
+            verdicts: verdicts.to_vec(),
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HistoryFrameVerdictInput<'a> {
+    recipe: &'a Arc<Recipe>,
+    regions: &'a [Region],
+    cameras: &'a [String],
+}
+
+impl HistoryFrameVerdictInput<'_> {
+    fn calculate(self, frames: &[FrameRecord]) -> Vec<FrameVerdict> {
+        crate::burst_judge::frame_verdicts(
+            &self.recipe.path_segments,
+            self.regions,
+            frames.iter().filter_map(|frame| frame.metrics.as_deref()),
+            self.cameras,
+        )
+    }
+}
+
+struct CheckedRecipeSnapshot {
+    stored_json: String,
+    recipe_json: String,
+}
+
+struct HistoryRecipeSnapshot {
+    project: String,
+    raw: RawSnapshot,
+    recipe: Arc<Recipe>,
 }
 
 fn verdict_str(v: Verdict) -> String {
@@ -441,6 +602,30 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
 
 fn db_err(e: rusqlite::Error) -> String {
     format!("检测记录数据库错误：{e}")
+}
+
+const HISTORY_ID_LIMITS: &str = "SELECT MAX(COALESCE((SELECT MAX(id) FROM main.parts), 0), \
+    COALESCE((SELECT MAX(id) FROM main.history_deletions), 0)) AS occupied, \
+    COALESCE((SELECT id FROM main.history_id_floor WHERE singleton = 1), 0) AS floor";
+
+fn delete_history_rows(
+    tx: &Transaction<'_>,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<usize, String> {
+    let last_id: Option<i64> = tx
+        .query_row("SELECT MAX(id) FROM main.parts", [], |row| row.get(0))
+        .map_err(db_err)?;
+    let deleted = tx.execute(sql, params).map_err(db_err)?;
+    if let Some(id) = last_id.filter(|&id| deleted > 0 && id > 0) {
+        tx.execute(
+            "INSERT INTO main.history_id_floor (singleton, id) VALUES (1, ?1) \
+             ON CONFLICT(singleton) DO UPDATE SET id = excluded.id WHERE id < excluded.id",
+            [id],
+        )
+        .map_err(db_err)?;
+    }
+    Ok(deleted)
 }
 
 fn enum_name(value: impl Serialize) -> String {
@@ -697,15 +882,46 @@ fn frame_rows_raw(
     rows.collect::<Result<_, _>>().map_err(db_err)
 }
 
+fn decode_frame_metrics(text: Option<&str>) -> Result<Option<Arc<FrameMetrics>>, String> {
+    text.map(|text| serde_json::from_str(text).map_err(|error| error.to_string()))
+        .transpose()
+}
+
 fn decode_frame_rows(rows: Vec<RawFrameRow>) -> Result<Vec<FrameRecord>, String> {
     rows.into_iter()
         .map(|(mut frame, text)| {
-            frame.metrics = text
-                .map(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
-                .transpose()?;
+            frame.metrics = decode_frame_metrics(text.as_deref())?;
             Ok(frame)
         })
         .collect()
+}
+
+fn decode_frame_rows_parallel(mut rows: Vec<RawFrameRow>) -> Result<Vec<FrameRecord>, String> {
+    let decode_chunk = |chunk: &mut [RawFrameRow]| -> Result<(), String> {
+        for (frame, text) in chunk {
+            frame.metrics = decode_frame_metrics(text.take().as_deref())?;
+        }
+        Ok(())
+    };
+    let decoded = std::thread::scope(|scope| -> Result<bool, String> {
+        let middle = rows.len() / 2;
+        let (first, second) = rows.split_at_mut(middle);
+        let Ok(worker) =
+            std::thread::Builder::new().spawn_scoped(scope, move || decode_chunk(second))
+        else {
+            return Ok(false);
+        };
+        let first = decode_chunk(first);
+        let second = worker.join();
+        first?;
+        second.map_err(|_| "历史帧指标解码线程异常退出".to_owned())??;
+        Ok(true)
+    })?;
+    if decoded {
+        Ok(rows.into_iter().map(|(frame, _)| frame).collect())
+    } else {
+        decode_frame_rows(rows)
+    }
 }
 
 type RawSnapshot = (String, u32, String);
@@ -719,20 +935,13 @@ fn snapshot_raw(
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(db_err)
 }
 
-fn decode_snapshot(
-    snapshot: Option<RawSnapshot>,
-    revision_id: &str,
-) -> Result<Option<Recipe>, String> {
-    snapshot
-        .map(|(id, version, json)| {
-            let recipe =
-                Recipe::from_snapshot(serde_json::from_str(&json).map_err(|e| e.to_string())?)?;
-            if recipe.revision_id != revision_id || recipe.id != id || recipe.version != version {
-                return Err("原配方快照身份或版本损坏".into());
-            }
-            Ok(recipe)
-        })
-        .transpose()
+fn decode_snapshot(snapshot: &RawSnapshot, revision_id: &str) -> Result<Recipe, String> {
+    let (id, version, json) = snapshot;
+    let recipe = Recipe::from_snapshot(serde_json::from_str(json).map_err(|e| e.to_string())?)?;
+    if recipe.revision_id != revision_id || recipe.id != *id || recipe.version != *version {
+        return Err("原配方快照身份或版本损坏".into());
+    }
+    Ok(recipe)
 }
 
 fn backup_old_database(conn: Connection, path: &Path, version: i64) -> Result<PathBuf, String> {
@@ -879,7 +1088,7 @@ impl Store {
         } else {
             None
         };
-        conn.execute_batch(
+        conn.execute_batch(&format!(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
              BEGIN IMMEDIATE;
@@ -892,6 +1101,10 @@ impl Store {
                  cycle_id TEXT
              );
              CREATE INDEX IF NOT EXISTS history_deletions_cycle ON history_deletions(cycle_id);
+             CREATE TABLE IF NOT EXISTS history_id_floor (
+                 singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                 id INTEGER NOT NULL CHECK(id > 0)
+             );
              CREATE TABLE IF NOT EXISTS workspace_instances (
                  project_id TEXT NOT NULL,
                  id INTEGER NOT NULL CHECK(id > 0),
@@ -954,10 +1167,28 @@ impl Store {
                  tags TEXT NOT NULL DEFAULT '[]'
              );
              CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
-             CREATE INDEX IF NOT EXISTS parts_source_ts ON parts(source, ts);
-             CREATE INDEX IF NOT EXISTS parts_project_ts ON parts(project_id, ts);
-             CREATE INDEX IF NOT EXISTS parts_sn ON parts(sn);
+             DROP INDEX IF EXISTS parts_source_ts;
+             CREATE INDEX IF NOT EXISTS parts_source_ts_id_verdict ON parts(source, ts, id, verdict);
+             DROP INDEX IF EXISTS parts_project_ts;
+             CREATE INDEX IF NOT EXISTS parts_project_source_ts_id_verdict
+                 ON parts(project_id, source, ts, id, verdict);
+             CREATE INDEX IF NOT EXISTS parts_unvalidated_verdict ON parts(verdict)
+                 WHERE {VERDICT_TEXT_CHECK};
+             DROP INDEX IF EXISTS parts_sn;
+             CREATE INDEX IF NOT EXISTS parts_sn_project_ts
+                 ON parts(sn, project_id, ts) WHERE sn <> '';
+             CREATE INDEX IF NOT EXISTS parts_project_recipe_version
+                 ON parts(project_id, recipe_id, recipe_version)
+                 WHERE recipe_id IS NOT NULL AND recipe_version IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS parts_retest ON parts(retest_of) WHERE retest_of IS NOT NULL;
              CREATE INDEX IF NOT EXISTS parts_recording_directory ON parts(recording_directory);
+             CREATE INDEX IF NOT EXISTS parts_pending_recording
+                 ON parts(id) WHERE recording_state = 'pending';
+             CREATE INDEX IF NOT EXISTS parts_pending_path ON parts(project_id, source)
+                 WHERE recording_directory IS NOT NULL AND instr(lower(recording_directory),'_pending')>0;
+             CREATE INDEX IF NOT EXISTS parts_maintenance
+                 ON parts(project_id, source, mode, recipe_id, recipe_version DESC, verdict)
+                 WHERE mode = 'maintenanceCollect' OR mode = 'maintenanceShadow';
              CREATE UNIQUE INDEX IF NOT EXISTS parts_cycle ON parts(cycle_id) WHERE cycle_id IS NOT NULL;
              DROP INDEX IF EXISTS parts_unresolved_delivery;
              CREATE TABLE IF NOT EXISTS part_points (
@@ -1003,17 +1234,24 @@ impl Store {
                  raw_file TEXT,
                  PRIMARY KEY (part_id, camera, seq)
              );
+             CREATE INDEX IF NOT EXISTS part_frames_pending_path ON part_frames(part_id)
+                 WHERE raw_file IS NOT NULL AND instr(lower(raw_file),'_pending')>0;
              PRAGMA user_version = 11;
-             COMMIT;",
-        )
+             COMMIT;"
+        ))
         .map_err(db_err)?;
         add_part_tags(&conn)?;
         retired::migrate(&mut conn)?;
+        history_edit::ensure_tag_index(&mut conn)?;
         if !defer_recovery {
             fail_interrupted_recordings(&mut conn)?;
         }
         Ok(Self {
             conn: Mutex::new(conn),
+            checked_recipe_snapshot: Mutex::new(None),
+            history_recipe_snapshot: Mutex::new(None),
+            checked_history_frame_metrics: Mutex::new(None),
+            path: path.to_path_buf(),
             backup_path,
             project: project.into(),
         })
@@ -1034,9 +1272,19 @@ impl Store {
 
     pub fn recipe_version_floors(&self) -> Result<std::collections::BTreeMap<String, u32>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT recipe_id,MAX(version) FROM (
-            SELECT recipe_id,recipe_version AS version FROM parts WHERE project_id=?1 AND recipe_id IS NOT NULL AND recipe_version IS NOT NULL
-            UNION ALL SELECT recipe_id,version FROM recipe_snapshots WHERE project_id=?1 AND revision_id = recipe_id || '-v' || version) GROUP BY recipe_id").map_err(db_err)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT recipe_id, MAX(version) FROM (
+                    SELECT recipe_id, MAX(recipe_version) AS version FROM parts
+                    WHERE project_id=?1 AND recipe_id IS NOT NULL AND recipe_version IS NOT NULL
+                    GROUP BY recipe_id
+                    UNION ALL
+                    SELECT recipe_id, MAX(version) FROM recipe_snapshots
+                    WHERE project_id=?1 AND revision_id = recipe_id || '-v' || version
+                    GROUP BY recipe_id
+                ) GROUP BY recipe_id",
+            )
+            .map_err(db_err)?;
         let rows = stmt
             .query_map([&self.project], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
@@ -1132,33 +1380,48 @@ impl Store {
         }
         if let Some(recipe) = r.recipe {
             let json = serde_json::to_string(recipe).map_err(|e| e.to_string())?;
-            let previous: Option<(String, u32, String)> = tx.query_row(
-                "SELECT recipe_id,version,json FROM recipe_snapshots WHERE project_id = ?1 AND revision_id = ?2", params![self.project, recipe.revision_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            ).optional().map_err(db_err)?;
-            if let Some((id, version, previous)) = previous {
+            if let Some((id, version, stored_json)) =
+                snapshot_raw(&tx, &self.project, &recipe.revision_id)?
+            {
                 if id != recipe.id || version != recipe.version {
                     return Err("原配方快照 ID 或版本损坏，拒绝追加记录".into());
                 }
-                let previous = Recipe::from_snapshot(
-                    serde_json::from_str(&previous).map_err(|e| e.to_string())?,
-                )?;
-                if serde_json::to_value(&previous).map_err(|e| e.to_string())?
-                    != serde_json::to_value(recipe).map_err(|e| e.to_string())?
-                {
-                    return Err("相同配方修订号对应了不同快照，拒绝覆盖原记录".into());
+                let mut checked = self.checked_recipe_snapshot.lock().unwrap();
+                if !checked.as_ref().is_some_and(|snapshot| {
+                    snapshot.stored_json == stored_json && snapshot.recipe_json == json
+                }) {
+                    let previous = Recipe::from_snapshot(
+                        serde_json::from_str(&stored_json).map_err(|e| e.to_string())?,
+                    )?;
+                    if serde_json::to_value(&previous).map_err(|e| e.to_string())?
+                        != serde_json::to_value(recipe).map_err(|e| e.to_string())?
+                    {
+                        return Err("相同配方修订号对应了不同快照，拒绝覆盖原记录".into());
+                    }
+                    *checked = Some(CheckedRecipeSnapshot {
+                        stored_json,
+                        recipe_json: json,
+                    });
                 }
+            } else {
+                tx.execute(
+                    "INSERT INTO recipe_snapshots (project_id, revision_id, recipe_id, version, json) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![self.project, recipe.revision_id, recipe.id, recipe.version, json],
+                )
+                .map_err(db_err)?;
             }
-            tx.execute(
-                "INSERT OR IGNORE INTO recipe_snapshots (project_id, revision_id, recipe_id, version, json) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![self.project, recipe.revision_id, recipe.id, recipe.version, json],
-            )
-            .map_err(db_err)?;
         }
         let retest_of: Option<i64> = if r.sn.is_empty() {
             None
         } else {
-            tx.query_row("SELECT id FROM parts WHERE project_id = ?1 AND sn = ?2 ORDER BY ts DESC, id DESC LIMIT 1", [self.project.as_str(), r.sn], |row| row.get(0)).optional().map_err(db_err)?
+            tx.query_row(
+                "SELECT id FROM parts WHERE project_id = ?1 AND sn = ?2 AND sn <> ''
+                 ORDER BY ts DESC, id DESC LIMIT 1",
+                [self.project.as_str(), r.sn],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)?
         };
         let j = r.judgement;
         let text = |value: Result<String, serde_json::Error>| value.map_err(|e| e.to_string());
@@ -1180,7 +1443,9 @@ impl Store {
                  expected_total, tolerance_total, device_triggers, camera_frames, flags, burst_judgement, mode, project_id, id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
                  ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33,
-                 (SELECT MAX(COALESCE((SELECT MAX(id) FROM parts), 0), COALESCE((SELECT MAX(id) FROM history_deletions), 0)) + 1))",
+                 (SELECT MAX(COALESCE((SELECT MAX(id) FROM parts), 0),
+                             COALESCE((SELECT MAX(id) FROM history_deletions), 0),
+                             COALESCE((SELECT id FROM history_id_floor WHERE singleton = 1), 0)) + 1))",
             params![
                 r.ts,
                 r.sn,
@@ -1380,28 +1645,37 @@ impl Store {
         else {
             return Ok(false);
         };
-        for (key, file) in files {
-            let seq = i64::try_from(key.seq).map_err(|_| "帧组序号超出存储范围")?;
-            let previous: Option<Option<String>> = tx
-                .query_row(
+        {
+            let mut lookup = tx
+                .prepare(
                     "SELECT raw_file FROM part_frames WHERE part_id=?1 AND camera=?2 AND seq=?3",
-                    params![id, key.camera as i64, seq],
-                    |row| row.get(0),
                 )
-                .optional()
                 .map_err(db_err)?;
-            match previous {
-                None => return Ok(false),
-                Some(Some(previous)) if previous != *file => {
-                    return Err(format!(
-                        "相机 {} 第 {} 帧的原图身份已保存，不能替换为另一个文件",
-                        key.camera, key.seq
-                    ));
-                }
-                Some(Some(_)) => (),
-                Some(None) => {
-                    tx.execute("UPDATE part_frames SET raw_file=?4 WHERE part_id=?1 AND camera=?2 AND seq=?3", params![id, key.camera as i64, seq, file])
-                        .map_err(db_err)?;
+            let mut update = tx
+                .prepare(
+                    "UPDATE part_frames SET raw_file=?4 WHERE part_id=?1 AND camera=?2 AND seq=?3",
+                )
+                .map_err(db_err)?;
+            for (key, file) in files {
+                let seq = i64::try_from(key.seq).map_err(|_| "帧组序号超出存储范围")?;
+                let previous: Option<Option<String>> = lookup
+                    .query_row(params![id, key.camera as i64, seq], |row| row.get(0))
+                    .optional()
+                    .map_err(db_err)?;
+                match previous {
+                    None => return Ok(false),
+                    Some(Some(previous)) if previous != *file => {
+                        return Err(format!(
+                            "相机 {} 第 {} 帧的原图身份已保存，不能替换为另一个文件",
+                            key.camera, key.seq
+                        ));
+                    }
+                    Some(Some(_)) => (),
+                    Some(None) => {
+                        update
+                            .execute(params![id, key.camera as i64, seq, file])
+                            .map_err(db_err)?;
+                    }
                 }
             }
         }
@@ -1455,13 +1729,12 @@ impl Store {
     fn filter(q: &HistoryQuery, prefix: &str) -> (String, Vec<SqlValue>) {
         let mut clauses = vec![q.scope.clause(prefix)];
         let mut args = Vec::new();
-        if let Some(from) = q.from {
-            clauses.push(format!("{prefix}ts >= ?"));
-            args.push(SqlValue::Integer(from));
-        }
-        if let Some(to) = q.to {
-            clauses.push(format!("{prefix}ts < ?"));
-            args.push(SqlValue::Integer(to));
+        let date_bounds = [(">=", q.from), ("<", q.to)];
+        for (cmp, ts) in date_bounds {
+            if let Some(ts) = ts {
+                clauses.push(format!("{prefix}ts {cmp} ?"));
+                args.push(SqlValue::Integer(ts));
+            }
         }
         if !q.verdicts.is_empty() {
             clauses.push(format!(
@@ -1480,10 +1753,18 @@ impl Store {
             )));
         }
         if let Some(tag) = q.tag.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            clauses.push(format!(
-                "EXISTS (SELECT 1 FROM json_each({prefix}tags) WHERE value = ?)"
-            ));
+            let mut lookup = vec!["tag = ?".to_owned()];
             args.push(SqlValue::Text(tag.to_string()));
+            for (cmp, ts) in date_bounds {
+                if let Some(ts) = ts {
+                    lookup.push(format!("ts {cmp} ?"));
+                    args.push(SqlValue::Integer(ts));
+                }
+            }
+            clauses.push(format!(
+                "{prefix}id IN (SELECT part_id FROM part_tags WHERE {})",
+                lookup.join(" AND ")
+            ));
         }
         if let Some(id) = q.recipe_id.as_deref().filter(|s| !s.is_empty()) {
             clauses.push(format!("{prefix}recipe_id = ?"));
@@ -1566,7 +1847,13 @@ impl Store {
             .conn
             .lock()
             .map_err(|_| "数据库锁异常，暂停孤立录制清理".to_string())?;
-        let mut stmt = conn.prepare(&format!("SELECT recording_directory FROM parts WHERE project_id=?1 AND instr(lower(recording_directory),'_pending')>0 AND {}", scope.clause(""))).map_err(db_err)?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT recording_directory FROM parts WHERE project_id=?1 AND recording_directory IS NOT NULL \
+                 AND instr(lower(recording_directory),'_pending')>0 AND {}",
+                scope.clause("")
+            ))
+            .map_err(db_err)?;
         for row in stmt
             .query_map([&self.project], |row| row.get::<_, String>(0))
             .map_err(db_err)?
@@ -1575,8 +1862,9 @@ impl Store {
         }
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT f.raw_file FROM part_frames f JOIN parts p ON p.id=f.part_id \
-            WHERE p.project_id=?1 AND instr(lower(f.raw_file),'_pending')>0 AND {}",
+                "SELECT f.raw_file FROM part_frames f CROSS JOIN parts p ON p.id=f.part_id \
+                 WHERE f.raw_file IS NOT NULL AND instr(lower(f.raw_file),'_pending')>0 \
+                 AND p.project_id=?1 AND {}",
                 scope.clause("p.")
             ))
             .map_err(db_err)?;
@@ -1611,39 +1899,124 @@ impl Store {
         Ok(())
     }
 
-    pub fn query(&self, q: &HistoryQuery) -> Result<HistoryPage, String> {
-        let conn = self.conn.lock().unwrap();
-        let (filter, args) = Self::filter(q, "");
-        let mut counts = VerdictCounts::default();
-        let mut total = 0;
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT verdict, COUNT(*) FROM parts{filter} GROUP BY verdict"
-            ))
+    fn count_verdicts(
+        conn: &Connection,
+        filter: &str,
+        args: &[SqlValue],
+    ) -> Result<VerdictHistogram, String> {
+        let columns = HISTORY_VERDICTS
+            .map(|_| "COUNT(*) FILTER (WHERE verdict = ?)")
+            .join(", ");
+        let verdict_args = HISTORY_VERDICTS.map(|v| SqlValue::Text(verdict_str(v)));
+        let histogram = conn
+            .query_row(
+                &format!("SELECT COUNT(*), {columns} FROM parts{filter}"),
+                params_from_iter(verdict_args.iter().chain(args)),
+                |row| {
+                    let mut exact = [0; HISTORY_VERDICTS.len()];
+                    for (index, count) in exact.iter_mut().enumerate() {
+                        *count = row.get::<_, i64>(index + 1)? as u64;
+                    }
+                    let total = row.get::<_, i64>(0)? as u64;
+                    Ok(VerdictHistogram { total, exact })
+                },
+            )
             .map_err(db_err)?;
-        let rows = stmt
-            .query_map(params_from_iter(args.iter()), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
-            })
-            .map_err(db_err)?;
-        for row in rows {
-            let (v, n) = row.map_err(db_err)?;
-            counts.add(parse_verdict(&v), n);
-            total += n;
+        if histogram.total > histogram.exact.iter().sum() {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT DISTINCT verdict FROM parts INDEXED BY parts_unvalidated_verdict{filter} \
+                     AND ({VERDICT_TEXT_CHECK})"
+                ))
+                .map_err(db_err)?;
+            let unknown = stmt
+                .query_map(params_from_iter(args.iter()), |row| row.get::<_, String>(0))
+                .map_err(db_err)?;
+            for verdict in unknown {
+                verdict.map_err(db_err)?;
+            }
         }
+        Ok(histogram)
+    }
+
+    pub fn query(&self, q: &HistoryQuery) -> Result<HistoryPage, String> {
+        let mut conn = open_read_only(&self.path)?;
+        let snapshot = conn.transaction().map_err(db_err)?;
+        let page_filter = Self::filter(q, "");
+        let with_facets = q.include_verdict_facets && !q.verdicts.is_empty();
+        let facets_filter = with_facets.then(|| {
+            Self::filter(
+                &HistoryQuery {
+                    verdicts: Vec::new(),
+                    ..q.clone()
+                },
+                "",
+            )
+        });
+        let (count_filter, count_args) = facets_filter.as_ref().unwrap_or(&page_filter);
+        let histogram = Self::count_verdicts(&snapshot, count_filter, count_args)?;
+        let selected = if with_facets {
+            q.verdicts.as_slice()
+        } else {
+            &[]
+        };
+        let (total, counts) = histogram.summarize(selected);
+        let verdict_facets = with_facets.then(|| histogram.summarize(&[]).1);
+        let (filter, args) = page_filter;
         let limit = if q.limit == 0 { 50 } else { q.limit.min(500) };
         let sql = format!("SELECT {SUMMARY_COLS} FROM parts{filter} ORDER BY ts DESC, id DESC LIMIT {limit} OFFSET {}", q.offset);
-        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let items = stmt
+        let items = snapshot
+            .prepare(&sql)
+            .map_err(db_err)?
             .query_map(params_from_iter(args.iter()), summary)
             .map_err(db_err)?
             .collect::<Result<_, _>>()
             .map_err(db_err)?;
+        snapshot.commit().map_err(db_err)?;
         Ok(HistoryPage {
             total,
             counts,
+            verdict_facets,
             items,
         })
+    }
+
+    pub fn visit_history(
+        &self,
+        q: &HistoryQuery,
+        mut visit: impl FnMut(PartSummary) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let conn = open_read_only(&self.path)?;
+        let (filter, args) = Self::filter(q, "");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {SUMMARY_COLS} FROM parts{filter} ORDER BY ts DESC, id DESC"
+            ))
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params_from_iter(args.iter()), summary)
+            .map_err(db_err)?;
+        for row in rows {
+            visit(row.map_err(db_err)?)?;
+        }
+        Ok(())
+    }
+
+    pub fn latest_history_ids(&self, q: &HistoryQuery, limit: usize) -> Result<Vec<i64>, String> {
+        let conn = open_read_only(&self.path)?;
+        let (filter, mut args) = Self::filter(q, "");
+        args.push(SqlValue::Integer(
+            i64::try_from(limit).map_err(|e| e.to_string())?,
+        ));
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT id FROM parts{filter} ORDER BY ts DESC, id DESC LIMIT ?"
+            ))
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params_from_iter(args.iter()), |row| row.get(0))
+            .map_err(db_err)?;
+        rows.collect::<Result<_, _>>().map_err(db_err)
     }
 
     /// 同一筛选条件下与 id 相邻的记录：(较早一件, 较晚一件)，按（时间, 编号）排序，与历史列表同序。
@@ -1652,8 +2025,9 @@ impl Store {
         q: &HistoryQuery,
         id: i64,
     ) -> Result<(Option<i64>, Option<i64>), String> {
-        let conn = self.conn.lock().unwrap();
-        let Some(ts) = conn
+        let mut conn = open_read_only(&self.path)?;
+        let snapshot = conn.transaction().map_err(db_err)?;
+        let Some(ts) = snapshot
             .query_row("SELECT ts FROM parts WHERE id = ?1", [id], |row| {
                 row.get::<_, i64>(0)
             })
@@ -1665,15 +2039,13 @@ impl Store {
         let (filter, args) = Self::filter(q, "");
         let one = |cmp: &str, order: &str| -> Result<Option<i64>, String> {
             let mut values = args.clone();
-            values.extend([
-                SqlValue::Integer(ts),
-                SqlValue::Integer(ts),
-                SqlValue::Integer(id),
-            ]);
-            conn.query_row(&format!("SELECT id FROM parts{filter} AND (ts {cmp} ? OR (ts = ? AND id {cmp} ?)) ORDER BY ts {order}, id {order} LIMIT 1"),
+            values.extend([SqlValue::Integer(ts), SqlValue::Integer(id)]);
+            snapshot.query_row(&format!("SELECT id FROM parts{filter} AND (ts, id) {cmp} (?, ?) ORDER BY ts {order}, id {order} LIMIT 1"),
                 params_from_iter(values.iter()), |row| row.get(0)).optional().map_err(db_err)
         };
-        Ok((one("<", "DESC")?, one(">", "ASC")?))
+        let neighbors = (one("<", "DESC")?, one(">", "ASC")?);
+        snapshot.commit().map_err(db_err)?;
+        Ok(neighbors)
     }
 
     pub fn summary(&self, id: i64) -> Result<PartSummary, String> {
@@ -1691,69 +2063,152 @@ impl Store {
     }
 
     pub fn detail(&self, id: i64) -> Result<PartDetail, String> {
-        self.detail_selected(id, None)
+        self.read_detail(id, DetailScope::Full)
+            .map(|(detail, _)| detail)
+    }
+
+    pub(crate) fn history_import_record(
+        &self,
+        id: i64,
+    ) -> Result<(PartSummary, RecordingEvidence), String> {
+        self.read_detail(id, DetailScope::WithoutFrameVerdicts)
+            .map(|(detail, _)| (detail.summary, detail.recording))
+    }
+
+    /// 供历史复测选项查询。逐帧记录只返回元数据，测量指标仍按原格式校验。
+    pub(crate) fn history_comparison_record(
+        &self,
+        id: i64,
+    ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
+        let (detail, recipe) = self.read_detail(id, DetailScope::ComparisonOptions)?;
+        let original = match recipe {
+            Some(recipe) => Some(recipe),
+            None => self.record_recipe(&detail.summary)?.map(Arc::new),
+        };
+        Ok((detail, original))
+    }
+
+    pub(crate) fn comparison_input(
+        &self,
+        id: i64,
+        input: HistoryCompareInput,
+    ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
+        self.read_detail(id, DetailScope::ComparisonInput(input))
     }
 
     pub fn detail_frame(&self, id: i64, camera: usize, seq: u64) -> Result<PartDetail, String> {
-        let detail = self.detail_selected(id, Some((camera, seq)))?;
-        if detail
+        self.detail_frame_with_recipe(id, camera, seq)
+            .map(|(detail, _)| detail)
+    }
+
+    pub(crate) fn detail_frame_with_recipe(
+        &self,
+        id: i64,
+        camera: usize,
+        seq: u64,
+    ) -> Result<(PartDetail, Arc<Recipe>), String> {
+        let (detail, recipe) = self.read_detail(id, DetailScope::Frame(camera, seq))?;
+        Self::selected_frame(&detail)?;
+        let recipe = recipe.ok_or("原始配方快照缺失")?;
+        Ok((detail, recipe))
+    }
+
+    pub(crate) fn detail_frame_by_camera(
+        &self,
+        id: i64,
+        camera: &str,
+        seq: u64,
+    ) -> Result<(PartDetail, usize), String> {
+        let (detail, _) = self.read_detail(id, DetailScope::FrameByCamera(camera, seq))?;
+        let record_camera = Self::selected_frame(&detail)?.camera;
+        Ok((detail, record_camera))
+    }
+
+    fn selected_frame(detail: &PartDetail) -> Result<&FrameRecord, String> {
+        detail
             .burst
             .as_ref()
-            .is_none_or(|burst| burst.frames.is_empty())
-        {
-            return Err("没有这一帧的记录".into());
-        }
-        Ok(detail)
+            .and_then(|burst| burst.frames.first())
+            .ok_or_else(|| "没有这一帧的记录".into())
     }
 
     pub fn detail_overview(&self, id: i64) -> Result<PartDetail, String> {
-        let mut detail = self.detail(id)?;
-        if let Some(burst) = detail.burst.as_mut() {
-            for frame in &mut burst.frames {
-                if let Some(metrics) = frame.metrics.as_mut() {
-                    metrics.widths.clear();
-                    if let Some(evidence) = &mut metrics.measurement_evidence {
-                        evidence.stations.clear();
-                    }
-                    if let Some(evidence) = &mut metrics.mix_evidence {
-                        evidence.omit_observation();
-                    }
-                }
-            }
-        }
-        Ok(detail)
+        self.read_detail(id, DetailScope::Overview)
+            .map(|(detail, _)| detail)
     }
 
-    fn detail_selected(
+    fn read_detail(
         &self,
         id: i64,
-        selected: Option<(usize, u64)>,
-    ) -> Result<PartDetail, String> {
-        let conn = self.conn.lock().unwrap();
+        scope: DetailScope<'_>,
+    ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
+        let mut conn = open_read_only(&self.path)?;
+        let snapshot = conn.transaction().map_err(db_err)?;
+        self.detail_from_snapshot(snapshot, id, scope)
+    }
+
+    fn detail_from_snapshot(
+        &self,
+        snapshot: Transaction<'_>,
+        id: i64,
+        scope: DetailScope<'_>,
+    ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
         const N: usize = SUMMARY_LEN;
-        let (summary, judgement, frames, triggers, software_version, recording, burst_judgement) = conn
+        let (summary, columns) = snapshot
             .query_row(
                 &format!("SELECT {SUMMARY_COLS}, judgement, frames, triggers, software_version,recording_state,recording_available,recording_directory,recording_errors,burst_judgement FROM parts WHERE id = ?1"),
                 [id],
-                |row| Ok((summary(row)?, row.get::<_, String>(N)?, row.get::<_, String>(N + 1)?, row.get::<_, i64>(N + 2)? as u64, row.get::<_, String>(N + 3)?,
-                    recording_row(row, N + 4)?, row.get::<_, Option<String>>(N + 8)?)),
+                |row| {
+                    let summary = summary(row)?;
+                    let columns = (|| -> rusqlite::Result<_> {
+                        Ok((row.get::<_, String>(N)?, row.get::<_, String>(N + 1)?, row.get::<_, i64>(N + 2)? as u64, row.get::<_, String>(N + 3)?,
+                            recording_row(row, N + 4)?, row.get::<_, Option<String>>(N + 8)?))
+                    })();
+                    Ok((summary, columns))
+                },
             )
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| format!("记录 {id} 不存在或已过期清理"))?;
+        // 按相机名取帧时，先报告原配方或相机定位错误，再处理详情列。
+        let (selected, resolved_recipe) = match scope {
+            DetailScope::Frame(camera, seq) => (Some((camera, seq)), None),
+            DetailScope::FrameByCamera(camera, seq) => {
+                let revision = summary
+                    .recipe_revision
+                    .as_deref()
+                    .ok_or("历史配方快照缺失")?;
+                let raw = snapshot_raw(&snapshot, &summary.project_id, revision)?
+                    .ok_or("历史配方快照缺失")?;
+                let recipe = self.history_recipe(raw, &summary.project_id, revision)?;
+                let index = recipe
+                    .inspect
+                    .iter()
+                    .position(|item| item.camera == camera)
+                    .ok_or_else(|| format!("记录里没有相机 {camera} 的原图"))?;
+                (Some((index, seq)), Some(recipe))
+            }
+            DetailScope::Full
+            | DetailScope::Overview
+            | DetailScope::ComparisonOptions
+            | DetailScope::ComparisonInput(_)
+            | DetailScope::WithoutFrameVerdicts => (None, None),
+        };
+        let (judgement, frames, triggers, software_version, recording, burst_judgement) =
+            columns.map_err(db_err)?;
         let raw_snapshot = match summary.recipe_revision.as_deref() {
-            Some(revision) if summary.burst.is_some() => {
-                snapshot_raw(&conn, &summary.project_id, revision)?
+            Some(revision) if summary.burst.is_some() && resolved_recipe.is_none() => {
+                snapshot_raw(&snapshot, &summary.project_id, revision)?
             }
             _ => None,
         };
         let raw_frames = if summary.burst.is_some() {
-            frame_rows_raw(&conn, id, selected)?
+            frame_rows_raw(&snapshot, id, selected)?
         } else {
             Vec::new()
         };
         let retests = {
-            let mut stmt = conn
+            let mut stmt = snapshot
                 .prepare("SELECT id FROM parts WHERE retest_of = ?1 ORDER BY id")
                 .map_err(db_err)?;
             let values = stmt
@@ -1763,33 +2218,61 @@ impl Store {
                 .map_err(db_err)?;
             values
         };
-        drop(conn);
-        let burst = match (burst_judgement, &summary.burst) {
+        snapshot.commit().map_err(db_err)?;
+        let (burst, recipe) = match (burst_judgement, &summary.burst) {
             (Some(judgement), Some(counts)) => {
-                let revision = summary
-                    .recipe_revision
-                    .as_deref()
-                    .ok_or_else(|| format!("记录 {id} 是段配方记录却没有配方快照身份"))?;
-                let recipe = decode_snapshot(raw_snapshot, revision)?
-                    .ok_or_else(|| format!("记录 {id} 的原配方快照缺失"))?;
+                let recipe = match resolved_recipe {
+                    Some(recipe) => recipe,
+                    None => {
+                        let revision = summary
+                            .recipe_revision
+                            .as_deref()
+                            .ok_or_else(|| format!("记录 {id} 是段配方记录却没有配方快照身份"))?;
+                        let raw =
+                            raw_snapshot.ok_or_else(|| format!("记录 {id} 的原配方快照缺失"))?;
+                        self.history_recipe(raw, &summary.project_id, revision)?
+                    }
+                };
                 let judgement: BurstJudgement = serde_json::from_str(&judgement)
                     .map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?;
-                let frames = decode_frame_rows(raw_frames)?;
+                let with_verdicts = matches!(scope, DetailScope::Full | DetailScope::Overview);
+                if (with_verdicts || matches!(scope, DetailScope::ComparisonInput(_)))
+                    && judgement
+                        .regions
+                        .iter()
+                        .any(|result| !result.region.has_ordered_frame_range())
+                {
+                    return Err(format!("记录 {id} 的区域判定损坏：帧组起止序号颠倒"));
+                }
                 let cameras = recipe.plan_cameras();
-                let regions: Vec<_> = judgement.regions.iter().map(|r| r.region.clone()).collect();
-                let metrics: Vec<FrameMetrics> =
-                    frames.iter().filter_map(|f| f.metrics.clone()).collect();
-                let frame_verdicts = if selected.is_none() {
-                    crate::burst_judge::frame_verdicts(
-                        &recipe.path_segments,
-                        &regions,
-                        &metrics,
-                        &cameras,
-                    )
-                } else {
-                    Vec::new()
+                let regions = with_verdicts.then(|| {
+                    judgement
+                        .regions
+                        .iter()
+                        .map(|r| r.region.clone())
+                        .collect::<Vec<_>>()
+                });
+                let verdict_input = regions.as_deref().map(|regions| HistoryFrameVerdictInput {
+                    recipe: &recipe,
+                    regions,
+                    cameras: &cameras,
+                });
+                let (frames, frame_verdicts) = match scope {
+                    DetailScope::ComparisonOptions
+                    | DetailScope::ComparisonInput(HistoryCompareInput::RawImages) => {
+                        self.history_frames_with_metric_cache(id, raw_frames, None)?
+                    }
+                    DetailScope::Overview => {
+                        self.history_frames_with_metric_cache(id, raw_frames, verdict_input)?
+                    }
+                    _ => {
+                        let frames = decode_frame_rows(raw_frames)?;
+                        let verdicts =
+                            verdict_input.map_or_else(Vec::new, |input| input.calculate(&frames));
+                        (frames, verdicts)
+                    }
                 };
-                Some(PartDetailBurst {
+                let burst = PartDetailBurst {
                     segments: recipe.path_segments.clone(),
                     cameras,
                     expected_total: counts.expected_total,
@@ -1798,12 +2281,13 @@ impl Store {
                     judgement,
                     frames,
                     frame_verdicts,
-                })
+                };
+                (Some(burst), Some(recipe))
             }
-            (None, None) => None,
+            (None, None) => (None, None),
             _ => return Err(format!("记录 {id} 的段配方字段不完整")),
         };
-        Ok(PartDetail {
+        let detail = PartDetail {
             summary,
             judgement: serde_json::from_str(&judgement).map_err(|e| e.to_string())?,
             frames: serde_json::from_str(&frames)
@@ -1815,26 +2299,158 @@ impl Store {
             shots: Vec::new(),
             recording,
             burst,
-        })
+        };
+        Ok((detail, recipe))
     }
 
     pub fn id_by_cycle(&self, cycle_id: &str) -> Result<Option<i64>, String> {
-        self.conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT id FROM parts WHERE cycle_id=?1",
-                [cycle_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()
-            .map_err(db_err)
+        Self::find_id_by_cycle(&open_read_only(&self.path)?, cycle_id)
+    }
+
+    fn find_id_by_cycle(conn: &Connection, cycle_id: &str) -> Result<Option<i64>, String> {
+        conn.query_row(
+            "SELECT id FROM parts WHERE cycle_id=?1",
+            [cycle_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(db_err)
     }
 
     pub fn detail_by_cycle(&self, cycle_id: &str) -> Result<Option<PartDetail>, String> {
-        self.id_by_cycle(cycle_id)?
-            .map(|id| self.detail(id))
-            .transpose()
+        let mut conn = open_read_only(&self.path)?;
+        let snapshot = conn.transaction().map_err(db_err)?;
+        let Some(id) = Self::find_id_by_cycle(&snapshot, cycle_id)? else {
+            return Ok(None);
+        };
+        self.detail_from_snapshot(snapshot, id, DetailScope::Full)
+            .map(|(detail, _)| Some(detail))
+    }
+
+    fn history_frames_with_metric_cache(
+        &self,
+        id: i64,
+        raw_frames: Vec<RawFrameRow>,
+        overview: Option<HistoryFrameVerdictInput<'_>>,
+    ) -> Result<(Vec<FrameRecord>, Vec<FrameVerdict>), String> {
+        let cached = self.checked_history_frame_metrics.lock().unwrap().clone();
+        if let Some(cached) = cached.filter(|cached| {
+            cached.part_id == id
+                && cached
+                    .texts
+                    .iter()
+                    .eq(raw_frames.iter().map(|(_, text)| text))
+        }) {
+            match overview {
+                None => {
+                    return Ok((
+                        raw_frames.into_iter().map(|(frame, _)| frame).collect(),
+                        Vec::new(),
+                    ));
+                }
+                Some(input) => {
+                    if let Some(projected) = cached.overview.as_ref().filter(|projected| {
+                        projected.recipe.ptr_eq(&Arc::downgrade(input.recipe))
+                            && projected.regions == input.regions
+                    }) {
+                        let frames = raw_frames
+                            .into_iter()
+                            .zip(&projected.metrics)
+                            .map(|((mut frame, _), metrics)| {
+                                frame.metrics = metrics.clone();
+                                frame
+                            })
+                            .collect();
+                        return Ok((frames, projected.verdicts.clone()));
+                    }
+                }
+            }
+        }
+        let bytes = raw_frames.len() * std::mem::size_of::<Option<String>>()
+            + raw_frames
+                .iter()
+                .filter_map(|(_, text)| text.as_ref())
+                .map(String::capacity)
+                .sum::<usize>();
+        let mut checked = (bytes <= HISTORY_FRAME_METRICS_CACHE_BYTES)
+            .then(|| Vec::with_capacity(raw_frames.len()));
+        let mut frames: Vec<FrameRecord> = raw_frames
+            .into_iter()
+            .map(|(mut frame, text)| {
+                let metrics = decode_frame_metrics(text.as_deref())?;
+                if overview.is_some() {
+                    frame.metrics = metrics;
+                }
+                if let Some(checked) = checked.as_mut() {
+                    checked.push(text);
+                }
+                Ok(frame)
+            })
+            .collect::<Result<_, String>>()?;
+        let verdicts = overview.map_or_else(Vec::new, |input| input.calculate(&frames));
+        if overview.is_some() {
+            for frame in &mut frames {
+                if let Some(metrics) = frame.metrics.as_mut() {
+                    let metrics = Arc::make_mut(metrics);
+                    metrics.widths = Vec::new();
+                    if let Some(evidence) = &mut metrics.measurement_evidence {
+                        evidence.stations = Vec::new();
+                    }
+                    if let Some(evidence) = &mut metrics.mix_evidence {
+                        evidence.omit_observation();
+                    }
+                }
+            }
+        }
+        let next = checked.map(|texts| {
+            let projected = overview.and_then(|input| {
+                HistoryFrameOverview::capture(
+                    input,
+                    &frames,
+                    &verdicts,
+                    HISTORY_FRAME_METRICS_CACHE_BYTES - bytes,
+                )
+            });
+            Arc::new(CheckedHistoryFrameMetrics {
+                part_id: id,
+                texts,
+                overview: projected,
+            })
+        });
+        let previous = std::mem::replace(
+            &mut *self.checked_history_frame_metrics.lock().unwrap(),
+            next,
+        );
+        drop(previous);
+        Ok((frames, verdicts))
+    }
+
+    fn history_recipe(
+        &self,
+        raw: RawSnapshot,
+        project: &str,
+        revision: &str,
+    ) -> Result<Arc<Recipe>, String> {
+        if let Some(cached) = self
+            .history_recipe_snapshot
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|cached| {
+                cached.project == project
+                    && cached.recipe.revision_id == revision
+                    && cached.raw == raw
+            })
+        {
+            return Ok(Arc::clone(&cached.recipe));
+        }
+        let recipe = Arc::new(decode_snapshot(&raw, revision)?);
+        *self.history_recipe_snapshot.lock().unwrap() = Some(HistoryRecipeSnapshot {
+            project: project.to_owned(),
+            raw,
+            recipe: Arc::clone(&recipe),
+        });
+        Ok(recipe)
     }
 
     /// 记录所属项目 `project` 的配方快照：配方编号与修订号只在项目内唯一。
@@ -1844,7 +2460,9 @@ impl Store {
         revision_id: &str,
     ) -> Result<Option<Recipe>, String> {
         let raw = snapshot_raw(&self.conn.lock().unwrap(), project, revision_id)?;
-        decode_snapshot(raw, revision_id)
+        raw.as_ref()
+            .map(|snapshot| decode_snapshot(snapshot, revision_id))
+            .transpose()
     }
 
     /// 一条记录的原配方快照；记录没有配方修订号时为 None。
@@ -1855,10 +2473,10 @@ impl Store {
         }
     }
 
-    /// 段配方记录的逐帧记录，按 (camera, seq) 排序；旧记录为空。
-    pub fn burst_frames(&self, id: i64) -> Result<Vec<FrameRecord>, String> {
-        let rows = frame_rows_raw(&self.conn.lock().unwrap(), id, None)?;
-        decode_frame_rows(rows)
+    pub(crate) fn rejudge_reader(&self) -> Result<RejudgeReader, String> {
+        Ok(RejudgeReader {
+            conn: open_read_only(&self.path)?,
+        })
     }
 
     /// 区域判定为空、但有测过的帧的维护试判件：回写码 0 与区域判定不同，落库时退回了没有区域的摘要。
@@ -1921,58 +2539,27 @@ impl Store {
     }
 
     /// 取出重判候选；ids 为空时按筛选条件。
-    pub fn measurements(
-        &self,
-        q: &HistoryQuery,
-        ids: &[i64],
-        limit: usize,
-    ) -> Result<Vec<StoredMeasurement>, String> {
-        let conn = self.conn.lock().unwrap();
-        let (filter, args) = if ids.is_empty() {
-            Self::filter(q, "p.")
-        } else {
-            (
-                format!(" WHERE p.id IN ({})", vec!["?"; ids.len()].join(",")),
-                ids.iter().map(|&i| SqlValue::Integer(i)).collect(),
-            )
-        };
-        let sql = format!(
-            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, p.burst_judgement, p.project_id FROM parts p{filter} ORDER BY p.ts DESC, p.id DESC LIMIT {limit}"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let rows = stmt
-            .query_map(params_from_iter(args.iter()), |row| {
-                Ok(StoredMeasurement {
-                    id: row.get(0)?,
-                    project_id: row.get(7)?,
-                    ts: row.get(1)?,
-                    sn: row.get(2)?,
-                    recipe_id: row.get(3)?,
-                    recipe_revision: row.get(4)?,
-                    verdict: parse_verdict(&row.get::<_, String>(5)?),
-                    burst: row
-                        .get::<_, Option<String>>(6)?
-                        .map(|text| {
-                            serde_json::from_str(&text).map_err(|e| {
-                                rusqlite::Error::FromSqlConversionFailure(
-                                    6,
-                                    rusqlite::types::Type::Text,
-                                    Box::new(e),
-                                )
-                            })
-                        })
-                        .transpose()?,
-                })
-            })
-            .map_err(db_err)?;
-        rows.collect::<Result<_, _>>().map_err(db_err)
-    }
-
-    pub fn collection_progress(
+    pub fn maintenance_statistics(
         &self,
         scope: HistoryScope,
+    ) -> Result<MaintenanceStatistics, String> {
+        let mut conn = open_read_only(&self.path)?;
+        let snapshot = conn.transaction().map_err(db_err)?;
+        let data = MaintenanceStatistics {
+            collection: self
+                .collection_progress(&snapshot, scope)
+                .unwrap_or_default(),
+            trial: self.trial_progress(&snapshot, scope).unwrap_or_default(),
+        };
+        snapshot.commit().map_err(db_err)?;
+        Ok(data)
+    }
+
+    fn collection_progress(
+        &self,
+        conn: &Connection,
+        scope: HistoryScope,
     ) -> Result<Vec<CollectionProgress>, String> {
-        let conn = self.conn.lock().unwrap();
         let sql = format!("SELECT recipe_id, recording_available, camera_frames FROM parts WHERE project_id = ?1 AND {} AND mode = 'maintenanceCollect' \
             AND recipe_id IS NOT NULL AND recording_directory IS NOT NULL ORDER BY recipe_id", scope.clause(""));
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
@@ -1988,13 +2575,15 @@ impl Store {
         let mut progress: Vec<CollectionProgress> = Vec::new();
         for row in rows {
             let (recipe_id, available, frames) = row.map_err(db_err)?;
-            let frames: Vec<u32> = frames
-                .and_then(|text| serde_json::from_str(&text).ok())
-                .unwrap_or_default();
             let usable = available
                 && frames
-                    .first()
-                    .is_some_and(|&n| n > 0 && frames.iter().all(|&m| m == n));
+                    .as_deref()
+                    .and_then(|text| serde_json::from_str::<Vec<u32>>(text).ok())
+                    .is_some_and(|frames| {
+                        frames
+                            .first()
+                            .is_some_and(|&n| n > 0 && frames.iter().all(|&m| m == n))
+                    });
             if progress
                 .last()
                 .is_none_or(|last| last.recipe_id != recipe_id)
@@ -2011,8 +2600,11 @@ impl Store {
         Ok(progress)
     }
 
-    pub fn trial_progress(&self, scope: HistoryScope) -> Result<Vec<TrialProgress>, String> {
-        let conn = self.conn.lock().unwrap();
+    fn trial_progress(
+        &self,
+        conn: &Connection,
+        scope: HistoryScope,
+    ) -> Result<Vec<TrialProgress>, String> {
         let sql = format!(
             "SELECT recipe_id, recipe_version, verdict, COUNT(*) FROM parts WHERE project_id = ?1 AND {} AND mode = 'maintenanceShadow' \
              AND recipe_id IS NOT NULL AND recipe_version IS NOT NULL GROUP BY recipe_id, recipe_version, verdict \
@@ -2155,15 +2747,22 @@ impl Store {
 
     /// 当前项目自 since 起的正式检测件结论计数。
     pub fn counts_since(&self, since: i64, scope: HistoryScope) -> Result<VerdictCounts, String> {
-        self.query(&HistoryQuery {
-            from: Some(since),
-            project: Some(self.project.clone()),
-            scope,
-            modes: vec![PartMode::Production],
-            limit: 1,
-            ..Default::default()
-        })
-        .map(|p| p.counts)
+        let (filter, args) = Self::filter(
+            &HistoryQuery {
+                from: Some(since),
+                project: Some(self.project.clone()),
+                scope,
+                modes: vec![PartMode::Production],
+                ..Default::default()
+            },
+            "",
+        );
+        let mut conn = self.conn.lock().unwrap();
+        let snapshot = conn.transaction().map_err(db_err)?;
+        let histogram = Self::count_verdicts(&snapshot, &filter, &args)?;
+        snapshot.commit().map_err(db_err)?;
+        let (_, counts) = histogram.summarize(&[]);
+        Ok(counts)
     }
 
     pub(crate) fn comparison_cycle(&self, id: i64) -> Result<Option<String>, String> {
@@ -2176,6 +2775,18 @@ impl Store {
                 |row| row.get(0),
             )
             .optional()
+            .map_err(db_err)
+    }
+
+    pub(crate) fn has_history_before(&self, ts: i64) -> Result<bool, String> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM parts WHERE ts < ?1)",
+                [ts],
+                |row| row.get(0),
+            )
             .map_err(db_err)
     }
 
@@ -2211,12 +2822,11 @@ impl Store {
                 })
                 .collect()
         };
-        let count = tx
-            .execute(
-                &format!("DELETE FROM parts WHERE ts < ?1 AND {kept}"),
-                params![ts, keep],
-            )
-            .map_err(db_err)?;
+        let count = delete_history_rows(
+            &tx,
+            &format!("DELETE FROM parts WHERE ts < ?1 AND {kept}"),
+            params![ts, keep],
+        )?;
         tx.commit().map_err(db_err)?;
         Ok((count, orphaned))
     }
@@ -2241,18 +2851,155 @@ impl Store {
     }
 }
 
+const BURST_JUDGEMENT_BY_ID: &str = "SELECT burst_judgement FROM parts WHERE id = ?1";
+const REJUDGE_BURST_BATCH: usize = 32;
+
+fn decode_recorded_burst(id: i64, text: Option<&str>) -> Result<Option<BurstJudgement>, String> {
+    text.map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| format!("检测记录 {id} 的区域判定损坏：{error}"))
+}
+
+fn read_burst_judgement(
+    stmt: &mut Statement<'_>,
+    id: i64,
+) -> Result<Option<BurstJudgement>, String> {
+    let text: Option<Option<String>> = stmt
+        .query_row([id], |row| row.get(0))
+        .optional()
+        .map_err(db_err)?;
+    decode_recorded_burst(id, text.flatten().as_deref())
+}
+
+impl RejudgeReader {
+    pub(crate) fn measurements(
+        &self,
+        q: &HistoryQuery,
+        ids: &[i64],
+        limit: usize,
+    ) -> Result<
+        RejudgeSelection<impl ExactSizeIterator<Item = Result<StoredMeasurement, String>> + '_>,
+        String,
+    > {
+        let (filter, args) = if ids.is_empty() {
+            Store::filter(q, "p.")
+        } else {
+            (
+                format!(" WHERE p.id IN ({})", vec!["?"; ids.len()].join(",")),
+                ids.iter().map(|&i| SqlValue::Integer(i)).collect(),
+            )
+        };
+        let sql = format!(
+            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, p.project_id FROM parts p{filter} ORDER BY p.ts DESC, p.id DESC LIMIT {}",
+            limit + 1,
+        );
+        let mut stmt = self.conn.prepare(&sql).map_err(db_err)?;
+        let mut candidates = stmt
+            .query_map(params_from_iter(args.iter()), |row| {
+                Ok(StoredMeasurement {
+                    id: row.get(0)?,
+                    project_id: row.get(6)?,
+                    ts: row.get(1)?,
+                    sn: row.get(2)?,
+                    recipe_id: row.get(3)?,
+                    recipe_revision: row.get(4)?,
+                    verdict: parse_verdict(&row.get::<_, String>(5)?),
+                    burst: None,
+                })
+            })
+            .map_err(db_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        let limit_hit = candidates.len() > limit;
+        candidates.truncate(limit);
+        let mut candidates = candidates.into_iter();
+        let mut burst = self.conn.prepare(
+            "SELECT id, burst_judgement FROM parts WHERE id IN (SELECT value FROM json_each(?1))",
+        ).map_err(db_err)?;
+        let mut buffered = HashMap::with_capacity(REJUDGE_BURST_BATCH);
+        let rows = (0..candidates.len()).map(move |index| {
+            if index % REJUDGE_BURST_BATCH == 0 {
+                let ids: Vec<_> = candidates
+                    .as_slice()
+                    .iter()
+                    .take(REJUDGE_BURST_BATCH)
+                    .map(|row| row.id)
+                    .collect();
+                let list = serde_json::to_string(&ids).map_err(|error| error.to_string())?;
+                let entries = burst
+                    .query_map([list], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)))
+                    })
+                    .map_err(db_err)?;
+                for entry in entries {
+                    let (id, raw) = entry.map_err(db_err)?;
+                    buffered.insert(id, raw);
+                }
+            }
+            let mut row = candidates.next().expect("候选迭代器长度不足");
+            let raw = buffered
+                .remove(&row.id)
+                .transpose()
+                .map_err(db_err)?
+                .flatten();
+            row.burst = decode_recorded_burst(row.id, raw.as_deref())?;
+            Ok(row)
+        });
+        Ok(RejudgeSelection { rows, limit_hit })
+    }
+
+    pub(crate) fn burst_judgement(&self, id: i64) -> Result<Option<BurstJudgement>, String> {
+        let mut stmt = self.conn.prepare(BURST_JUDGEMENT_BY_ID).map_err(db_err)?;
+        read_burst_judgement(&mut stmt, id)
+    }
+
+    pub(crate) fn recipe_snapshot(
+        &self,
+        project: &str,
+        revision_id: &str,
+    ) -> Result<Option<Recipe>, String> {
+        snapshot_raw(&self.conn, project, revision_id)?
+            .as_ref()
+            .map(|snapshot| decode_snapshot(snapshot, revision_id))
+            .transpose()
+    }
+
+    /// 段配方记录的逐帧记录，按 (camera, seq) 排序；旧记录为空。
+    pub(crate) fn burst_frames(&self, id: i64) -> Result<Vec<FrameRecord>, String> {
+        let rows = frame_rows_raw(&self.conn, id, None)?;
+        let metrics_bytes: usize = rows
+            .iter()
+            .filter_map(|(_, text)| text.as_ref())
+            .map(String::len)
+            .sum();
+        if rows.len() > 1
+            && metrics_bytes >= 1024 * 1024
+            && std::thread::available_parallelism().is_ok_and(|threads| threads.get() >= 8)
+        {
+            decode_frame_rows_parallel(rows)
+        } else {
+            decode_frame_rows(rows)
+        }
+    }
+}
+
+fn open_read_only(path: &Path) -> Result<Connection, String> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(db_err)?;
+    conn.busy_timeout(Duration::from_secs(2)).map_err(db_err)?;
+    Ok(conn)
+}
+
 /// 本机记录库里出现过的项目编号（只读打开；库还不存在时为空）。新建、导入、复制项目时编号不能与它们重复，
 /// 否则已删除项目的历史会被算到新项目名下。
 pub fn recorded_projects(path: &Path) -> Result<BTreeSet<String>, String> {
     if !path.is_file() {
         return Ok(BTreeSet::new());
     }
-    let conn = Connection::open_with_flags(
-        path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(db_err)?;
-    conn.busy_timeout(Duration::from_secs(2)).map_err(db_err)?;
+    let conn = open_read_only(path)?;
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(db_err)?;

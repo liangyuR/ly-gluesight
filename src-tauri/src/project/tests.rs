@@ -132,6 +132,63 @@ fn referenced_cycles_cover_every_project_and_only_history_rounds() {
 }
 
 #[test]
+fn referenced_cycles_follow_the_last_origin_and_accept_wrapped_rounds() {
+    let data = TempDir::new("reference-origin");
+    add(&data.0, "line-a");
+    let capture = dir(&data.0, "line-a").join("recipe-capture");
+    for (id, document) in [
+        (
+            "duplicate",
+            r#"{"origin":{"kind":"history","cycleId":"overwritten"},"origin":{"kind":"prepared","kind":"history","cycleId":"first","cycleId":"last"}}"#,
+        ),
+        (
+            "cleared",
+            r#"{"origin":{"kind":"history","cycleId":"cleared"},"origin":null}"#,
+        ),
+        (
+            "wrapper",
+            r#"{"\u0024serde_json::private::RawValue":"{\"origin\":{\"kind\":\"history\",\"cycleId\":\"wrapped\"}}"}"#,
+        ),
+    ] {
+        let round = capture.join(id);
+        std::fs::create_dir_all(&round).unwrap();
+        std::fs::write(round.join("round.json"), document).unwrap();
+    }
+    assert_eq!(
+        records::referenced_cycles(&data.0)
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["last", "wrapped"]
+    );
+}
+
+#[test]
+fn malformed_round_metadata_cannot_supply_a_history_reference() {
+    let data = TempDir::new("reference-malformed");
+    add(&data.0, "line-a");
+    let capture = dir(&data.0, "line-a").join("recipe-capture");
+    let too_deep = format!("{}0{}", "[".repeat(160), "]".repeat(160));
+    let origin = r#"{"kind":"history","cycleId":"invalid"}"#;
+    for (id, invalid) in [
+        ("truncated", "[{"),
+        ("surrogate", r#"[{"text":"\uD800"}]"#),
+        ("overflow", "[1e400]"),
+        ("depth", too_deep.as_str()),
+        ("bad-wrapper", r#"[{"$serde_json::private::RawValue":"{"}]"#),
+    ] {
+        let round = capture.join(id);
+        std::fs::create_dir_all(&round).unwrap();
+        std::fs::write(
+            round.join("round.json"),
+            format!(r#"{{"origin":{origin},"discarded":{invalid}}}"#),
+        )
+        .unwrap();
+    }
+    assert!(records::referenced_cycles(&data.0).unwrap().is_empty());
+}
+
+#[test]
 fn feasibility_leftovers_at_root_and_in_projects_then_only_those_files_are_removed() {
     let data = TempDir::new("feasibility");
     add(&data.0, "line-a");

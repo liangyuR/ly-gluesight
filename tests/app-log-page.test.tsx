@@ -1,15 +1,30 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { expect, it, vi } from "vitest";
+import type { OperationProgress } from "../src/features/workspace/operation";
 import AppLogPage from "../src/pages/AppLogPage";
+import { deferred } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
+
+function expectDiagnosticsRequest(days: number, images: "abnormal" | "none") {
+  const args = vi.mocked(invoke).mock.calls.filter(([command]) => command === "diagnostics_export").at(-1)?.[1];
+  expect(args).toMatchObject({
+    taskId: expect.any(String),
+    request: { from: expect.any(Number), to: expect.any(Number), images },
+  });
+  const { from, to } = (args as { request: { from: number; to: number } }).request;
+  expect(to - from).toBe(days * 24 * 60 * 60 * 1000);
+}
 
 it("直接导出失败后重试 → 显示文件路径与未能打包的资料", async () => {
   let firstExport = true;
   vi.mocked(invoke).mockImplementation(async command => {
     if (command === "app_log_tail") return { cursor: 0, lines: [], skipped: false };
+    if (command === "operation_status") return null;
     if (command !== "diagnostics_export") throw new Error("意外调用 " + command);
     if (firstExport) {
       firstExport = false;
@@ -22,10 +37,100 @@ it("直接导出失败后重试 → 显示文件路径与未能打包的资料",
 
   await user.click(screen.getByRole("button", { name: "导出诊断包" }));
   expect(await screen.findByText("导出目录不可写")).toBeVisible();
-  await user.click(screen.getByRole("button", { name: "导出诊断包" }));
+  expectDiagnosticsRequest(1, "abnormal");
+  await user.click(await screen.findByRole("button", { name: "导出诊断包" }));
   expect(await screen.findByText("exports/diagnostics.zip")).toBeVisible();
   expect(screen.getByText("本件原图已清理")).toBeVisible();
   expect(screen.queryByText("导出目录不可写")).not.toBeInTheDocument();
+});
+
+it("选择最近 7 天并关闭原图 → 按所选范围导出诊断包", async () => {
+  const path = "exports/selected-range.zip";
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "app_log_tail") return { cursor: 0, lines: [], skipped: false };
+    if (command === "operation_status") return null;
+    if (command === "diagnostics_export") return { path, notes: [] };
+    throw new Error("意外调用 " + command);
+  });
+  const user = userEvent.setup();
+  render(<AppLogPage />);
+
+  await user.selectOptions(screen.getByLabelText("诊断包时间范围", { selector: "select" }), "7d");
+  const images = screen.getByRole("switch", { name: "附带异常工件原图" });
+  expect(images).toBeChecked();
+  await user.click(images);
+  await user.click(screen.getByRole("button", { name: "导出诊断包" }));
+  expect(await screen.findByText(path)).toBeVisible();
+  expectDiagnosticsRequest(7, "none");
+});
+
+it("打开诊断包所在文件夹失败 → 保留导出结果并可重试", async () => {
+  const path = "exports/reveal.zip";
+  const firstReveal = deferred<void>();
+  let reveals = 0;
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "app_log_tail") return { cursor: 0, lines: [], skipped: false };
+    if (command === "operation_status") return null;
+    if (command === "diagnostics_export") return { path, notes: [] };
+    if (command === "reveal_path") return ++reveals === 1 ? firstReveal.promise : undefined;
+    throw new Error("意外调用 " + command);
+  });
+  const revealed = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "reveal_path");
+  const user = userEvent.setup();
+  render(<AppLogPage />);
+
+  await user.click(screen.getByRole("button", { name: "导出诊断包" }));
+  const reveal = await screen.findByRole("button", { name: "打开所在文件夹" });
+  await user.click(reveal);
+  expect(revealed()).toEqual([["reveal_path", { path }]]);
+  expect(reveal).toBeDisabled();
+
+  await act(async () => { firstReveal.reject(new Error("无法打开导出目录")); });
+  expect(await screen.findByText(/无法打开导出目录/)).toBeVisible();
+  expect(screen.getByText(path)).toBeVisible();
+  await user.click(await screen.findByRole("button", { name: "打开所在文件夹" }));
+  expect(revealed()).toEqual([["reveal_path", { path }], ["reveal_path", { path }]]);
+  expect(screen.queryByText(/无法打开导出目录/)).not.toBeInTheDocument();
+});
+
+it("取消正在打包的诊断导出 → 向当前任务发取消请求并可重试", async () => {
+  let receive!: (event: { payload: OperationProgress }) => void;
+  vi.mocked(listen).mockImplementationOnce(async (_, callback) => {
+    receive = callback as typeof receive;
+    return () => {};
+  });
+  let taskId = "";
+  let rejectExport!: (reason: string) => void;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "app_log_tail") return { cursor: 0, lines: [], skipped: false };
+    if (command === "operation_status") return null;
+    if (command === "operation_cancel") return true;
+    if (command !== "diagnostics_export") throw new Error("意外调用 " + command);
+    if (taskId) return { path: "exports/retry.zip", notes: [] };
+    taskId = String((args as { taskId?: string } | undefined)?.taskId ?? "");
+    return new Promise((_, reject) => { rejectExport = reject; });
+  });
+  const user = userEvent.setup();
+  render(<AppLogPage />);
+
+  await user.click(screen.getByRole("button", { name: "导出诊断包" }));
+  await waitFor(() => expect(taskId).not.toBe(""));
+  act(() => receive({ payload: {
+    taskId, stage: "packing_records", completed: 0, total: 0, failed: 0, skipped: 0, elapsedMs: 500,
+  } }));
+  expect(screen.getByRole("status", { name: "导出诊断包进度" })).toHaveTextContent("正在打包检测记录");
+  expect(screen.getByRole("progressbar", { name: "导出诊断包完成进度" })).not.toHaveAttribute("value");
+  await user.click(screen.getByRole("button", { name: "取消" }));
+  expect(invoke).toHaveBeenCalledWith("operation_cancel", { taskId });
+  expect(screen.getByRole("status", { name: "导出诊断包进度" })).toHaveTextContent("正在取消导出");
+
+  await act(async () => { rejectExport("OPERATION_CANCELLED: 任务已取消，原结果未更改"); });
+  expect(screen.getByRole("status", { name: "导出诊断包进度" })).toHaveTextContent("已取消导出");
+  expect(screen.queryByText("诊断包已导出")).not.toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  await user.click(await screen.findByRole("button", { name: "导出诊断包" }));
+  expect(await screen.findByText("exports/retry.zip")).toBeVisible();
+  expect(screen.queryByRole("status", { name: "导出诊断包进度" })).not.toBeInTheDocument();
 });
 
 it("向上查看旧日志 → 停止刷新，回到最新后从原游标继续", async () => {

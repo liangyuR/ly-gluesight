@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Semaphore;
 
@@ -26,7 +26,10 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
             sizes.len()
         ));
     }
-    let set = vision::CorridorSet::build(recipe, sizes)?;
+    Ok(frozen_graphs(&vision::CorridorSet::build(recipe, sizes)?))
+}
+
+pub(crate) fn frozen_graphs(set: &vision::CorridorSet) -> Value {
     // 灰度图沿用原来的形状（不记模板 id），胶色图记下用的是哪张模板
     let entry = |template: &vision::template::Template, mut v: Value| {
         if template.id.ends_with("_color") {
@@ -34,23 +37,29 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
         }
         v
     };
-    let mut templates =
-        json!({ vision::template::corridor().id: vision::template::corridor().doc });
+    let mut templates = Map::new();
+    let mut register_template = |template: &vision::template::Template| {
+        templates
+            .entry(template.id)
+            .or_insert_with(|| template.doc.clone());
+    };
+    register_template(vision::template::corridor());
     let graphs: Vec<Value> = set.iter()
         .map(|c| {
-            templates[c.template.id] = c.template.doc.clone();
+            register_template(c.template);
             entry(c.template, json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "params": c.params, "judge": c.judge}))
         })
         .collect();
-    let mut doc = json!({"schemaVersion": 5, "version": GRAPH_VERSION_BURST, "graphs": graphs});
+    let mut doc = json!({"schemaVersion": 5, "version": GRAPH_VERSION_BURST});
+    doc["graphs"] = Value::Array(graphs);
     let headings: Vec<Value> = set.headings()
         .map(|h| {
-            templates[h.template.id] = h.template.doc.clone();
+            register_template(h.template);
             entry(h.template, json!({"index": h.camera_idx, "camera": h.camera, "segment": h.segment, "size": h.size, "params": h.params, "judge": h.judge}))
         })
         .collect();
     if !headings.is_empty() {
-        doc["headings"] = json!(headings);
+        doc["headings"] = Value::Array(headings);
     }
     let mut mixes = Vec::new();
     for corridor in set.iter() {
@@ -58,9 +67,9 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
             .get(corridor.camera_idx, corridor.segment)
             .and_then(|g| g.mix_plan())
         {
-            templates["mix"] = vision::template::mix().doc.clone();
+            register_template(vision::template::mix());
             if plan.retry.is_some() {
-                templates["mix_retrack"] = vision::template::mix_retrack().doc.clone();
+                register_template(vision::template::mix_retrack());
             }
             let mut entry = plan.frozen();
             entry["index"] = json!(corridor.camera_idx);
@@ -69,16 +78,17 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
         }
     }
     if !mixes.is_empty() {
-        doc["mix"] = json!(mixes);
+        doc["mix"] = Value::Array(mixes);
     }
-    doc["templates"] = templates;
-    Ok(doc)
+    doc["templates"] = Value::Object(templates);
+    doc
 }
 
 pub struct Prepared {
     pub bundle: ReleaseBundle,
     pub recipe: Arc<Recipe>,
     engine: Arc<Engine>,
+    acquisition: Vec<Option<Value>>,
     /// 按（计划相机下标, 段号）的走廊测量图（D-SB-45）
     corridors: vision::CorridorSet,
     /// 预热时在自己的示教帧上没测成的（计划相机下标, 段号）与原因：生产不测，落在里面的帧记未测（D-SB-59）
@@ -95,7 +105,7 @@ impl Prepared {
         engine: Arc<Engine>,
         expected: &Recipe,
     ) -> Result<Self, String> {
-        bundle.verify()?;
+        let verified = bundle.verified()?;
         if bundle.manifest.schema_version != RELEASE_SCHEMA_BURST {
             return Err(format!("段配方需要按段与相机组织的发布包（格式版本 {RELEASE_SCHEMA_BURST}），请重新示教、验证并发布"));
         }
@@ -118,8 +128,9 @@ impl Prepared {
         }
         let mut sizes = Vec::with_capacity(recipe.inspect.len());
         let mut channels = Vec::with_capacity(recipe.inspect.len());
+        let mut acquisition = Vec::with_capacity(recipe.inspect.len());
         for (idx, inspect) in recipe.inspect.iter().enumerate() {
-            let resource = bundle.camera(idx)?;
+            let resource = verified.camera(idx)?;
             sizes.push(resource.size);
             channels.push(match resource.corridors.first() {
                 Some(corridor) => crate::image_file::load_channels(&corridor.image)?,
@@ -129,6 +140,7 @@ impl Prepared {
                 &crate::fsio::read_text(&resource.calibration).map_err(|e| e.to_string())?,
             )
             .map_err(|e| format!("发布包标定无效：{e}"))?;
+            acquisition.push(calibration.get("acquisition").cloned());
             let scale = calibration["mmPerPx"]
                 .as_f64()
                 .ok_or("发布包标定没有有效像素当量")?;
@@ -156,10 +168,22 @@ impl Prepared {
             bundle,
             recipe,
             engine,
+            acquisition,
             corridors,
             untested: BTreeMap::new(),
             measurable: 0,
         })
+    }
+
+    pub fn check_configured_acquisition(
+        &self,
+        configs: &[crate::camera::CameraConfig],
+    ) -> Result<(), String> {
+        for (inspect, expected) in self.recipe.inspect.iter().zip(&self.acquisition) {
+            let config = configured_camera(configs, &inspect.camera)?;
+            check_acquisition_tag(config, expected.as_ref())?;
+        }
+        Ok(())
     }
 
     /// 这一（相机, 段）预热没测成、生产不测时的原因。
@@ -587,11 +611,12 @@ impl ProductionHost {
     }
 }
 
-/// 已预热好的发布包里不测的段（D-SB-59）：部分不测返回说明；一段都测不了返回 Err；没预热好或全部能测为 Ok(None)。
-pub fn coverage(app: &AppHandle, recipe: &Recipe) -> Result<Option<String>, String> {
-    let Some(prepared) = app.state::<ProductionHost>().prepared(&warmup_key(recipe)) else {
-        return Ok(None);
-    };
+pub fn prepared_recipe(app: &AppHandle, recipe: &Recipe) -> Option<Arc<Prepared>> {
+    app.state::<ProductionHost>().prepared(&warmup_key(recipe))
+}
+
+/// 已预热好的发布包里不测的段（D-SB-59）：部分不测返回说明；一段都测不了返回 Err。
+pub fn coverage(prepared: &Prepared) -> Result<Option<String>, String> {
     let untested = prepared.untested_reasons();
     if untested.is_empty() {
         Ok(None)
@@ -639,26 +664,46 @@ pub fn acquisition_tag(config: &crate::camera::CameraConfig) -> Value {
     serde_json::json!({ "triggerSource": config.trigger_source, "triggerActivation": config.trigger_activation, "frameRate": config.frame_rate })
 }
 
+fn configured_camera<'a>(
+    configs: &'a [crate::camera::CameraConfig],
+    id: &str,
+) -> Result<&'a crate::camera::CameraConfig, String> {
+    configs
+        .iter()
+        .find(|c| c.id == id)
+        .ok_or_else(|| format!("相机 {id} 不存在"))
+}
+
+fn check_acquisition_tag(
+    config: &crate::camera::CameraConfig,
+    expected: Option<&Value>,
+) -> Result<(), String> {
+    if expected != Some(&acquisition_tag(config)) {
+        return Err(format!(
+            "相机 {} 的触发方式或帧率与发布标定不一致，请恢复参数或重新标定、验证并发布",
+            config.id
+        ));
+    }
+    Ok(())
+}
+
 fn check_acquisition(
     bundle: &ReleaseBundle,
     configs: &[crate::camera::CameraConfig],
 ) -> Result<(), String> {
+    let mut verified = None;
     for (index, inspect) in bundle.recipe.inspect.iter().enumerate() {
-        let config = configs
-            .iter()
-            .find(|c| c.id == inspect.camera)
-            .ok_or_else(|| format!("相机 {} 不存在", inspect.camera))?;
+        let config = configured_camera(configs, &inspect.camera)?;
+        let verified = match verified {
+            Some(ref verified) => verified,
+            None => verified.insert(bundle.verified()?),
+        };
         let calibration: Value = serde_json::from_str(
-            &crate::fsio::read_text(&bundle.camera(index)?.calibration)
+            &crate::fsio::read_text(&verified.camera(index)?.calibration)
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        if calibration.get("acquisition") != Some(&acquisition_tag(config)) {
-            return Err(format!(
-                "相机 {} 的触发方式或帧率与发布标定不一致，请恢复参数或重新标定、验证并发布",
-                inspect.camera
-            ));
-        }
+        check_acquisition_tag(config, calibration.get("acquisition"))?;
     }
     Ok(())
 }

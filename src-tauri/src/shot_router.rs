@@ -184,6 +184,7 @@ impl Policy {
     }
 
     /// 离线产线：另外认模拟、样本集相机的计数。
+    #[cfg(test)]
     pub fn burst_offline(counter_after_open: Option<u64>) -> Self {
         Self {
             trusted: vec![
