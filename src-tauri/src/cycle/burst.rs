@@ -473,6 +473,20 @@ pub(super) fn empty_record(recipe: &Recipe, judgement: &Judgement) -> BurstRecor
 }
 
 impl Part {
+    pub(super) fn next_drain_wake(&self, now: Instant) -> Option<Instant> {
+        let end = self.end_at?;
+        let gate_deadline = self
+            .gate
+            .as_ref()
+            .zip(self.gate_guard)
+            .and_then(|(gate, guard)| gate.closed_since(&self.cams, now)?.checked_add(guard));
+        [end.checked_add(self.drain_timeout), gate_deadline]
+            .into_iter()
+            .flatten()
+            .filter(|deadline| *deadline > now)
+            .min()
+    }
+
     /// 收尾截止：partEnd 后等满 drain_timeout；或本件相机都看到 Line0 门控已关闭、又过了余量（D-SB-54：门控关了不会再曝光，
     /// 余量盖住最后一帧从曝光到收到的约 39 ms），提前截止。
     ///

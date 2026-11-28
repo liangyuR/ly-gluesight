@@ -608,6 +608,7 @@ impl CycleHost {
         }
         tauri::async_runtime::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(20));
+            let mut drain_wake = None;
             machine.publish();
             loop {
                 tokio::select! {
@@ -616,7 +617,23 @@ impl CycleHost {
                         None => break,
                     },
                     Some(frame) = frames.recv() => machine.on_frame(frame),
-                    _ = tick.tick() => machine.on_tick().await,
+                    _ = async {
+                        if let Some(deadline) = drain_wake {
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                        } else {
+                            std::future::pending().await
+                        }
+                    } => {
+                        drain_wake = None;
+                        machine.on_tick().await;
+                    },
+                    _ = tick.tick() => {
+                        machine.on_tick().await;
+                        drain_wake = match (machine.phase, &machine.part) {
+                            (Phase::Drain, Some(part)) => part.next_drain_wake(Instant::now()),
+                            _ => None,
+                        };
+                    },
                 }
                 // 快照最多 20 次/秒
                 if machine.dirty && machine.published.elapsed() >= Duration::from_millis(50) {
