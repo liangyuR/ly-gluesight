@@ -310,6 +310,60 @@ fn failed_round_reads_only_frames_present_in_its_camera_log() {
 }
 
 #[test]
+fn complete_round_rejects_a_missing_coordinate_that_was_actually_recorded() {
+    let root = root();
+    let mut round = patched(
+        &complete_round(&root),
+        json!({"origin": {"kind": "prepared", "label": "缺帧坐标"}}),
+    );
+    let log = root.join(ROUND).join(FRAMES_FILE);
+    let text = std::fs::read_to_string(&log).unwrap();
+    let kept: Vec<_> = text
+        .lines()
+        .filter(|line| {
+            let frame: FrameLine = serde_json::from_str(line).unwrap();
+            (frame.camera, frame.seq) != (0, 2)
+        })
+        .collect();
+    std::fs::write(&log, kept.join("\n")).unwrap();
+    round["cameras"][0]["receivedCount"] = json!(1);
+    round["cameraFrames"] = json!([1, 2, 2]);
+    round["lossAlarms"] = json!(loss_alarms(&[1, 2, 2]));
+    round["missingFrames"] = json!([{"camera": 0, "seq": 2}]);
+    round["incompleteGroups"] = json!([2]);
+    write_round(&root, &round);
+    let host = RecipeCaptureHost::open(root.clone(), no_recordings()).unwrap();
+    assert!(host.burst_frame_path(ROUND, "cam2", 2).is_ok());
+
+    round["missingFrames"][0]["seq"] = json!(1);
+    round["incompleteGroups"] = json!([1]);
+    write_round(&root, &round);
+    assert!(host.burst_frame_path(ROUND, "cam2", 2).is_err());
+}
+
+#[test]
+fn unreadable_frame_log_is_reported_before_an_earlier_invalid_frame() {
+    let root = root();
+    let round = patched(
+        &complete_round(&root),
+        json!({"origin": {"kind": "prepared", "label": "日志解码错误"}}),
+    );
+    write_round(&root, &round);
+    let log = root.join(ROUND).join(FRAMES_FILE);
+    let existing = std::fs::read_to_string(&log).unwrap();
+    let mut first: FrameLine = serde_json::from_str(existing.lines().next().unwrap()).unwrap();
+    first.width = 0;
+    std::fs::write(
+        &log,
+        format!("{}\n{{", serde_json::to_string(&first).unwrap()),
+    )
+    .unwrap();
+    let host = RecipeCaptureHost::open(root, no_recordings()).unwrap();
+    let error = host.burst_frame_path(ROUND, "cam1", 1).unwrap_err();
+    assert!(error.starts_with("采集帧记录无法读取"), "{error}");
+}
+
+#[test]
 fn frame_read_after_image_cleanup_rejects_the_missing_image() {
     let root = root();
     let round = patched(

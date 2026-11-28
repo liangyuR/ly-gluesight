@@ -8,6 +8,7 @@
 //!   `frames.jsonl`，帧原图不复制也不链接，按 `origin` 的 cycleId 经检测记录库查到录制目录再读（[`RecordingLookup`]），
 //!   录制可在任意盘；format 3 的旧轮次原图在本轮目录（硬链接或复制），本轮目录缺图时同样按来源历史件读录制原图。
 
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
@@ -465,9 +466,9 @@ impl RecipeCaptureHost {
                 Some(round) => round,
                 None => parse_round(metadata_text(&round_bytes)?)?,
             };
-            let lines = parse_frame_lines(metadata_text(&frames_bytes)?)?;
+            let lines = frame_lines(metadata_text(&frames_bytes)?);
             let saved =
-                validate_record(round_id, &round, Some(&lines))?.ok_or("采集帧记录不存在")?;
+                validate_record(round_id, &round, Some(lines))?.ok_or("采集帧记录不存在")?;
             let saved = round.camera_ids().into_iter().zip(saved).collect();
             let validated = Arc::new(ValidatedRoundIndex { round, saved });
             if round_bytes.len() <= ROUND_INDEX_CACHE_MAX_HEADER_BYTES
@@ -586,11 +587,15 @@ impl RecipeCaptureHost {
         let lines = if deep {
             let text =
                 crate::fsio::read_text(&checked_frames_path(dir)?).map_err(|e| e.to_string())?;
-            Some(parse_frame_lines(&text)?)
+            Some(frame_lines(&text).collect::<Result<Vec<_>, _>>()?)
         } else {
             None
         };
-        let _ = validate_record(round_id, &round, lines.as_deref())?;
+        let _ = validate_record(
+            round_id,
+            &round,
+            lines.as_ref().map(|lines| lines.iter().map(Ok)),
+        )?;
         Ok((round, lines))
     }
 }
@@ -613,19 +618,42 @@ fn parse_round(text: &str) -> Result<CaptureRoundV2, String> {
     serde_json::from_str(text).map_err(|e| format!("采集记录无法读取：{e}"))
 }
 
-fn parse_frame_lines(text: &str) -> Result<Vec<FrameLine>, String> {
+fn frame_lines(text: &str) -> impl Iterator<Item = Result<FrameLine, String>> + '_ {
     text.lines()
         .map(|line| serde_json::from_str(line).map_err(|e| format!("采集帧记录无法读取：{e}")))
-        .collect()
 }
 
 /// 核对新轮次记录：身份、相机、统计自洽、各状态应有的字段；给了 frames.jsonl 时逐行核对路径、相机、seq 与帧计数，
 /// 完整轮次还要求统计与 frames.jsonl 一致（防止改写记录伪造帧或把图像指到别处）。
-fn validate_record(
+fn validate_record<F: Borrow<FrameLine>>(
     expected_id: &str,
     round: &CaptureRoundV2,
-    lines: Option<&[FrameLine]>,
+    lines: Option<impl IntoIterator<Item = Result<F, String>>>,
 ) -> Result<Option<Vec<BTreeSet<u64>>>, String> {
+    let metadata = validate_round_metadata(expected_id, round);
+    let Some(lines) = lines else {
+        metadata?;
+        return Ok(None);
+    };
+    let mut checked =
+        metadata.map(|_| (vec![BTreeSet::new(); round.cameras.len()], BTreeMap::new()));
+    for line in lines {
+        let line = line?;
+        // 留下首个校验错误，继续解码余行，保留 JSONL 解码错误优先的顺序。
+        if let Ok((saved, baselines)) = &mut checked {
+            if let Err(error) = validate_frame_line(round, line.borrow(), saved, baselines) {
+                checked = Err(error);
+            }
+        }
+    }
+    let (saved, _) = checked?;
+    if round.state == CaptureState::Complete && !matches_complete_round(round, &saved) {
+        return Err("完整采集的统计与已写盘的帧不一致".into());
+    }
+    Ok(Some(saved))
+}
+
+fn validate_round_metadata(expected_id: &str, round: &CaptureRoundV2) -> Result<(), String> {
     let cameras = &round.cameras;
     let n = cameras.len();
     let format_ok = (round.format == FORMAT && round.history_cycle().is_some())
@@ -644,33 +672,35 @@ fn validate_record(
     {
         return Err("采集记录身份或相机无效".into());
     }
+    let mut missing_counts = [0u64; MAX_CAMERAS];
     let missing_ok = round
         .missing_frames
         .windows(2)
         .all(|w| (w[0].seq, w[0].camera) < (w[1].seq, w[1].camera))
-        && round
-            .missing_frames
-            .iter()
-            .all(|m| m.camera < n && (1..=round.group_count).contains(&m.seq));
-    let mut incomplete: Vec<u64> = round.missing_frames.iter().map(|m| m.seq).collect();
-    incomplete.dedup();
+        && round.missing_frames.iter().all(|m| {
+            if m.camera >= n || !(1..=round.group_count).contains(&m.seq) {
+                return false;
+            }
+            missing_counts[m.camera] += 1;
+            true
+        });
+    let incomplete = round
+        .missing_frames
+        .chunk_by(|a, b| a.seq == b.seq)
+        .map(|group| group[0].seq);
     if round.group_count > MAX_SEQ
         || round.camera_frames.len() != n
         || !missing_ok
-        || incomplete != round.incomplete_groups
+        || !incomplete.eq(round.incomplete_groups.iter().copied())
         || cameras
             .iter()
             .zip(&round.camera_frames)
             .any(|(c, &frames)| c.received_count != frames)
-        || round.camera_frames.iter().enumerate().any(|(i, &frames)| {
-            frames as u64
-                + round
-                    .missing_frames
-                    .iter()
-                    .filter(|m| m.camera == i)
-                    .count() as u64
-                != round.group_count
-        })
+        || round
+            .camera_frames
+            .iter()
+            .zip(missing_counts)
+            .any(|(&frames, missing)| u64::from(frames) + missing != round.group_count)
         || round.loss_alarms != loss_alarms(&round.camera_frames)
     {
         return Err("采集记录的帧组、缺帧或丢帧告警统计不自洽".into());
@@ -722,45 +752,60 @@ fn validate_record(
     if !terminal_ok {
         return Err("采集记录的状态与 PLC 开始、结束或失败原因不一致".into());
     }
-    let Some(lines) = lines else { return Ok(None) };
-    let mut saved = vec![BTreeSet::new(); n];
-    let mut baselines: BTreeMap<usize, u64> = BTreeMap::new();
-    for line in lines {
-        let camera = cameras
-            .get(line.camera)
-            .ok_or("采集帧记录引用了本轮之外的相机")?;
-        if !(1..=MAX_SEQ).contains(&line.seq) || line.width == 0 || line.height == 0 {
-            return Err("采集帧记录的帧组序号或尺寸无效".into());
-        }
-        if line.path != line_path(round, &camera.camera_id, line.seq) {
-            return Err("采集帧记录的图像路径与轮次目录不一致".into());
-        }
-        if !saved[line.camera].insert(line.seq) {
-            return Err("采集帧记录重复".into());
-        }
-        let baseline = line
-            .frame_counter
-            .checked_sub(line.seq)
-            .ok_or("采集帧记录的帧计数小于帧组序号")?;
-        if *baselines.entry(line.camera).or_insert(baseline) != baseline {
-            return Err(format!(
-                "相机 {} 的帧计数与帧组序号对不上",
-                camera.camera_id
-            ));
-        }
+    Ok(())
+}
+
+fn validate_frame_line(
+    round: &CaptureRoundV2,
+    line: &FrameLine,
+    saved: &mut [BTreeSet<u64>],
+    baselines: &mut BTreeMap<usize, u64>,
+) -> Result<(), String> {
+    let camera = round
+        .cameras
+        .get(line.camera)
+        .ok_or("采集帧记录引用了本轮之外的相机")?;
+    if !(1..=MAX_SEQ).contains(&line.seq) || line.width == 0 || line.height == 0 {
+        return Err("采集帧记录的帧组序号或尺寸无效".into());
     }
-    if round.state == CaptureState::Complete {
-        let expected = summarize(round.group_count, &saved);
-        if saved
-            .iter()
-            .any(|s| s.last().is_some_and(|&seq| seq > round.group_count))
-            || expected.camera_frames != round.camera_frames
-            || expected.missing_frames != round.missing_frames
-        {
-            return Err("完整采集的统计与已写盘的帧不一致".into());
-        }
+    if line.path != line_path(round, &camera.camera_id, line.seq) {
+        return Err("采集帧记录的图像路径与轮次目录不一致".into());
     }
-    Ok(Some(saved))
+    if !saved[line.camera].insert(line.seq) {
+        return Err("采集帧记录重复".into());
+    }
+    let baseline = line
+        .frame_counter
+        .checked_sub(line.seq)
+        .ok_or("采集帧记录的帧计数小于帧组序号")?;
+    if *baselines.entry(line.camera).or_insert(baseline) != baseline {
+        return Err(format!(
+            "相机 {} 的帧计数与帧组序号对不上",
+            camera.camera_id
+        ));
+    }
+    Ok(())
+}
+
+fn matches_complete_round(round: &CaptureRoundV2, saved: &[BTreeSet<u64>]) -> bool {
+    if saved
+        .iter()
+        .zip(&round.camera_frames)
+        .any(|(seqs, &count)| {
+            seqs.len() != count as usize || seqs.last().is_some_and(|&seq| seq > round.group_count)
+        })
+    {
+        return false;
+    }
+    // 每台相机的实收与缺帧数已覆盖全轮，核对两个集合互斥即可。
+    let mut recorded: Vec<_> = saved.iter().map(|seqs| seqs.iter().peekable()).collect();
+    round.missing_frames.iter().all(|missing| {
+        let seqs = &mut recorded[missing.camera];
+        while seqs.peek().is_some_and(|&&seq| seq < missing.seq) {
+            seqs.next();
+        }
+        seqs.peek().is_none_or(|&&seq| seq != missing.seq)
+    })
 }
 
 /// 启动时恢复：进行中的轮次按 frames.jsonl 重算统计（容忍末行写了一半），判为应用退出中断。

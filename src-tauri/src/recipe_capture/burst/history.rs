@@ -169,7 +169,7 @@ impl RecipeCaptureHost {
             origin: Some(origin),
         };
         apply(&mut round, summary);
-        let _ = validate_record(&round.round_id, &round, Some(&lines))?;
+        let _ = validate_record(&round.round_id, &round, Some(lines.iter().map(Ok)))?;
         self.save_burst(&round)?;
         Ok(round)
     }
