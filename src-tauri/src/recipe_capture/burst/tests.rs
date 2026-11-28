@@ -27,6 +27,10 @@ fn root() -> PathBuf {
 /// 盘上一轮原图在本轮目录的完整旧轮次（format 3）：cam1–cam3 各 GROUPS 帧（像素值为帧组序号），写好图像与 frames.jsonl；
 /// 返回 round.json 内容供用例改写后写入。
 fn complete_round(root: &Path) -> Value {
+    complete_round_with_groups(root, GROUPS)
+}
+
+fn complete_round_with_groups(root: &Path, groups: u64) -> Value {
     let dir = root.join(ROUND);
     let mut lines = String::new();
     let mut saved = vec![BTreeSet::new(); 3];
@@ -34,7 +38,7 @@ fn complete_round(root: &Path) -> Value {
         .map(|camera| {
             let camera_id = format!("cam{}", camera + 1);
             std::fs::create_dir_all(dir.join(&camera_id)).unwrap();
-            for seq in 1..=GROUPS {
+            for seq in 1..=groups {
                 let path = frame_rel_path(&camera_id, seq);
                 crate::image_file::save_pgm(
                     &dir.join(&path),
@@ -88,7 +92,7 @@ fn complete_round(root: &Path) -> Value {
         simulated: false,
         origin: None,
     };
-    apply(&mut round, summarize(GROUPS, &saved));
+    apply(&mut round, summarize(groups, &saved));
     serde_json::to_value(&round).unwrap()
 }
 
@@ -272,6 +276,62 @@ fn old_history_round_without_local_images_reads_the_source_recording() {
     assert!(host.images_unavailable(ROUND).unwrap().is_some());
     assert!(host.burst_frame_path(ROUND, "cam2", 2).is_err());
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn long_recording_availability_keeps_the_first_missing_frame_diagnostic() {
+    let root = root();
+    let groups = (FRAME_AVAILABILITY_BATCH_MIN / 3 + 2) as u64;
+    let round = patched(
+        &complete_round_with_groups(&root, groups),
+        json!({"format": FORMAT, "origin": {"kind": "history", "cycleId": "cycle-a", "recordId": 7}}),
+    );
+    write_round(&root, &round);
+    let dir = root.join(ROUND);
+    let recording = root.join("records").join("20261107_cycle_cycle-a");
+    std::fs::create_dir_all(&recording).unwrap();
+    let log = dir.join(FRAMES_FILE);
+    let mut lines = String::new();
+    for text in std::fs::read_to_string(&log).unwrap().lines() {
+        let mut line: FrameLine = serde_json::from_str(text).unwrap();
+        let local = dir.join(&line.path);
+        line.path = recording_file(&format!("cam{}", line.camera + 1), line.seq);
+        std::fs::rename(local, recording.join(&line.path)).unwrap();
+        lines.push_str(&serde_json::to_string(&line).unwrap());
+        lines.push('\n');
+    }
+    std::fs::write(&log, lines).unwrap();
+    let source = recording.clone();
+    let host = RecipeCaptureHost::open(root, Arc::new(move |_| Ok(Some(source.clone())))).unwrap();
+
+    let gsr_pgm = recording.join(recording_file("cam1", groups - 2));
+    let encoded = crate::image_file::gsr::encode(&std::fs::read(&gsr_pgm).unwrap()).unwrap();
+    std::fs::write(gsr_pgm.with_extension("gsr"), encoded).unwrap();
+    std::fs::remove_file(gsr_pgm).unwrap();
+    assert_eq!(host.images_unavailable(ROUND).unwrap(), None);
+
+    let name = recording_file("cam1", groups - 1);
+    let plain = recording.join(&name);
+    let upper = recording.join(name.to_ascii_uppercase());
+    let temp = recording.join("renaming.tmp");
+    std::fs::rename(&plain, &temp).unwrap();
+    std::fs::rename(&temp, &upper).unwrap();
+    assert_eq!(
+        host.images_unavailable(ROUND).unwrap().is_none(),
+        crate::image_file::exists(&plain)
+    );
+    std::fs::rename(&upper, &temp).unwrap();
+    std::fs::rename(&temp, &plain).unwrap();
+
+    let first_missing = recording.join(recording_file("cam1", groups));
+    std::fs::remove_file(&first_missing).unwrap();
+    std::fs::create_dir(first_missing).unwrap();
+    std::fs::remove_file(recording.join(recording_file("cam2", 1))).unwrap();
+    let reason = host.images_unavailable(ROUND).unwrap().unwrap();
+    assert!(
+        reason.contains(&format!("cam1 第 {groups} 帧组")),
+        "{reason}"
+    );
 }
 
 #[test]

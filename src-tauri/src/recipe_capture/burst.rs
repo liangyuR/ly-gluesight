@@ -9,7 +9,7 @@
 //!   录制可在任意盘；format 3 的旧轮次原图在本轮目录（硬链接或复制），本轮目录缺图时同样按来源历史件读录制原图。
 
 use std::borrow::Borrow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use super::*;
 use crate::frame_group::{loss_alarms, LossAlarm};
@@ -24,6 +24,8 @@ pub const MAX_SEQ: u64 = crate::plan::MAX_EXPECTED_TOTAL as u64;
 const FRAMES_FILE: &str = "frames.jsonl";
 const ROUND_INDEX_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
 const ROUND_INDEX_CACHE_MAX_HEADER_BYTES: usize = 1024 * 1024;
+const FRAME_AVAILABILITY_BATCH_MIN: usize = 64;
+const FRAME_AVAILABILITY_DIRECT_PREFIX: usize = 16;
 
 /// 某台相机（本轮相机下标）缺某个帧组的帧。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -365,24 +367,69 @@ impl BurstFrameIndex {
 
     /// 有帧的原图读不到时给出原因（录制已清理、记录不在本机等）；只查文件在不在，不读图。
     pub fn unavailable(&self) -> Option<String> {
-        for (camera_id, seqs) in &self.validated.saved {
-            for &seq in seqs {
-                if self.local(camera_id, seq).is_some() {
-                    continue;
-                }
-                let dir = match self.recording() {
-                    Ok(dir) => dir,
-                    Err(error) => return Some(error),
-                };
-                if !crate::image_file::exists(&dir.join(recording_file(camera_id, seq))) {
-                    return Some(format!(
-                        "示教件原图不可用：录制里缺相机 {camera_id} 第 {seq} 帧组的原图"
-                    ));
-                }
+        let recording_only = self.round().references_recording();
+        let frame_count: usize = self.validated.saved.values().map(BTreeSet::len).sum();
+        let mut present = None;
+        let frames = self
+            .validated
+            .saved
+            .iter()
+            .flat_map(|(camera, seqs)| seqs.iter().map(move |&seq| (camera, seq)));
+        for (position, (camera_id, seq)) in frames.enumerate() {
+            if !recording_only && self.local(camera_id, seq).is_some() {
+                continue;
+            }
+            let dir = match self.recording() {
+                Ok(dir) => dir,
+                Err(error) => return Some(error),
+            };
+            if recording_only
+                && frame_count > FRAME_AVAILABILITY_BATCH_MIN
+                && position == FRAME_AVAILABILITY_DIRECT_PREFIX
+            {
+                present = recording_file_stems(dir, frame_count);
+            }
+            let pgm = recording_file(camera_id, seq);
+            let confirmed = present
+                .as_ref()
+                .zip(pgm.strip_suffix(".pgm"))
+                .is_some_and(|(stems, stem)| stems.contains(stem));
+            if !confirmed && !crate::image_file::exists(&dir.join(pgm)) {
+                return Some(format!(
+                    "示教件原图不可用：录制里缺相机 {camera_id} 第 {seq} 帧组的原图"
+                ));
             }
         }
         None
     }
+}
+
+fn recording_file_stems(dir: &Path, frame_count: usize) -> Option<HashSet<String>> {
+    let mut present = HashSet::new();
+    let limit = frame_count.saturating_mul(2).saturating_add(32);
+    for entry in std::fs::read_dir(dir).ok()?.take(limit).flatten() {
+        let Ok(mut name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if !name.ends_with(".pgm") && !name.ends_with(".gsr") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                continue;
+            }
+        }
+        if metadata.is_file() {
+            name.truncate(name.len() - 4);
+            present.insert(name);
+        }
+    }
+    Some(present)
 }
 
 impl RecipeCaptureHost {
