@@ -1,16 +1,16 @@
 import { errorText } from "../../lib/errors";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Copy, Ellipsis, Package, PackageOpen, Plus, Search, Trash2 } from "lucide-react";
 import { Button, Dialog, EmptyState, IconButton, Menu, NumberField, TextField } from "qing-steel";
 import { desktopAvailable } from "../../lib/desktop";
 import { recipeApi, type UnavailableRecipe } from "../cycle/api";
-import type { RecipeDoc } from "../cycle/types";
+import type { RecipeDoc, RecipeSummary } from "../cycle/types";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar } from "./components";
 import { PackageExportDialog, PackageImportDialog } from "./PackageDialogs";
-import { isCurrentFlow, type PackagePreview, type WorkspaceDeleteTarget } from "./types";
+import { isCurrentFlow, type PackagePreview, type Workspace, type WorkspaceDeleteTarget } from "./types";
 import { recipeHref } from "./recipeRoutes";
 
 type RecipeDeletion = { id: string; target: WorkspaceDeleteTarget; legacy: boolean; removed: boolean };
@@ -43,16 +43,38 @@ export default function LibraryPage() {
   const resumePath=navigationDirty||segmentDirty||frameDirty?"/recipe/teach":"/recipe/progress";
   const unsavedParts=[segmentDirty&&"分段草稿",navigationDirty&&"工件导航图",frameDirty&&"走廊示教草稿",dirty&&"候选配置"].filter(Boolean).join("、");
   const guard=(label:string,run:()=>void)=>{if(unsaved)setLeaving({label,run});else run();};
-  const ids = Array.from(new Set([...list.map(r => r.id),...drafts.map(w => w.doc.id)]));
-  const candidateOf = (id: string) => {
-    const listed = drafts.find(candidate => candidate.doc.id === id);
-    if (!listed || loaded?.doc.id !== id) return listed;
-    if (loaded.instanceId > listed.instanceId ||
-      (loaded.instanceId === listed.instanceId && loaded.revision >= listed.revision)) return loaded;
-    return listed;
+  const cards = useMemo(() => {
+    const recipes = new Map<string, { production?: RecipeSummary; listed?: Workspace }>();
+    for (const production of list) recipes.set(production.id, { production });
+    for (const listed of drafts) {
+      const id = listed.doc.id;
+      recipes.set(id, { ...recipes.get(id), listed });
+    }
+    return Array.from(recipes, ([id, { production, listed }]) => {
+      const draft = listed && loaded?.doc.id === id && (
+        loaded.instanceId > listed.instanceId ||
+        (loaded.instanceId === listed.instanceId && loaded.revision >= listed.revision)
+      ) ? loaded : listed;
+      const name = draft?.doc.name ?? production?.name ?? id;
+      const productCode = production?.productCode ?? draft?.doc.productCode;
+      const searchFields = [
+        id.toLowerCase(),
+        name.toLowerCase(),
+        String(productCode ?? ""),
+        String(draft?.doc.productCode ?? ""),
+      ];
+      return { id, production, draft, name, productCode, searchFields, stale: !!draft && !isCurrentFlow(draft) };
+    });
+  }, [list, drafts, loaded]);
+  const duplicateId = (id: string) => {
+    const normalized = id.toLowerCase();
+    return cards.some(card => card.id.toLowerCase() === normalized) ||
+      unavailable.some(recipe => recipe.fileName.replace(/\.json$/i, "").toLowerCase() === normalized);
   };
-  const duplicateId=(id:string)=>[...ids,...unavailable.map(r=>r.fileName.replace(/\.json$/i,""))].some(existing=>existing.toLowerCase()===id.toLowerCase());
-  const usedCodes=new Set([...list.map(r=>r.productCode),...drafts.map(w=>w.doc.productCode)]);
+  const usedCodes = useMemo(
+    () => new Set([...list.map(r => r.productCode), ...drafts.map(w => w.doc.productCode)]),
+    [list, drafts],
+  );
   const identityError=(form:{id:string;name:string;productCode:number})=>!/^[A-Za-z0-9_-]{1,32}$/.test(form.id)?"配方编号只能包含字母、数字、下划线和短横线，最多 32 位":
     duplicateId(form.id)?"配方编号已存在，请换一个编号":!form.name.trim()?"请填写配方名称":
     !Number.isInteger(form.productCode)||form.productCode<1||form.productCode>32767?"型号需为 1–32767 的整数":
@@ -96,11 +118,12 @@ export default function LibraryPage() {
       setCreating(null);setCreatedId(null);navigate(recipeHref(id,"/recipe/progress"));
     } catch(e) { if(current.current.alive)setDialogError(errorText(e)); } finally { pending.current=false;if(current.current.alive)setWorking(false); }
   };
-  const deletionDraft = deleting ? candidateOf(deleting.id) : undefined;
+  const deletionCard = deleting ? cards.find(card => card.id === deleting.id) : undefined;
+  const deletionDraft = deletionCard?.draft;
   const deletionChanged = deleting && !deleting.removed && (!!deletionDraft?.pending ||
     deletionDraft?.instanceId !== deleting.target.candidate?.instanceId ||
     deletionDraft?.revision !== deleting.target.candidate?.revision ||
-    (list.find(recipe => recipe.id === deleting.id)?.revisionId ?? null) !== deleting.target.productionRevisionId);
+    (deletionCard?.production?.revisionId ?? null) !== deleting.target.productionRevisionId);
   const deletesProduction = deleting?.target.productionRevisionId != null;
   const deletionDescription = deleting?.legacy
     ? `将删除此旧流程候选及其导入的采集轮次${deletesProduction ? "。同编号的生产配方照常运行，删除后可从它新建候选" : ""}。`
@@ -119,8 +142,8 @@ export default function LibraryPage() {
       await reloadList();if(!current.current.alive)return;
       if (!refreshOnly && current.current.selectedId === id &&
         (current.current.selectedInstance === undefined || current.current.selectedInstance === target.candidate?.instanceId)) {
-        const next = ids.find(other => other !== id);
-        if (next) await select(next);
+        const next = cards.find(other => other.id !== id);
+        if (next) await select(next.id);
         else clearSelection();
       }
       if(current.current.alive)setDeleting(null);
@@ -147,12 +170,10 @@ export default function LibraryPage() {
   };
   const pickPackage=()=>run(async()=>{const preview=await workspaceApi.packagePick();if(preview&&current.current.alive)setImporting(preview);});
   const afterImport=async(id:string)=>{await reloadList();if(current.current.selectedId===id)await select(id);};
-  const visibleUnavailable = unavailable.filter(r => [r.fileName,r.id,r.name].join(" ").toLowerCase().includes(search.trim().toLowerCase()));
-  const visible = ids.map(id => {
-    const production = list.find(r => r.id === id);
-    const draft = candidateOf(id);
-    return {id,production,draft,stale:!!draft&&!isCurrentFlow(draft),name:draft?.doc.name ?? production?.name ?? id};
-  }).filter(r => (r.id + r.name + (r.draft?.doc.productCode ?? r.production?.productCode)).toLowerCase().includes(search.trim().toLowerCase()));
+  const query = search.trim().toLowerCase();
+  const hasRecipes = cards.length > 0 || unavailable.length > 0;
+  const visibleUnavailable = query ? unavailable.filter(r => [r.fileName,r.id,r.name].join(" ").toLowerCase().includes(query)) : unavailable;
+  const visible = query ? cards.filter(card => card.searchFields.some(field => field.includes(query))) : cards;
   return <div className="wp-page"><WorkspaceBar showNavigation={false} /><div className="wp-library-toolbar"><div className="wp-library-search"><TextField aria-label="搜索配方" placeholder="编号、名称或型号" leading={<Search size={16} aria-hidden="true" />} value={search} onChange={e => setSearch(e.target.value)} /></div><Button leadingIcon={<PackageOpen size={16} />} disabled={blocked} title="导入工件配方包，替换本机同编号的候选" onClick={() => guard("导入工件配方",()=>void pickPackage())}>导入工件配方</Button><Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!desktopAvailable() || busy || working} onClick={() => guard("新建配方",()=>void prepare())}>新建配方</Button></div>
     {!desktopAvailable() && <Notice title="配方操作需要桌面后端" tone="warn">本页不会在浏览器中创建、保存或发布生产配置。</Notice>}
     <div className="wp-library-grid">{visible.map(r => <Panel key={r.id} title={r.name} hoverEffect={!r.stale && !blocked} className="wp-recipe-card" actions={<Menu label={`${r.id} 配方操作`} align="end"
@@ -169,7 +190,7 @@ export default function LibraryPage() {
           setDialogError("");
         } },
       ]} />}>
-      <p className="wp-recipe-identity muted"><span>{r.id}</span><span aria-hidden="true"> · </span>{`PLC 型号 ${r.production?.productCode ?? r.draft?.doc.productCode}`}</p>
+      <p className="wp-recipe-identity muted"><span>{r.id}</span><span aria-hidden="true"> · </span>{`PLC 型号 ${r.productCode}`}</p>
       <p className="wp-recipe-versions"><span className={r.production ? "" : "c-warn"}>{r.production ? `${r.production.stage === "collect" ? "采集版" : "已发布"} v${r.production.version}` : "未发布"}</span></p>
       {r.draft?.pending && <Badge tone="warn">等待生效</Badge>}
       {r.stale ? <p className="c-warn">旧流程候选已停用，请删除后重建。</p> : !(r.draft ? r.draft.teachingPiece : r.production?.teachingPiece) && <p className="wp-recipe-notice muted">尚未选择示教件</p>}
@@ -178,7 +199,7 @@ export default function LibraryPage() {
       <p className="muted">文件格式 {r.schemaVersion ?? "未知"} · 当前格式 {r.currentSchemaVersion}</p>
       <p>{r.reason}</p><p className="muted">此文件无法用于配置或生产。</p>
       <div className="wp-actions"><Button danger leadingIcon={<Trash2 size={16} />} disabled={blocked} onClick={()=>{setDeletingUnavailable(r);setUnavailableRemoved(false);setDialogError("");}}>删除文件</Button></div>
-    </Panel>)}</div>{!visible.length && !visibleUnavailable.length && <EmptyState icon={<Search size={30} aria-hidden="true" />} title={ids.length || unavailable.length ? "没有匹配的配方" : "尚未加载配方"} description={ids.length || unavailable.length ? "修改搜索条件后重试。" : "桌面软件会从本地配方库读取已有配置。"} />}
+    </Panel>)}</div>{!visible.length && !visibleUnavailable.length && <EmptyState icon={<Search size={30} aria-hidden="true" />} title={hasRecipes ? "没有匹配的配方" : "尚未加载配方"} description={hasRecipes ? "修改搜索条件后重试。" : "桌面软件会从本地配方库读取已有配置。"} />}
     {exporting && <PackageExportDialog id={exporting} onClose={()=>setExporting(null)} />}
     {importing && <PackageImportDialog preview={importing} onClose={()=>setImporting(null)} onImported={afterImport} onOpen={id=>{setImporting(null);void open(id);}} />}
     {leaving && <Dialog open title={`配方 ${selectedId} 有未保存的修改`} onOpenChange={open=>{if(!open)setLeaving(null);}} footer={<><Button onClick={()=>setLeaving(null)}>取消</Button><Button danger disabled={blocked} onClick={()=>{if(!discardDrafts())return;const next=leaving;setLeaving(null);next.run();}}>放弃修改并{leaving.label}</Button><Button variant="filled" onClick={()=>{setLeaving(null);if(selectedId)navigate(recipeHref(selectedId,resumePath));}}>回到 {selectedId} 继续编辑</Button></>}><p>{unsavedParts}尚未保存。可以回到 {selectedId} 保存或撤销，也可以放弃这些修改后{leaving.label}；候选里已保存的内容不受影响。</p></Dialog>}

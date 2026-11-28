@@ -38,6 +38,25 @@ describe("配方库操作", () => {
   });
 });
 
+it("生产与候选型号不同 → 可以按任一型号或卡片编号、名称找到配方", async () => {
+  ws = workspaceState(burstWorkspaceView(burstRecipe({ id: "L-42", name: "螺旋配方", productCode: 5678 })));
+  ws.list = [
+    burstSummary(burstRecipe({ id: "L-42", name: "已发布螺旋配方", productCode: 1234 })),
+    burstSummary(burstRecipe({ id: "B", name: "直线配方", productCode: 9000 })),
+  ];
+  show();
+  expect(screen.getByText("PLC 型号 1234")).toBeVisible();
+  const search = screen.getByRole("textbox", { name: "搜索配方" });
+  const user = userEvent.setup();
+
+  for (const query of ["1234", "5678", " l-42 ", "螺旋配方"]) {
+    await user.clear(search);
+    await user.type(search, query);
+    expect(screen.getByRole("heading", { name: "螺旋配方" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "直线配方" })).not.toBeInTheDocument();
+  }
+});
+
 it("已加载候选比列表新 → 按最新修订删除，刷新失败时只重试刷新", async () => {
   ws.drafts = [structuredClone(ws.drafts[0]), view("B").workspace];
   const current = ws.data!.workspace;
