@@ -39,6 +39,7 @@ export default function CameraPage() {
   const cam=detailId==null?-1:configs.findIndex(c=>c.id===detailId);
   const config=configs[cam]??null;
   const status=config?statusOf(cam):null;
+  const frame=config?lastFrame[config.id]:undefined;
   const desktop=desktopAvailable();
   const referencedBy=config?references[config.id]??[]:[];
   const lockedReason=busy?"工件结束后可修改":!desktop?"需要桌面后端":"";
@@ -136,7 +137,7 @@ export default function CameraPage() {
     <CameraConfigPanel ref={form} key={config.id+":"+config.source} cam={cam} initial={config} status={status} group={{configs,statuses}} locked={locked} saveBlocked={released?"已释放给 MVS，重新连接后再保存":""}
       onSaved={()=>void reload()} onGroupSaved={()=>void reload()} onSavingChange={setConfigSaving} onDirtyChange={setDirty} leading={leading} footer={calibration(locked?"前往标定":"保存后前往标定")}
       side={<>
-        <FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config} actions={handOverButton}
+        <FramePreview key={config.id} cam={cam} status={status} lastFrame={frame?.cam === cam ? frame : undefined} config={config} actions={handOverButton}
           blockedReason={busy?"工件检测中":!desktop?"需要桌面后端":mvs&&!config.serial?"未绑定设备":released?"已释放给 MVS，在海康 MVS 客户端调焦、调光圈，完成后关闭 MVS 再重新连接":dirty?"先保存并应用再测试":""}/>
         {handError&&<Alert tone="ng">{handError}</Alert>}
         <AppliedPanel config={config} status={status}/>

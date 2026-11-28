@@ -566,6 +566,7 @@ struct RigShared {
 /// 单台相机的交付通道，取图回调与模拟 / 样本集共用。
 struct Shared {
     cam: u8,
+    camera_id: String,
     rig: Arc<RigShared>,
     /// 取图回调的整帧缓冲，按 IMAGE_BUDGET_PER_CAMERA 封顶在途字节：灰度图、彩色帧的原始马赛克，
     /// 以及由马赛克按需生成的 RGB 与缩略图
@@ -602,6 +603,14 @@ struct Shared {
     simulator_clock: Mutex<Option<(u64, Instant)>>,
     /// 旧拍照点模型：三目拼接的拆分布局，段配方不经过（D-SB-11）
     composite_layout: Mutex<Option<crate::recipe_capture::CompositeLayout>>,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CameraFrameEvent<'a> {
+    #[serde(flatten)]
+    frame: &'a Frame,
+    camera_id: &'a str,
 }
 
 impl Shared {
@@ -775,7 +784,15 @@ impl Shared {
                 recent.pop_front();
             }
         }
-        let _ = self.rig.app.emit("camera://frame", frame);
+        if frame.session == self.session.load(Ordering::SeqCst) {
+            let _ = self.rig.app.emit(
+                "camera://frame",
+                CameraFrameEvent {
+                    frame,
+                    camera_id: &self.camera_id,
+                },
+            );
+        }
     }
 
     fn fps(&self) -> f32 {
@@ -1084,6 +1101,7 @@ impl CameraSlot {
             synthetic_capture: Mutex::new(None),
             shared: Arc::new(Shared {
                 cam,
+                camera_id: config.id.clone(),
                 rig: rig.clone(),
                 pool: FramePool::with_budget(POOL_KEEP_PER_CAMERA, IMAGE_BUDGET_PER_CAMERA),
                 frames: AtomicU64::new(0),
@@ -2804,13 +2822,26 @@ pub async fn camera_list_devices() -> Result<Vec<DeviceSummary>, String> {
 pub fn camera_preview(
     cycle: State<'_, CycleHost>,
     cam: usize,
+    id: String,
     view: Option<u8>,
-) -> tauri::ipc::Response {
-    let mut out = Vec::new();
-    if let (Some(slot), Some(index)) = (cycle.camera.slot(cam), view.unwrap_or(1).checked_sub(1)) {
-        out = slot.shared.preview_bytes(index as usize);
+) -> Result<tauri::ipc::Response, String> {
+    let slot = cycle.camera.slot(cam).ok_or("相机不存在")?;
+    check_camera_target(&slot.shared.camera_id, &id)?;
+    let Some(index) = view.unwrap_or(1).checked_sub(1) else {
+        return Ok(tauri::ipc::Response::new(Vec::<u8>::new()));
+    };
+    let session = slot.shared.session.load(Ordering::SeqCst);
+    let bytes = slot.shared.preview_bytes(usize::from(index));
+    if !bytes.is_empty()
+        && (session != slot.shared.session.load(Ordering::SeqCst)
+            || !cycle
+                .camera
+                .slot(cam)
+                .is_some_and(|current| Arc::ptr_eq(&current, &slot)))
+    {
+        return Ok(tauri::ipc::Response::new(Vec::<u8>::new()));
     }
-    tauri::ipc::Response::new(out)
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// 相机操作与接件、配置修改互斥：排队等配置门，3 秒内拿不到才放弃。

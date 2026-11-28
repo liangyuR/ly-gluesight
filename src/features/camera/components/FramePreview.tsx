@@ -9,7 +9,7 @@ export default function FramePreview({ cam, status, lastFrame, config, blockedRe
   const scope=JSON.stringify([cam,config?.id,config?.source,config?.serial,config?.triggerSource,config?.frameRate,lastFrame?.session,config?.viewCount]);
   const [selectedView, setSelectedView] = useState({scope, view: 1});
   const view = selectedView.scope === scope && selectedView.view <= (config?.viewCount ?? 1) ? selectedView.view : 1;
-  const { img, canvas } = usePreviewCanvas(cam, lastFrame?.frameCounter,250,scope,view);
+  const { img, canvas } = usePreviewCanvas(cam, config?.id ?? null, lastFrame?.frameCounter,250,scope,view);
   const [error, setError] = useState("");
   const [busy,setBusy]=useState(false);
   const pending=useRef(false),serial=useRef(0),mounted=useRef(true);
