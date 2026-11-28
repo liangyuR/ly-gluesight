@@ -369,49 +369,87 @@ impl BurstFrameIndex {
     pub fn unavailable(&self) -> Option<String> {
         let recording_only = self.round().references_recording();
         let frame_count: usize = self.validated.saved.values().map(BTreeSet::len).sum();
-        let mut present = None;
-        let frames = self
-            .validated
-            .saved
-            .iter()
-            .flat_map(|(camera, seqs)| seqs.iter().map(move |&seq| (camera, seq)));
-        for (position, (camera_id, seq)) in frames.enumerate() {
-            if !recording_only && self.local(camera_id, seq).is_some() {
-                continue;
-            }
-            let dir = match self.recording() {
-                Ok(dir) => dir,
-                Err(error) => return Some(error),
-            };
-            if recording_only
-                && frame_count > FRAME_AVAILABILITY_BATCH_MIN
-                && position == FRAME_AVAILABILITY_DIRECT_PREFIX
-            {
-                present = recording_file_stems(dir, frame_count);
-            }
-            let pgm = recording_file(camera_id, seq);
-            let confirmed = present
-                .as_ref()
-                .zip(pgm.strip_suffix(".pgm"))
-                .is_some_and(|(stems, stem)| stems.contains(stem));
-            if !confirmed && !crate::image_file::exists(&dir.join(pgm)) {
-                return Some(format!(
-                    "示教件原图不可用：录制里缺相机 {camera_id} 第 {seq} 帧组的原图"
-                ));
+        let mut source = FrameAvailability::default();
+        for (camera_id, seqs) in &self.validated.saved {
+            let local_dir = (!recording_only).then(|| self.dir.join(camera_id));
+            let mut local = FrameAvailability::default();
+            for &seq in seqs {
+                if local_dir.as_ref().is_some_and(|dir| {
+                    local.exists(dir, frame_file(seq), seqs.len(), OriginalFiles::Local)
+                }) {
+                    continue;
+                }
+                let dir = match self.recording() {
+                    Ok(dir) => dir,
+                    Err(error) => return Some(error),
+                };
+                if !source.exists(
+                    dir,
+                    recording_file(camera_id, seq),
+                    frame_count,
+                    OriginalFiles::Recording,
+                ) {
+                    return Some(format!(
+                        "示教件原图不可用：录制里缺相机 {camera_id} 第 {seq} 帧组的原图"
+                    ));
+                }
             }
         }
         None
     }
 }
 
-fn recording_file_stems(dir: &Path, frame_count: usize) -> Option<HashSet<String>> {
+enum OriginalFiles {
+    Local,
+    Recording,
+}
+
+#[derive(Default)]
+struct FrameAvailability {
+    checked: usize,
+    present: Option<HashSet<String>>,
+}
+
+impl FrameAvailability {
+    fn exists(
+        &mut self,
+        dir: &Path,
+        pgm: String,
+        frame_count: usize,
+        files: OriginalFiles,
+    ) -> bool {
+        let include_gsr = matches!(files, OriginalFiles::Recording);
+        if frame_count > FRAME_AVAILABILITY_BATCH_MIN
+            && self.checked == FRAME_AVAILABILITY_DIRECT_PREFIX
+        {
+            self.present = frame_file_stems(dir, frame_count, include_gsr);
+        }
+        self.checked += 1;
+        if self
+            .present
+            .as_ref()
+            .zip(pgm.strip_suffix(".pgm"))
+            .is_some_and(|(stems, stem)| stems.contains(stem))
+        {
+            return true;
+        }
+        let path = dir.join(pgm);
+        if include_gsr {
+            crate::image_file::exists(&path)
+        } else {
+            path.is_file()
+        }
+    }
+}
+
+fn frame_file_stems(dir: &Path, frame_count: usize, include_gsr: bool) -> Option<HashSet<String>> {
     let mut present = HashSet::new();
     let limit = frame_count.saturating_mul(2).saturating_add(32);
     for entry in std::fs::read_dir(dir).ok()?.take(limit).flatten() {
         let Ok(mut name) = entry.file_name().into_string() else {
             continue;
         };
-        if !name.ends_with(".pgm") && !name.ends_with(".gsr") {
+        if !(name.ends_with(".pgm") || include_gsr && name.ends_with(".gsr")) {
             continue;
         }
         let Ok(metadata) = entry.metadata() else {

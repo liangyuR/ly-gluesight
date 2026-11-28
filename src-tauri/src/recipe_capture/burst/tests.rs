@@ -335,6 +335,61 @@ fn long_recording_availability_keeps_the_first_missing_frame_diagnostic() {
 }
 
 #[test]
+fn long_legacy_round_keeps_local_pgm_priority_and_accepts_source_gsr() {
+    let root = root();
+    let groups = FRAME_AVAILABILITY_BATCH_MIN as u64 + 3;
+    let round = patched(
+        &complete_round_with_groups(&root, groups),
+        json!({"origin": {"kind": "history", "cycleId": "cycle-a", "recordId": 7}}),
+    );
+    write_round(&root, &round);
+    let dir = root.join(ROUND);
+    let recording = root.join("records").join("20261107_cycle_cycle-a");
+    std::fs::create_dir_all(&recording).unwrap();
+    let source = recording.clone();
+    let available = Arc::new(AtomicBool::new(false));
+    let lookup = Arc::clone(&available);
+    let host = RecipeCaptureHost::open(
+        root,
+        Arc::new(move |cycle| {
+            Ok((lookup.load(Ordering::Relaxed) && cycle == "cycle-a").then(|| source.clone()))
+        }),
+    )
+    .unwrap();
+    assert_eq!(host.images_unavailable(ROUND).unwrap(), None);
+
+    let local = dir.join(frame_rel_path("cam1", 1));
+    std::fs::copy(&local, recording.join(recording_file("cam1", 1))).unwrap();
+    for seq in 17..=36 {
+        let path = dir.join(frame_rel_path("cam1", seq));
+        let target = recording.join(recording_file("cam1", seq));
+        if seq == 36 {
+            let encoded = crate::image_file::gsr::encode(&std::fs::read(&path).unwrap()).unwrap();
+            std::fs::write(target.with_extension("gsr"), encoded).unwrap();
+            std::fs::remove_file(path).unwrap();
+        } else {
+            std::fs::rename(path, target).unwrap();
+        }
+    }
+    available.store(true, Ordering::Relaxed);
+    assert_eq!(host.images_unavailable(ROUND).unwrap(), None);
+    assert_eq!(
+        host.burst_frame_path(ROUND, "cam1", 1).unwrap(),
+        local.canonicalize().unwrap()
+    );
+
+    let pgm = dir.join(frame_rel_path("cam1", groups));
+    let encoded = crate::image_file::gsr::encode(&std::fs::read(&pgm).unwrap()).unwrap();
+    std::fs::write(pgm.with_extension("gsr"), encoded).unwrap();
+    std::fs::remove_file(pgm).unwrap();
+    let reason = host.images_unavailable(ROUND).unwrap().unwrap();
+    assert!(
+        reason.contains(&format!("cam1 第 {groups} 帧组")),
+        "{reason}"
+    );
+}
+
+#[test]
 fn failed_round_reads_only_frames_present_in_its_camera_log() {
     let root = root();
     let mut round: CaptureRoundV2 = serde_json::from_value(complete_round(&root)).unwrap();
