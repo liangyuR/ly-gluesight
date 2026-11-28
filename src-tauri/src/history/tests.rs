@@ -105,7 +105,7 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_limit_only_change() {
         let candidate = Arc::new(doc.build().unwrap());
         let (row, frames) = burst_row(&original);
         let result = rejudge_rows(
-            vec![row],
+            std::iter::once(Ok(row)),
             &request,
             "default",
             |_, _| Ok(Some(original.clone())),
@@ -162,7 +162,7 @@ fn rejudge_counts_arrived_but_uninspected_frame_as_present() {
         ..Default::default()
     };
     let result = rejudge_rows(
-        vec![row],
+        std::iter::once(Ok(row)),
         &request,
         "default",
         |_, _| Ok(Some(recipe.clone())),
@@ -191,7 +191,7 @@ fn rejudge_skips_reversed_region_and_processes_the_rest_of_the_batch() {
     let mut frame_reads = Vec::new();
 
     let result = rejudge_rows(
-        vec![damaged, healthy],
+        [damaged, healthy].into_iter().map(Ok),
         &RejudgeRequest::default(),
         "default",
         |_, _| Ok(Some(recipe.clone())),
@@ -234,10 +234,14 @@ fn cancelling_rejudge_during_a_read_counts_finished_and_skipped_records_then_sto
     let task_id = "cancel-history-rejudge";
     let operation =
         Operation::with_events(operations.clone(), Some(task_id.into()), |_| {}).unwrap();
+    let mut candidates_read = Vec::new();
     let mut reads = Vec::new();
     let result = operation.run(|operation| {
         rejudge_rows(
-            vec![skipped, row, remaining],
+            [skipped, row, remaining].into_iter().map(|row| {
+                candidates_read.push(row.id);
+                Ok(row)
+            }),
             &RejudgeRequest::default(),
             "default",
             |_, _| Ok(Some(recipe.clone())),
@@ -253,10 +257,66 @@ fn cancelling_rejudge_during_a_read_counts_finished_and_skipped_records_then_sto
         )
     });
     assert_eq!(result.unwrap_err(), CANCELLED_MESSAGE);
+    assert_eq!(candidates_read, [id - 1, id]);
     assert_eq!(reads, [id]);
     let progress = serde_json::to_value(operations.status(task_id).unwrap()).unwrap();
     assert_eq!(progress["stage"], "cancelled");
     assert_eq!(progress["completed"], 2);
     assert_eq!(progress["skipped"], 1);
     assert_eq!(progress["total"], 3);
+}
+
+#[test]
+fn rejudge_limit_counts_the_oldest_row_without_decoding_it() {
+    struct TestDir(std::path::PathBuf);
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let directory = std::env::temp_dir().join(format!(
+        "gluesight-rejudge-limit-{}-{}",
+        std::process::id(),
+        ly_plc::now_ms()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let directory = TestDir(directory);
+    let path = directory.0.join("parts.sqlite");
+    let store = Store::open(&path).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let last = (REJUDGE_LIMIT + 1) as i64;
+    let judgement =
+        r#"{"verdict":"OK","plcCode":1,"faultCode":0,"reason":"合格","segments":[],"gaps":[]}"#;
+    conn.execute(
+        "WITH RECURSIVE ids(id) AS (
+             VALUES(1) UNION ALL SELECT id + 1 FROM ids WHERE id < ?1
+         )
+         INSERT INTO parts (id, project_id, ts, sn, verdict, plc_code, fault_code, reason,
+             frames_expected, frames_received, triggers, software_version, judgement, frames,
+             cycle_id, delivery_state, delivery_updated_at, source, burst_judgement)
+         SELECT id, ?2, 1234, printf('SN-%d', id), 'OK', 1, 0, '合格', 0, 0, 0, 'fixture',
+             ?3, '[]', printf('rejudge-limit-%d', id), 'notRequired', 0, 'real',
+             CASE WHEN id = 1 THEN '[' ELSE NULL END
+         FROM ids",
+        rusqlite::params![last, store.project(), judgement],
+    )
+    .unwrap();
+
+    let request = RejudgeRequest::default();
+    let result = rejudge_history(&store, &request, |_| None, None).unwrap();
+    assert!(result.limit_hit);
+    assert_eq!(result.total, 0);
+    assert_eq!(result.skipped, REJUDGE_LIMIT as u64);
+    assert!(result.matrix.is_empty());
+    let skipped_ids: Vec<_> = result.skip_reasons.iter().map(|row| row.id).collect();
+    assert_eq!(skipped_ids, (last - 299..=last).rev().collect::<Vec<_>>());
+    assert!(result
+        .skip_reasons
+        .iter()
+        .all(|row| row.kind == SkipKind::NoTable));
+
+    conn.execute("DELETE FROM parts WHERE id = ?1", [last])
+        .unwrap();
+    assert!(rejudge_history(&store, &request, |_| None, None).is_err());
 }

@@ -677,10 +677,11 @@ fn manual_tags_survive_reopen_and_keep_history_filter_counts_neighbors_and_rejud
     );
     assert_eq!(
         store
+            .rejudge_reader()
+            .unwrap()
             .measurements(&query, &[], 10)
             .unwrap()
-            .iter()
-            .map(|part| part.id)
+            .map(|part| part.unwrap().id)
             .collect::<Vec<_>>(),
         [ids[2], ids[0]]
     );
@@ -1499,7 +1500,9 @@ fn rejudge_reader_reads_during_uncommitted_write_and_refreshes_after_commit() {
         let read = threads.spawn(move || -> Result<_, String> {
             let reader = store.rejudge_reader()?;
             let query = HistoryQuery::default();
-            let rows = reader.measurements(&query, &[id], 1)?;
+            let rows = reader
+                .measurements(&query, &[id], 1)?
+                .collect::<Result<Vec<_>, _>>()?;
             let snapshot = reader.recipe_snapshot(store.project(), revision)?;
             let frames = reader.burst_frames(id)?;
             initial_read
@@ -1508,7 +1511,10 @@ fn rejudge_reader_reads_during_uncommitted_write_and_refreshes_after_commit() {
             wait_for_write
                 .recv_timeout(WAIT)
                 .map_err(|error| error.to_string())?;
-            reader.measurements(&query, &[id], 1)
+            let refreshed = reader
+                .measurements(&query, &[id], 1)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(refreshed)
         });
         let initial = wait_for_read.recv_timeout(WAIT);
         let finished = if initial.is_ok() {

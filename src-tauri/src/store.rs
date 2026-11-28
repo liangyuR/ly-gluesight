@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{
-    params, params_from_iter, Connection, OpenFlags, OptionalExtension, Transaction,
+    params, params_from_iter, Connection, OpenFlags, OptionalExtension, Statement, Transaction,
     TransactionBehavior,
 };
 use serde::{Deserialize, Serialize};
@@ -2426,61 +2426,6 @@ impl Store {
     }
 
     /// 取出重判候选；ids 为空时按筛选条件。
-    pub fn measurements(
-        &self,
-        q: &HistoryQuery,
-        ids: &[i64],
-        limit: usize,
-    ) -> Result<Vec<StoredMeasurement>, String> {
-        Self::read_measurements(&self.conn.lock().unwrap(), q, ids, limit)
-    }
-
-    fn read_measurements(
-        conn: &Connection,
-        q: &HistoryQuery,
-        ids: &[i64],
-        limit: usize,
-    ) -> Result<Vec<StoredMeasurement>, String> {
-        let (filter, args) = if ids.is_empty() {
-            Self::filter(q, "p.")
-        } else {
-            (
-                format!(" WHERE p.id IN ({})", vec!["?"; ids.len()].join(",")),
-                ids.iter().map(|&i| SqlValue::Integer(i)).collect(),
-            )
-        };
-        let sql = format!(
-            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, p.burst_judgement, p.project_id FROM parts p{filter} ORDER BY p.ts DESC, p.id DESC LIMIT {limit}"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let rows = stmt
-            .query_map(params_from_iter(args.iter()), |row| {
-                Ok(StoredMeasurement {
-                    id: row.get(0)?,
-                    project_id: row.get(7)?,
-                    ts: row.get(1)?,
-                    sn: row.get(2)?,
-                    recipe_id: row.get(3)?,
-                    recipe_revision: row.get(4)?,
-                    verdict: parse_verdict(&row.get::<_, String>(5)?),
-                    burst: row
-                        .get::<_, Option<String>>(6)?
-                        .map(|text| {
-                            serde_json::from_str(&text).map_err(|e| {
-                                rusqlite::Error::FromSqlConversionFailure(
-                                    6,
-                                    rusqlite::types::Type::Text,
-                                    Box::new(e),
-                                )
-                            })
-                        })
-                        .transpose()?,
-                })
-            })
-            .map_err(db_err)?;
-        rows.collect::<Result<_, _>>().map_err(db_err)
-    }
-
     pub fn maintenance_statistics(
         &self,
         scope: HistoryScope,
@@ -2793,14 +2738,68 @@ impl Store {
     }
 }
 
+const BURST_JUDGEMENT_BY_ID: &str = "SELECT burst_judgement FROM parts WHERE id = ?1";
+
+fn read_burst_judgement(
+    stmt: &mut Statement<'_>,
+    id: i64,
+) -> Result<Option<BurstJudgement>, String> {
+    let text: Option<Option<String>> = stmt
+        .query_row([id], |row| row.get(0))
+        .optional()
+        .map_err(db_err)?;
+    text.flatten()
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| format!("检测记录 {id} 的区域判定损坏：{error}"))
+}
+
 impl RejudgeReader {
     pub(crate) fn measurements(
         &self,
         q: &HistoryQuery,
         ids: &[i64],
         limit: usize,
-    ) -> Result<Vec<StoredMeasurement>, String> {
-        Store::read_measurements(&self.conn, q, ids, limit)
+    ) -> Result<impl ExactSizeIterator<Item = Result<StoredMeasurement, String>> + '_, String> {
+        let (filter, args) = if ids.is_empty() {
+            Store::filter(q, "p.")
+        } else {
+            (
+                format!(" WHERE p.id IN ({})", vec!["?"; ids.len()].join(",")),
+                ids.iter().map(|&i| SqlValue::Integer(i)).collect(),
+            )
+        };
+        let sql = format!(
+            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, p.project_id FROM parts p{filter} ORDER BY p.ts DESC, p.id DESC LIMIT {limit}"
+        );
+        let mut stmt = self.conn.prepare(&sql).map_err(db_err)?;
+        let candidates = stmt
+            .query_map(params_from_iter(args.iter()), |row| {
+                Ok(StoredMeasurement {
+                    id: row.get(0)?,
+                    project_id: row.get(6)?,
+                    ts: row.get(1)?,
+                    sn: row.get(2)?,
+                    recipe_id: row.get(3)?,
+                    recipe_revision: row.get(4)?,
+                    verdict: parse_verdict(&row.get::<_, String>(5)?),
+                    burst: None,
+                })
+            })
+            .map_err(db_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        let mut burst = self.conn.prepare(BURST_JUDGEMENT_BY_ID).map_err(db_err)?;
+        Ok(candidates.into_iter().map(move |mut row| {
+            row.burst = read_burst_judgement(&mut burst, row.id)?;
+            Ok(row)
+        }))
+    }
+
+    pub(crate) fn burst_judgement(&self, id: i64) -> Result<Option<BurstJudgement>, String> {
+        let mut stmt = self.conn.prepare(BURST_JUDGEMENT_BY_ID).map_err(db_err)?;
+        read_burst_judgement(&mut stmt, id)
     }
 
     pub(crate) fn recipe_snapshot(

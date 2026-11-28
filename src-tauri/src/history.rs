@@ -291,24 +291,10 @@ pub async fn history_rejudge(
         .map(|id| Operation::start(&app, Some(id)))
         .transpose()?;
     tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<Store>();
+        let cycle = app.state::<CycleHost>();
         let run = |operation: Option<&Operation>| {
-            let store = app.state::<Store>();
-            let cycle = app.state::<CycleHost>();
-            let reader = store.rejudge_reader()?;
-            let rows = reader.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
-            rejudge_rows(
-                rows,
-                &request,
-                store.project(),
-                |project, revision_id| {
-                    reader
-                        .recipe_snapshot(project, revision_id)
-                        .map(|r| r.map(Arc::new))
-                },
-                |id| cycle.recipe(id),
-                |id| reader.burst_frames(id),
-                operation,
-            )
+            rejudge_history(&store, &request, |id| cycle.recipe(id), operation)
         };
         match operation {
             Some(operation) => operation.run(|operation| run(Some(operation))),
@@ -317,6 +303,29 @@ pub async fn history_rejudge(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+pub(crate) fn rejudge_history(
+    store: &Store,
+    request: &RejudgeRequest,
+    current: impl FnMut(&str) -> Option<Arc<Recipe>>,
+    operation: Option<&Operation>,
+) -> Result<RejudgeResult, String> {
+    let reader = store.rejudge_reader()?;
+    let rows = reader.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
+    rejudge_rows(
+        rows,
+        request,
+        store.project(),
+        |project, revision_id| {
+            reader
+                .recipe_snapshot(project, revision_id)
+                .map(|r| r.map(Arc::new))
+        },
+        current,
+        |id| reader.burst_frames(id),
+        operation,
+    )
 }
 
 fn cached_recipe(
@@ -406,7 +415,7 @@ fn rejudge_burst(
 }
 
 fn rejudge_rows(
-    rows: Vec<StoredMeasurement>,
+    mut rows: impl ExactSizeIterator<Item = Result<StoredMeasurement, String>>,
     request: &RejudgeRequest,
     current_project: &str,
     mut snapshot: impl FnMut(&str, &str) -> Result<Option<Arc<Recipe>>, String>,
@@ -415,8 +424,9 @@ fn rejudge_rows(
     operation: Option<&Operation>,
 ) -> Result<RejudgeResult, String> {
     let limit_hit = rows.len() > REJUDGE_LIMIT;
+    let total_candidates = rows.len().min(REJUDGE_LIMIT);
     if let Some(operation) = operation {
-        operation.rejudging(rows.len().min(REJUDGE_LIMIT))?;
+        operation.rejudging(total_candidates)?;
     }
     let mut originals = HashMap::new();
     let mut candidates = HashMap::new();
@@ -424,10 +434,11 @@ fn rejudge_rows(
     let mut changes = Vec::new();
     let mut skip_reasons = Vec::new();
     let (mut total, mut skipped) = (0, 0);
-    for row in rows.into_iter().take(REJUDGE_LIMIT) {
+    for _ in 0..total_candidates {
         if let Some(operation) = operation {
             operation.check()?;
         }
+        let row = rows.next().expect("候选迭代器长度不足")?;
         let mut skip = |kind: SkipKind| {
             skipped += 1;
             if skip_reasons.len() < 300 {
