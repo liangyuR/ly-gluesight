@@ -64,8 +64,22 @@ export default function CameraPage() {
     if(!config||pending.current||loading||configSaving||locked||removeBlocked)return;
     if(!window.confirm("从相机组移除「"+config.name+"」？"))return;
     pending.current=true;setAction("remove");setRemoveError("");
-    try{await cameraApi.remove(cam);if(!mounted.current)return;await reload();if(mounted.current)setDetailId(null);}
-    catch(e){if(mounted.current)setRemoveError(errorText(e));}
+    try {
+      await cameraApi.remove(cam, config.id);
+      if (!mounted.current) return;
+      await reload();
+      if (mounted.current) setDetailId(null);
+    } catch (e) {
+      if (!mounted.current) return;
+      const message = errorText(e);
+      setRemoveError(message);
+      refreshReferences();
+      const next = await reload();
+      if (mounted.current && next && !next.some(camera => camera.id === config.id)) {
+        setDetailId(null);
+        setError(message);
+      }
+    }
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
   const released=!!status?.released;

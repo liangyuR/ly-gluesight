@@ -42,7 +42,7 @@ export const cameraApi = {
   calibInfo: (cam: number, view: number) => call<{ mmPerPx: number | null } | null>("vision_calib_info", { cam, view }, () => null),
   saveConfig: (cam: number, config: CameraConfig) => call<CameraConfigSaved>("camera_save_config", { cam, config }, () => ({ saved: true, applied: false, warnings: [], applyError: "需要桌面后端" })),
   add: (config: CameraConfig) => call<number>("camera_add", { config }, () => 0),
-  remove: (cam: number) => call<void>("camera_remove", { cam }, () => undefined),
+  remove: (cam: number, id: string) => call<void>("camera_remove", { cam, id }, () => undefined),
   listDevices: () => call<DeviceSummary[]>("camera_list_devices", undefined, () => []),
   preview: (cam: number, view?: number) => call<ArrayBuffer>("camera_preview", { cam, ...(view == null ? {} : { view }) }, () => new ArrayBuffer(0)).then(decodePreview),
   softTrigger: (cam: number) => call<void>("camera_soft_trigger", { cam }, () => undefined),

@@ -2604,7 +2604,7 @@ async fn camera_save_config_inner(
 
 fn check_camera_target(current_id: &str, requested_id: &str) -> Result<(), String> {
     if current_id != requested_id {
-        return Err("相机组已变化，请刷新配置后重试保存".into());
+        return Err("相机组已变化，请刷新配置后重试".into());
     }
     Ok(())
 }
@@ -2744,30 +2744,28 @@ async fn camera_add_inner(app: AppHandle, mut config: CameraConfig) -> Result<us
 }
 
 #[tauri::command]
-pub async fn camera_remove(app: AppHandle, cam: usize) -> Result<(), String> {
-    let result = camera_remove_inner(app.clone(), cam).await;
+pub async fn camera_remove(app: AppHandle, cam: usize, id: String) -> Result<(), String> {
+    let result = camera_remove_inner(app.clone(), cam, &id).await;
     crate::cycle::log_op(
         &crate::applog::events::OP_CAMERA,
-        serde_json::json!({"action": "remove", "cam": cam}),
+        serde_json::json!({"action": "remove", "cam": cam, "id": id}),
         &result,
     );
     result
 }
 
-async fn camera_remove_inner(app: AppHandle, cam: usize) -> Result<(), String> {
+async fn camera_remove_inner(app: AppHandle, cam: usize, id: &str) -> Result<(), String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
     let _gate = camera_gate(&cycle).await?;
     check_user_editable(&app, None)?;
     check_idle(&cycle)?;
     let mut configs = cycle.camera.configs();
-    if cam >= configs.len() {
-        return Err("相机不存在".into());
-    }
+    let config = configs.get(cam).ok_or("相机不存在")?;
+    check_camera_target(&config.id, id)?;
     if configs.len() == 1 {
         return Err("相机组至少保留 1 台".into());
     }
-    let id = &configs[cam].id;
     let mut users: Vec<String> = cycle
         .recipes
         .list()

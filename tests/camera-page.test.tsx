@@ -123,6 +123,47 @@ it("引用查询期间再次收到配方通知 → 旧的无引用结果不能�
   expect(remove()).toBeDisabled();
 });
 
+it("确认移除时相机索引已变化 → 保留目标，重新确认后才按新索引移除", async () => {
+  configs.push(camera("cam3", "第三相机"));
+  const ipc = vi.mocked(invoke);
+  const original = ipc.getMockImplementation()!;
+  ipc.mockImplementation(async (command, args, options) => {
+    if (command !== "camera_remove") return original(command, args, options);
+    const { cam, id } = args as { cam: number; id: string };
+    if (configs[cam]?.id !== id) throw new Error("相机组已变化，请刷新配置后重试移除");
+    configs = configs.filter((_, index) => index !== cam);
+  });
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true).mockImplementationOnce(() => {
+    configs = configs.filter(({ id }) => id !== "cam1");
+    return true;
+  });
+  const removals = () => ipc.mock.calls.filter(([command]) => command === "camera_remove").map(([, args]) => args);
+  const remove = () => screen.getByRole("button", { name: "移除相机" });
+  const user = userEvent.setup();
+
+  try {
+    await openCamera("右相机 cam2");
+    await waitFor(() => expect(remove()).toBeEnabled());
+    await user.click(remove());
+
+    expect(await screen.findByText(/相机组已变化/)).toBeVisible();
+    await waitFor(() => expect(remove()).toBeEnabled());
+    expect(switcher().getByRole("button", { name: "右相机 cam2" })).toHaveAttribute("aria-current", "true");
+    expect(switcher().getByRole("button", { name: "第三相机 cam3" })).toBeVisible();
+    expect(switcher().queryByRole("button", { name: "左相机 cam1" })).not.toBeInTheDocument();
+    expect(removals()).toEqual([{ cam: 1, id: "cam2" }]);
+    expect(confirm).toHaveBeenCalledOnce();
+
+    await user.click(remove());
+    expect(await screen.findByRole("article", { name: "第三相机 cam3" })).toBeVisible();
+    expect(screen.queryByRole("article", { name: "右相机 cam2" })).not.toBeInTheDocument();
+    expect(removals()).toEqual([{ cam: 1, id: "cam2" }, { cam: 0, id: "cam2" }]);
+    expect(confirm).toHaveBeenCalledTimes(2);
+  } finally {
+    confirm.mockRestore();
+  }
+});
+
 describe("相机参数未保存修改", () => {
   it("配置落盘但设备离线 → 显示应用失败、保留当前页面且不再提示未保存", async () => {
     const original = vi.mocked(invoke).getMockImplementation()!;
