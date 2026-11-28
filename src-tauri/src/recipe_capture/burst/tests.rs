@@ -263,6 +263,41 @@ fn old_history_round_without_local_images_reads_the_source_recording() {
 }
 
 #[test]
+fn failed_round_reads_only_frames_present_in_its_camera_log() {
+    let root = root();
+    let mut round: CaptureRoundV2 = serde_json::from_value(complete_round(&root)).unwrap();
+    round.state = CaptureState::Failed;
+    round.error = Some("采集中断".into());
+    round.failure = Some(CaptureFailureV2::Interrupted);
+    round.group_count = 0;
+    round.camera_frames.fill(0);
+    for camera in &mut round.cameras {
+        camera.received_count = 0;
+    }
+    let dir = root.join(ROUND);
+    std::fs::write(dir.join("round.json"), serde_json::to_vec(&round).unwrap()).unwrap();
+    let log = dir.join(FRAMES_FILE);
+    let text = std::fs::read_to_string(&log).unwrap();
+    let kept: Vec<_> = text
+        .lines()
+        .rev()
+        .filter(|text| {
+            let line: FrameLine = serde_json::from_str(text).unwrap();
+            (line.camera, line.seq) != (0, 2)
+        })
+        .collect();
+    std::fs::write(&log, kept.join("\n")).unwrap();
+
+    let host = RecipeCaptureHost::open(root, no_recordings()).unwrap();
+    assert!(dir.join(frame_rel_path("cam1", 2)).is_file());
+    assert!(host.burst_frame_path(ROUND, "cam1", 2).is_err());
+    assert_eq!(
+        host.burst_frame_path(ROUND, "cam2", 2).unwrap(),
+        dir.join(frame_rel_path("cam2", 2)).canonicalize().unwrap()
+    );
+}
+
+#[test]
 fn frame_read_after_image_cleanup_rejects_the_missing_image() {
     let root = root();
     let round = patched(

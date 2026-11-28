@@ -283,6 +283,11 @@ pub struct BurstFrameIndex {
     recording: std::sync::OnceLock<Result<PathBuf, String>>,
 }
 
+struct ValidatedFrameLines {
+    lines: Vec<FrameLine>,
+    saved: Vec<BTreeSet<u64>>,
+}
+
 impl BurstFrameIndex {
     pub fn round(&self) -> &CaptureRoundV2 {
         &self.round
@@ -397,10 +402,10 @@ impl RecipeCaptureHost {
 
     /// 一轮的笔结构（D-SB-62）：按帧记录里每帧的时间戳重算。
     pub fn burst_passes(&self, round_id: &str) -> Result<Vec<u32>, String> {
-        let (round, lines) = self.load_burst(round_id, true)?;
+        let (round, frames) = self.load_burst(round_id, true)?;
+        let lines = frames.map(|frames| frames.lines).unwrap_or_default();
         Ok(crate::passes::from_times(
             lines
-                .unwrap_or_default()
                 .iter()
                 .map(|line| (line.camera, line.seq, line.ts as f64)),
             round.group_count,
@@ -423,19 +428,10 @@ impl RecipeCaptureHost {
     }
 
     pub fn burst_frame_index(&self, round_id: &str) -> Result<BurstFrameIndex, String> {
-        let dir = self.safe_round_path(round_id)?;
-        let (round, lines) = self.load_burst(round_id, true)?;
-        let mut saved: BTreeMap<String, BTreeSet<u64>> = round
-            .camera_ids()
-            .into_iter()
-            .map(|id| (id, BTreeSet::new()))
-            .collect();
-        for line in lines.unwrap_or_default() {
-            saved
-                .get_mut(&round.cameras[line.camera].camera_id)
-                .unwrap()
-                .insert(line.seq);
-        }
+        let (dir, text) = self.read_round_text(round_id)?;
+        let (round, frames) = Self::load_burst_text(round_id, &dir, &text, true)?;
+        let frames = frames.ok_or("采集帧记录不存在")?;
+        let saved = round.camera_ids().into_iter().zip(frames.saved).collect();
         Ok(BurstFrameIndex {
             dir,
             round,
@@ -492,7 +488,7 @@ impl RecipeCaptureHost {
         &self,
         round_id: &str,
         deep: bool,
-    ) -> Result<(CaptureRoundV2, Option<Vec<FrameLine>>), String> {
+    ) -> Result<(CaptureRoundV2, Option<ValidatedFrameLines>), String> {
         let (dir, text) = self.read_round_text(round_id)?;
         Self::load_burst_text(round_id, &dir, &text, deep)
     }
@@ -526,7 +522,7 @@ impl RecipeCaptureHost {
         dir: &Path,
         text: &str,
         deep: bool,
-    ) -> Result<(CaptureRoundV2, Option<Vec<FrameLine>>), String> {
+    ) -> Result<(CaptureRoundV2, Option<ValidatedFrameLines>), String> {
         let round: CaptureRoundV2 =
             serde_json::from_str(text).map_err(|e| format!("采集记录无法读取：{e}"))?;
         let lines = if deep {
@@ -547,8 +543,11 @@ impl RecipeCaptureHost {
         } else {
             None
         };
-        validate_record(round_id, &round, lines.as_deref())?;
-        Ok((round, lines))
+        let saved = validate_record(round_id, &round, lines.as_deref())?;
+        let frames = lines
+            .zip(saved)
+            .map(|(lines, saved)| ValidatedFrameLines { lines, saved });
+        Ok((round, frames))
     }
 }
 
@@ -558,7 +557,7 @@ fn validate_record(
     expected_id: &str,
     round: &CaptureRoundV2,
     lines: Option<&[FrameLine]>,
-) -> Result<(), String> {
+) -> Result<Option<Vec<BTreeSet<u64>>>, String> {
     let cameras = &round.cameras;
     let n = cameras.len();
     let format_ok = (round.format == FORMAT && round.history_cycle().is_some())
@@ -655,7 +654,7 @@ fn validate_record(
     if !terminal_ok {
         return Err("采集记录的状态与 PLC 开始、结束或失败原因不一致".into());
     }
-    let Some(lines) = lines else { return Ok(()) };
+    let Some(lines) = lines else { return Ok(None) };
     let mut saved = vec![BTreeSet::new(); n];
     let mut baselines: BTreeMap<usize, u64> = BTreeMap::new();
     for line in lines {
@@ -693,7 +692,7 @@ fn validate_record(
             return Err("完整采集的统计与已写盘的帧不一致".into());
         }
     }
-    Ok(())
+    Ok(Some(saved))
 }
 
 /// 启动时恢复：进行中的轮次按 frames.jsonl 重算统计（容忍末行写了一半），判为应用退出中断。
