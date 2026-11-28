@@ -411,16 +411,30 @@ it("段已有示教帧时在帧条上点本段另一帧组 → 按示教件提�
   response.plan!.cameraTeaching[1].segments[0].seq = 3;
   response.workspace.cameraTeaching = response.workspace.cameraTeaching.map(item => item.camera === "CAM-2" && item.segment === 1 ? { camera: "CAM-2", frame, round: "round-1", seq: 3, segment: 1 } : item);
   const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
+  const round = deferred<ReturnType<typeof captureRoundV2>>();
   mockSite(candidate, {
-    recipe_capture_get: ({ roundId }) => captureRoundV2({ recipeId: "A", roundId: roundId as string }),
+    recipe_capture_get: () => round.promise,
     workspace_teach_segment_corridor: () => response,
   });
   const frameImage = vi.spyOn(workspaceApi, "captureFrameImage").mockResolvedValue(picture);
   const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
   await screen.findByRole("img", { name: CAM2 });
-  expect(calls("recipe_capture_get")).toEqual([{ roundId: "round-1" }]);
+  expect(calls("recipe_capture_get")).toEqual([]);
+  await user.click(screen.getByRole("button", { name: "选择相机 CAM-2" }));
+  expect(screen.getByRole("region", { name: "相机参数" })).toBeVisible();
+  expect(calls("recipe_capture_get")).toEqual([]);
+  await user.click(screen.getByRole("button", { name: "选择 CAM-2 1-1 走廊" }));
+  await screen.findByRole("img", { name: CAM2 });
+
   await user.click(await screen.findByRole("button", { name: "CAM-2 帧组 3" }));
   await screen.findByRole("region", { name: "示教帧选择" });
+  expect(calls("recipe_capture_get")).toEqual([{ roundId: "round-1" }]);
+  expect(screen.getByRole("button", { name: "用此帧示教 1-1 CAM-2" })).toBeDisabled();
+  expect(frameImage).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "回到示教帧" }));
+  await user.click(await screen.findByRole("button", { name: "CAM-2 帧组 3" }));
+  expect(calls("recipe_capture_get")).toEqual([{ roundId: "round-1" }]);
+  await act(async () => round.resolve(captureRoundV2({ recipeId: "A", roundId: "round-1" })));
   expect(await screen.findByRole("img", { name: "CAM-2 · 帧组 3 · 候选示教帧" })).toBeVisible();
   await waitFor(() => expect(frameImage.mock.calls.at(-1)?.slice(0, 3)).toEqual(["round-1", "CAM-2", 3]));
   const choose = await screen.findByRole("button", { name: "用此帧示教 1-1 CAM-2" });

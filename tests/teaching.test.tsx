@@ -1,11 +1,11 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { useProductionBusy } from "../src/features/cycle/control";
-import { burstRecipe, burstWorkspaceView, captureRoundV2, frameMetrics, pathSegment, workspaceState } from "./fixtures";
+import { burstRecipe, burstWorkspaceView, captureRoundV2, deferred, frameMetrics, pathSegment, workspaceState } from "./fixtures";
 import { stubSvgPointer } from "./svg-pointer";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/cycle/control", () => ({ useProductionBusy: vi.fn() }));
@@ -64,6 +64,7 @@ describe("走廊示教", () => {
     const counts = within(screen.getByLabelText("试测统计"));
     expect(await counts.findByText("无胶 7")).toBeVisible();
     expect(counts.getByText("生产跳过 5")).toBeVisible();
+    expect(workspaceApi.captureGet).not.toHaveBeenCalled();
   });
 
   it("检测段两侧为免检段 → 两侧保护帧合并到生产跳过，段内其余无胶帧仍计数", async () => {
@@ -279,6 +280,39 @@ describe("示教帧选择", () => {
     expect(choose).toHaveAccessibleDescription(expect.stringContaining("缺帧"));
     expect(vi.mocked(workspaceApi.captureFrameImage).mock.calls.map(args => args.slice(0, 3))).not.toContainEqual(["round-1", "CAM-2", 5]);
     expect(workspaceApi.teachSegmentCorridor).not.toHaveBeenCalled();
+  });
+
+  it("选帧读取期间替换候选实例 → 迟到的轮次不用于新候选", async () => {
+    const first = deferred<ReturnType<typeof captureRoundV2>>();
+    const second = deferred<ReturnType<typeof captureRoundV2>>();
+    vi.mocked(workspaceApi.captureGet).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const path = "/recipe/teach?camera=CAM-2&segment=2";
+    const { rerender } = show(path);
+    fireEvent.click(await screen.findByRole("button", { name: "CAM-2 帧组 6" }));
+    await waitFor(() => expect(workspaceApi.captureGet).toHaveBeenCalledTimes(1));
+
+    ws.data = { ...ws.data!, workspace: { ...ws.data!.workspace, instanceId: 2 } };
+    rerender(<MemoryRouter initialEntries={[path]}><TeachingPage /></MemoryRouter>);
+    await waitFor(() => expect(workspaceApi.captureGet).toHaveBeenCalledTimes(2));
+    await act(async () => first.resolve(captureRoundV2({ recipeId: "A" })));
+    expect(workspaceApi.captureFrameImage).not.toHaveBeenCalled();
+    const choose = () => screen.getByRole("button", { name: "用此帧示教 1-2 CAM-2" });
+    expect(choose()).toBeDisabled();
+
+    await act(async () => second.resolve(captureRoundV2({ recipeId: "A" })));
+    expect(await screen.findByRole("img", { name: "CAM-2 · 帧组 6 · 候选示教帧" })).toBeVisible();
+    expect(choose()).toBeEnabled();
+  });
+
+  it("示教轮次读取失败 → 禁止冻结，重试成功后可继续选帧", async () => {
+    vi.mocked(workspaceApi.captureGet).mockRejectedValueOnce("采集文件暂不可读");
+    show("/recipe/teach?camera=CAM-2&segment=2");
+    expect(await screen.findByRole("alert")).toHaveTextContent("采集文件暂不可读");
+    const choose = () => screen.getByRole("button", { name: "用此帧示教 1-2 CAM-2" });
+    expect(choose()).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "重试读取示教件" }));
+    await waitFor(() => expect(choose()).toBeEnabled());
+    expect(workspaceApi.captureGet).toHaveBeenCalledTimes(2);
   });
 });
 

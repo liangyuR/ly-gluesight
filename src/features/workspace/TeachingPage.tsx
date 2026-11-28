@@ -108,6 +108,38 @@ function useRoundFrame(round: CaptureRoundV2 | null, camera: string, seq: number
   return state.key === key ? state : { image: null, error: "", loading: enabled && !!round };
 }
 
+type RoundPreviewResult = { key: string; picked: { round: CaptureRoundV2; view: RoundView } | null; error: string };
+
+function useTeachingRound(recipeId: string, instanceId: number, roundId: string | undefined, enabled: boolean) {
+  const [attempt, setAttempt] = useState(0);
+  const key = JSON.stringify([recipeId, instanceId, roundId, attempt]);
+  const request = useRef<{ key: string; promise: Promise<RoundPreviewResult> } | null>(null);
+  const [result, setResult] = useState<RoundPreviewResult | null>(null);
+  useEffect(() => {
+    if (request.current?.key !== key) { request.current = null; setResult(null); }
+    if (!enabled || !roundId) return;
+    const current = request.current ??= {
+      key,
+      promise: workspaceApi.captureGet(roundId).then(round => {
+        if (!round || round.roundId !== roundId || round.recipeId !== recipeId || round.state !== "complete") {
+          throw new Error("当前示教轮次不可用");
+        }
+        return { key, picked: { round, view: roundView(round) }, error: "" };
+      }).catch(error => ({ key, picked: null, error: errorText(error) })),
+    };
+    let alive = true;
+    void current.promise.then(next => { if (alive) setResult(next); });
+    return () => { alive = false; };
+  }, [enabled, key, recipeId, roundId]);
+  const shown = result?.key === key ? result : null;
+  return {
+    picked: shown?.picked ?? null,
+    error: shown?.error ?? "",
+    loading: enabled && !!roundId && !shown,
+    retry: () => setAttempt(previous => previous + 1),
+  };
+}
+
 const RAIL_KEY = "gluesight.teach.railWidth";
 const RAIL_MIN = 220, RAIL_MAX = 640;
 const clampRail = (w: number) => Math.round(Math.min(RAIL_MAX, Math.max(RAIL_MIN, w)));
@@ -270,22 +302,14 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
   const { image, error, loading } = useFrameImage(doc.id, frame?.id ?? null);
 
   // 示教帧选择（RB-1）：帧条上点的帧组就是候选示教帧，只能选这台相机落在本段内的帧组
-  const [picked, setPicked] = useState<{ round: CaptureRoundV2; view: RoundView } | null>(null);
-  const [pickError, setPickError] = useState("");
   const choosingNow = segment != null && (!frame || (sel.choosing && seq !== teachSeq));
+  const previewing = choosingNow || mode === "skip" || mode === "pending";
+  const { picked, error: pickError, loading: roundLoading, retry: retryRound } = useTeachingRound(doc.id, data.workspace.instanceId, teachingRoundId, previewing);
   const reviews = data.workspace.captureReview?.rounds ?? {};
-  useEffect(() => {
-    setPicked(null); setPickError("");
-    if (!teachingRoundId) return;
-    let alive = true;
-    void workspaceApi.captureGet(teachingRoundId).then(round => { if (alive) setPicked(round?.recipeId === doc.id && round.state === "complete" ? { round, view: roundView(round) } : null); }).catch(e => { if (alive) setPickError(errorText(e)); });
-    return () => { alive = false; };
-  }, [teachingRoundId, doc.id]);
   // 单段配方所有帧都在第 1 段，不需要先确认手动分段（与后端 apply_segment_teaching 一致）
   const range = segment == null || !picked ? null : plan.segments.length === 1 ? { start: 1, end: picked.view.groupCount } : confirmedSegmentRange(reviews[picked.view.roundId], plan.segments, segment);
   const inSegment = !!range && seq >= range.start && seq <= range.end;
   const arrived = !!picked && frameArrived(picked.view, camera, seq);
-  const previewing = choosingNow || mode === "skip" || mode === "pending";
   const candidate = useRoundFrame(picked?.round ?? null, camera, seq, previewing && arrived);
 
   const savedDoc = data.workspace.doc;
@@ -568,7 +592,7 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
     <p className="muted hint">走廊保存进候选配方，已发布版本不变。用于生产前仍需试测与发布。</p>
   </Popover>;
   const frameTitle = <h2 className="wp-trial-title" title={frame ? `${frame.source} · ${frame.id}` : undefined}>{targetLabel}<small>示教帧{teachSeq != null ? ` · 帧组 ${teachSeq}` : ""}</small></h2>;
-  const pickReason = alignmentPending || (!teachingPiece ? "还没有示教件：先选示教件" : !picked ? "正在读取示教件" : seg.dirty ? "分段还没保存：保存后再选示教帧" : !range ? "示教件的分段边界还没确认"
+  const pickReason = alignmentPending || (!teachingPiece ? "还没有示教件：先选示教件" : pickError ? "示教件读取失败" : !picked ? "正在读取示教件" : seg.dirty ? "分段还没保存：保存后再选示教帧" : !range ? "示教件的分段边界还没确认"
     : !inSegment ? `${label} 在示教件为帧组 ${range.start}–${range.end}` : !arrived ? "该相机本帧组缺帧，请换一个帧组" : !ready ? "正在处理，请稍候" : "");
   const pickBar = <Surface role="region" className="wp-picker wp-corridor-picker" aria-label="示教帧选择">
     <h2>{targetLabel}<small>候选示教帧 · 帧组 {seq}</small></h2>
@@ -582,7 +606,8 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
   </Surface>;
   const cameraTasks = tasks.filter(item => item.camera === camera);
   const trialReview = segmentTeaching ? reviews[segmentTeaching.round] : undefined;
-  const trialGroups = picked && picked.round.roundId === segmentTeaching?.round ? picked.view.groupCount : trialReview?.groupCount ?? 0;
+  const trialGroups = picked && picked.round.roundId === segmentTeaching?.round ? picked.view.groupCount
+    : plan.pieces.find(piece => piece.roundId === segmentTeaching?.round)?.groupCount ?? trialReview?.groupCount ?? 0;
   const savedSegments = data.workspace.doc.segments ?? [];
   const trialRangeFor = (index: number) => savedSegments.length === 1
     ? (trialGroups > 0 ? { start: 1, end: trialGroups } : null)
@@ -602,9 +627,13 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
       onValueChange={id => mode === "corridor" ? focusPos(pos, id) : setSel(current => ({ ...current, camera: id }))} />
     {mode === "corridor" && <span className="muted">{label} 由 {segCameras.join("、")} 检测</span>}
   </div>;
-  const previewViewer = <FrameViewer controlsAt="footer" image={candidate.image} loading={candidate.loading} error={candidate.error || (picked && !arrived ? "该相机本帧组缺帧" : "")} label={`${camera} · 帧组 ${seq}${choosingNow ? " · 候选示教帧" : ""}`}
-    emptyTitle={teachingPiece ? "示教件原图" : "还没有示教件"} emptyHint="在上方帧条里点帧组查看这台相机的原图。"
-    summary={<span className="muted">{choosingNow ? `选定后冻结为 ${label} 的示教帧，这条走廊只用于这一段的帧。` : `帧组 ${seq}${label ? ` · ${label}` : ""}`}</span>}/>;
+  const previewViewer = <>
+    {pickError && <Alert tone="ng" title="示教件读取失败"
+      action={<Button variant="text" size="sm" onClick={retryRound}>重试读取示教件</Button>}>{pickError}</Alert>}
+    <FrameViewer controlsAt="footer" image={candidate.image} loading={roundLoading || candidate.loading} error={candidate.error || (picked && !arrived ? "该相机本帧组缺帧" : "")} label={`${camera} · 帧组 ${seq}${choosingNow ? " · 候选示教帧" : ""}`}
+      emptyTitle={teachingPiece ? "示教件原图" : "还没有示教件"} emptyHint={pickError ? undefined : "在上方帧条里点帧组查看这台相机的原图。"}
+      summary={<span className="muted">{choosingNow ? `选定后冻结为 ${label} 的示教帧，这条走廊只用于这一段的帧。` : `帧组 ${seq}${label ? ` · ${label}` : ""}`}</span>}/>
+  </>;
   const middle = mode === "params"
     ? <Surface role="region" className="wp-seg-corridor-note" aria-label="相机参数">
       <h3>{camera} · 相机参数</h3>
@@ -623,7 +652,6 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
     : <>
       {cameraTabs}
       {choosingNow && pickBar}
-      {pickError && choosingNow && <p className="c-warn wp-picker-warn" role="alert">{pickError}</p>}
       {!choosingNow && frame && (segmentTeaching
         ? <SegmentTrial key={scope} id={doc.id} camera={camera} segment={segment!} round={segmentTeaching.round} teachSeq={segmentTeaching.seq}
           skipRules={{ passes: data.workspace.teachingPiece?.passes, groupCount: trialGroups, passSkip: data.workspace.doc.passSkip, segment: savedSegments.find(item => item.index === segment), guardRanges }}
