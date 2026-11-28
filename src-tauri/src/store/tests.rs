@@ -110,6 +110,58 @@ fn covering_index_upgrade_preserves_scoped_and_cross_project_history() {
 }
 
 #[test]
+fn reopening_history_preserves_the_next_recipe_version_in_the_current_project() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let other = Store::open_for(&db.path(), "other-project").unwrap();
+    let template = burst_fixture::recipe();
+    let record = |store: &Store, cycle: &str, id: &str, version| {
+        let recipe = Recipe {
+            id: id.into(),
+            version,
+            revision_id: format!("{id}-v{version}"),
+            ..template.clone()
+        };
+        let (judgement, burst) =
+            burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+        store
+            .insert(&burst_part(&recipe, cycle, &judgement, &burst))
+            .unwrap();
+    };
+    record(&store, "older-history", "reused", 3);
+    record(&store, "history-without-snapshot", "reused", 8);
+    record(&store, "imported-only", "reused", 90);
+    record(&store, "expired-history", "snapshot", 11);
+    record(&other, "other-history", "reused", 42);
+    store
+        .conn
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "DELETE FROM parts WHERE cycle_id IN ('imported-only', 'expired-history');
+             UPDATE recipe_snapshots SET revision_id='reused-imported-v90',
+                 json=json_set(json, '$.revisionId', 'reused-imported-v90') WHERE revision_id='reused-v90';
+             DELETE FROM recipe_snapshots WHERE revision_id='reused-v8';
+             DROP INDEX parts_project_recipe_version;",
+        )
+        .unwrap();
+    let project = store.project().to_owned();
+    drop(other);
+    drop(store);
+
+    let store = Store::open_deferred_recovery(&db.path(), &project).unwrap();
+    let floors = store.recipe_version_floors().unwrap();
+    assert_eq!(
+        floors,
+        BTreeMap::from([("reused".into(), 8), ("snapshot".into(), 11)])
+    );
+    let recipes =
+        crate::recipe::RecipeStore::open_with_floors(db.0.join("recipes"), &floors).unwrap();
+    assert_eq!(recipes.next_version("reused").unwrap(), 9);
+    assert_eq!(recipes.next_version("snapshot").unwrap(), 12);
+}
+
+#[test]
 fn sn_index_upgrade_preserves_exact_retest_links_within_the_current_project() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

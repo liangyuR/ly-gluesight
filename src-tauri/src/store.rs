@@ -1040,6 +1040,9 @@ impl Store {
              DROP INDEX IF EXISTS parts_sn;
              CREATE INDEX IF NOT EXISTS parts_sn_project_ts
                  ON parts(sn, project_id, ts) WHERE sn <> '';
+             CREATE INDEX IF NOT EXISTS parts_project_recipe_version
+                 ON parts(project_id, recipe_id, recipe_version)
+                 WHERE recipe_id IS NOT NULL AND recipe_version IS NOT NULL;
              CREATE INDEX IF NOT EXISTS parts_retest ON parts(retest_of) WHERE retest_of IS NOT NULL;
              CREATE INDEX IF NOT EXISTS parts_recording_directory ON parts(recording_directory);
              CREATE INDEX IF NOT EXISTS parts_pending_recording
@@ -1132,9 +1135,19 @@ impl Store {
 
     pub fn recipe_version_floors(&self) -> Result<std::collections::BTreeMap<String, u32>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT recipe_id,MAX(version) FROM (
-            SELECT recipe_id,recipe_version AS version FROM parts WHERE project_id=?1 AND recipe_id IS NOT NULL AND recipe_version IS NOT NULL
-            UNION ALL SELECT recipe_id,version FROM recipe_snapshots WHERE project_id=?1 AND revision_id = recipe_id || '-v' || version) GROUP BY recipe_id").map_err(db_err)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT recipe_id, MAX(version) FROM (
+                    SELECT recipe_id, MAX(recipe_version) AS version FROM parts
+                    WHERE project_id=?1 AND recipe_id IS NOT NULL AND recipe_version IS NOT NULL
+                    GROUP BY recipe_id
+                    UNION ALL
+                    SELECT recipe_id, MAX(version) FROM recipe_snapshots
+                    WHERE project_id=?1 AND revision_id = recipe_id || '-v' || version
+                    GROUP BY recipe_id
+                ) GROUP BY recipe_id",
+            )
+            .map_err(db_err)?;
         let rows = stmt
             .query_map([&self.project], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
