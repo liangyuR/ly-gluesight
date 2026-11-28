@@ -1,10 +1,11 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type Event as TauriEvent } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cycleApi, useCycle } from "../src/features/cycle/api";
-import type { Snapshot } from "../src/features/cycle/types";
+import { cycleApi, useCycle, useLayout, useRecipes } from "../src/features/cycle/api";
+import type { Recipe, Snapshot } from "../src/features/cycle/types";
 import { burstPartView } from "./cycle-visual-fixtures";
-import { deferred, snapshot } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, deferred, snapshot } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -73,5 +74,67 @@ describe("在线周期身份与迟到响应隔离", () => {
     emit("cycle://snapshot", state("cycle-2", 2));
     await act(async () => initial.resolve(state()));
     expect(hook.result.current.snapshot?.part?.cycleId).toBe("cycle-2");
+  });
+});
+
+describe("在线配方布局更新", () => {
+  it("同修订的旧布局请求在刷新后失败 → 两个观察者共用新布局", async () => {
+    const layout = burstWorkspaceView().layout;
+    const request = { recipeId: layout.id, revisionId: layout.revisionId };
+    const initial = deferred<Recipe>();
+    const refreshed = deferred<Recipe>();
+    const ipc = vi.mocked(invoke).mockReset().mockResolvedValue(null)
+      .mockReturnValueOnce(initial.promise).mockReturnValueOnce(refreshed.promise);
+    const read = () => useLayout(request.recipeId, request.revisionId);
+    const first = renderHook(read);
+    await waitFor(() => expect(ipc).toHaveBeenCalledExactlyOnceWith("cycle_layout", request));
+
+    emit("workspace://changed", request.recipeId);
+    await waitFor(() => expect(ipc).toHaveBeenNthCalledWith(2, "cycle_layout", request));
+    await act(async () => initial.reject(new Error("旧布局读取失败")));
+
+    const second = renderHook(read);
+    await act(async () => refreshed.resolve(layout));
+    await waitFor(() => {
+      expect(first.result.current).toEqual(layout);
+      expect(second.result.current).toEqual(layout);
+    });
+    expect(ipc).toHaveBeenCalledTimes(2);
+  });
+
+  it("其他配方发生变化 → 更新配方目录并保留在线件的锁定布局", async () => {
+    const doc = burstRecipe({ id: "LOCKED" });
+    const layout = burstWorkspaceView(doc).layout;
+    const locked = burstSummary(doc);
+    const other = burstSummary(burstRecipe({ id: "OTHER", name: "待更新配方", productCode: 3 }));
+    const updated = { ...other, name: "新版配方", version: 2, revisionId: "OTHER-v2" };
+    let recipes = [locked, other];
+    const ipc = vi.mocked(invoke).mockReset().mockImplementation(async command => {
+      if (command === "cycle_recipes") return recipes;
+      if (command === "cycle_layout") return layout;
+      throw new Error(`未声明的桌面调用：${command}`);
+    });
+    const hook = renderHook(() => ({ layout: useLayout(layout.id, layout.revisionId), recipes: useRecipes() }));
+    await waitFor(() => expect(hook.result.current).toEqual({ layout, recipes: [locked, other] }));
+
+    recipes = [locked, updated];
+    emit("workspace://changed", updated.id);
+    await waitFor(() => expect(hook.result.current).toEqual({ layout, recipes: [locked, updated] }));
+    expect(ipc.mock.calls.filter(([command]) => command === "cycle_layout"))
+      .toEqual([["cycle_layout", { recipeId: layout.id, revisionId: layout.revisionId }]]);
+  });
+
+  it("离开布局监听后发布新版 → 重进时读取当前配方布局", async () => {
+    const previous = burstWorkspaceView(burstRecipe({ id: "LEASE" })).layout;
+    const updated = { ...previous, version: 2, revisionId: "LEASE-v2" };
+    const ipc = vi.mocked(invoke).mockReset()
+      .mockResolvedValueOnce(previous).mockResolvedValueOnce(updated);
+    const first = renderHook(() => useLayout(previous.id));
+    await waitFor(() => expect(first.result.current?.revisionId).toBe(previous.revisionId));
+    first.unmount();
+
+    const second = renderHook(() => useLayout(previous.id));
+    await waitFor(() => expect(second.result.current?.revisionId).toBe(updated.revisionId));
+    expect(ipc).toHaveBeenCalledTimes(2);
   });
 });

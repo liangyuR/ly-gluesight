@@ -52,14 +52,16 @@ export const recipeApi = {
   template: () => call<RecipeDoc>("recipe_template", undefined, () => Promise.reject("非桌面环境") as never),
 };
 
-const layoutCache = new Map<string, Promise<Recipe | null>>();
-const recipeListeners = new Set<() => void>();
+const layoutCache = new Map<string, { recipeId: string; request: Promise<Recipe | null> }>();
+const recipeListeners = new Set<(recipeId: string) => void>();
 let stopRecipeEvents: (() => void) | null = null;
-function notifyRecipes() {
-  layoutCache.clear();
-  recipeListeners.forEach((f) => f());
+function notifyRecipes(recipeId: string) {
+  for (const [key, entry] of layoutCache) {
+    if (!recipeId || entry.recipeId === recipeId) layoutCache.delete(key);
+  }
+  recipeListeners.forEach(f => f(recipeId));
 }
-function listenRecipes(f: () => void) {
+function listenRecipes(f: (recipeId: string) => void) {
   recipeListeners.add(f);
   stopRecipeEvents ??= subscribe<string>("workspace://changed", notifyRecipes);
   return () => {
@@ -67,6 +69,7 @@ function listenRecipes(f: () => void) {
     if (recipeListeners.size === 0 && stopRecipeEvents) {
       stopRecipeEvents();
       stopRecipeEvents = null;
+      layoutCache.clear();
     }
   };
 }
@@ -80,27 +83,30 @@ export function useLayout(recipeId: string | null | undefined, revisionId?: stri
   const [gen, setGen] = useState(0);
   const key = recipeId ? `${recipeId}:${revisionId ?? ""}` : "";
   useEffect(() => {
-    return listenRecipes(() => setGen((g) => g + 1));
-  }, []);
+    return listenRecipes(changedId => {
+      if (!changedId || changedId === recipeId) setGen(g => g + 1);
+    });
+  }, [recipeId]);
   useEffect(() => {
     if (!recipeId) return;
-    if (!layoutCache.has(key))
-      layoutCache.set(
-        key,
-        cycleApi.layout(recipeId, revisionId).catch(() => {
-          layoutCache.delete(key);
-          return null;
-        }),
-      );
+    let entry = layoutCache.get(key);
+    if (!entry) {
+      const request = cycleApi.layout(recipeId, revisionId).catch(() => null).then(layout => {
+        if (!layout && layoutCache.get(key)?.request === request) layoutCache.delete(key);
+        return layout;
+      });
+      entry = { recipeId, request };
+      layoutCache.set(key, entry);
+    }
     let alive = true;
-    layoutCache.get(key)!.then(
-      (layout) => alive && setState((prev) => (!layout && prev?.key === key && prev.layout ? prev : { key, id: recipeId, layout })),
-    );
+    void entry.request.then(layout => {
+      if (!alive || (layout && layoutCache.get(key) !== entry)) return;
+      setState(prev => !layout && prev?.key === key && prev.layout ? prev : { key, id: recipeId, layout });
+    });
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, gen]);
+  }, [key, gen, recipeId, revisionId]);
   if (!state) return null;
   return state.key === key || (keepPrevious && state.id === recipeId) ? state.layout : null;
 }
