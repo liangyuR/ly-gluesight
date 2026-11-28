@@ -54,21 +54,32 @@ export const recipeApi = {
 
 const layoutCache = new Map<string, { recipeId: string; request: Promise<Recipe | null> }>();
 const recipeListeners = new Set<(recipeId: string) => void>();
-let stopRecipeEvents: (() => void) | null = null;
+let recipeEvents: { stop: () => void; ready: Promise<void> } | null = null;
 function notifyRecipes(recipeId: string) {
   for (const [key, entry] of layoutCache) {
     if (!recipeId || entry.recipeId === recipeId) layoutCache.delete(key);
   }
   recipeListeners.forEach(f => f(recipeId));
 }
-function listenRecipes(f: (recipeId: string) => void) {
-  recipeListeners.add(f);
-  stopRecipeEvents ??= subscribe<string>("workspace://changed", notifyRecipes);
+function listenRecipes(listener: (recipeId: string) => void, onReady?: () => void) {
+  recipeListeners.add(listener);
+  if (!recipeEvents) {
+    let registered!: () => void;
+    const ready = new Promise<void>(resolve => { registered = resolve; });
+    let accepting = true;
+    const unsubscribe = subscribe<string>("workspace://changed", recipeId => {
+      if (accepting) notifyRecipes(recipeId);
+    }, undefined, registered);
+    recipeEvents = { ready, stop: () => { accepting = false; unsubscribe(); } };
+  }
+  let alive = true;
+  if (onReady) void recipeEvents.ready.then(() => { if (alive) onReady(); });
   return () => {
-    recipeListeners.delete(f);
-    if (recipeListeners.size === 0 && stopRecipeEvents) {
-      stopRecipeEvents();
-      stopRecipeEvents = null;
+    alive = false;
+    recipeListeners.delete(listener);
+    if (recipeListeners.size === 0 && recipeEvents) {
+      recipeEvents.stop();
+      recipeEvents = null;
       layoutCache.clear();
     }
   };
@@ -114,9 +125,25 @@ export function useLayout(recipeId: string | null | undefined, revisionId?: stri
 export function useRecipes() {
   const [recipes, setRecipes] = useState<RecipeSummary[]>([]);
   useEffect(() => {
-    const load = () => cycleApi.recipes().then(setRecipes).catch(() => setRecipes([]));
-    load();
-    return listenRecipes(load);
+    let alive = true;
+    let ready = false;
+    let reading = false;
+    let pending = false;
+    const load = () => {
+      if (!alive || !ready) return;
+      if (reading) { pending = true; return; }
+      reading = true;
+      pending = false;
+      void cycleApi.recipes().then(
+        next => { if (alive && !pending) setRecipes(next); },
+        () => { if (alive && !pending) setRecipes([]); },
+      ).finally(() => {
+        reading = false;
+        if (pending) load();
+      });
+    };
+    const stop = listenRecipes(load, () => { ready = true; load(); });
+    return () => { alive = false; stop(); };
   }, []);
   return recipes;
 }

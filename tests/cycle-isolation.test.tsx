@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type Event as TauriEvent } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cycleApi, useCycle, useLayout, useRecipes } from "../src/features/cycle/api";
-import type { Recipe, Snapshot } from "../src/features/cycle/types";
+import type { Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
 import { burstPartView } from "./cycle-visual-fixtures";
 import { burstRecipe, burstSummary, burstWorkspaceView, deferred, snapshot } from "./fixtures";
 
@@ -135,6 +135,64 @@ describe("在线配方布局更新", () => {
 
     const second = renderHook(() => useLayout(previous.id));
     await waitFor(() => expect(second.result.current?.revisionId).toBe(updated.revisionId));
+    expect(ipc).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("配方目录刷新", () => {
+  it.each(["成功", "失败"])("监听登记延迟，首读%s前收到连续变更 → 只补读一次新版目录", async outcome => {
+    const registered = deferred<void>();
+    const listenImmediately = vi.mocked(listen).getMockImplementation()!;
+    vi.mocked(listen).mockImplementationOnce(async (event, handler, options) => {
+      await registered.promise;
+      return listenImmediately(event, handler, options);
+    });
+    const previous = burstSummary();
+    const updated = { ...previous, name: "新版配方", version: 2, revisionId: "S-v2" };
+    const initial = deferred<RecipeSummary[]>();
+    const refreshed = deferred<RecipeSummary[]>();
+    const ipc = vi.mocked(invoke).mockReset().mockResolvedValue([updated])
+      .mockReturnValueOnce(initial.promise).mockReturnValueOnce(refreshed.promise);
+    const hook = renderHook(useRecipes);
+    const callsBeforeRegistration = ipc.mock.calls.length;
+
+    await act(async () => registered.resolve(undefined));
+    expect(callsBeforeRegistration).toBe(0);
+    await waitFor(() => expect(ipc).toHaveBeenCalledExactlyOnceWith("cycle_recipes", undefined));
+    emit("workspace://changed", previous.id);
+    emit("workspace://changed", "OTHER");
+    emit("workspace://changed", previous.id);
+    expect(ipc).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      if (outcome === "成功") initial.resolve([previous]);
+      else initial.reject(new Error("旧的目录查询失败"));
+    });
+    await waitFor(() => expect(ipc).toHaveBeenCalledTimes(2));
+    expect(hook.result.current).toEqual([]);
+
+    await act(async () => refreshed.resolve([updated]));
+    await waitFor(() => expect(hook.result.current).toEqual([updated]));
+    expect(ipc).toHaveBeenCalledTimes(2);
+  });
+
+  it("目录查询期间收到变更后离页 → 丢弃待补读，重进时读取新目录", async () => {
+    const initial = deferred<RecipeSummary[]>();
+    const updated = burstSummary(burstRecipe({ id: "NEW" }));
+    const ipc = vi.mocked(invoke).mockReset().mockResolvedValue([updated])
+      .mockReturnValueOnce(initial.promise);
+    const first = renderHook(useRecipes);
+    await waitFor(() => expect(ipc).toHaveBeenCalledTimes(1));
+    const oldListener = events.get("workspace://changed")!;
+    emit("workspace://changed", updated.id);
+    first.unmount();
+
+    await act(async () => initial.reject(new Error("已离页的目录查询失败")));
+    expect(ipc).toHaveBeenCalledTimes(1);
+
+    const reopened = renderHook(useRecipes);
+    await waitFor(() => expect(reopened.result.current).toEqual([updated]));
+    act(() => oldListener(updated.id));
     expect(ipc).toHaveBeenCalledTimes(2);
   });
 });
