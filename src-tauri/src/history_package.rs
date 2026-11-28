@@ -584,6 +584,7 @@ pub fn import_package(
             |path| allowed(path, &directories),
             LABEL,
             |path| part_directory(path).is_none_or(|d| wanted_directories.contains(d)),
+            || operation.check(),
             || operation.advance(FrameState::Measured),
         )?;
         let database = staging.join(DATABASE);

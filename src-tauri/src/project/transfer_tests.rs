@@ -617,6 +617,69 @@ fn cancel_after_last_file_keeps_previous_target_and_reports_cancelled() {
 }
 
 #[test]
+fn cancellation_during_a_zip_entry_does_not_complete_that_file() {
+    use crate::operation::{Operation, Operations};
+
+    let temp = TempDir::new("cancel-zip-entry");
+    let package = temp.0.join("files.zip");
+    let staging = temp.0.join("staging");
+    let partial = staging.join("large.bin");
+    let large = vec![0x3c; 3 << 20];
+    let entries = [
+        ("first.json", b"{}".as_slice()),
+        ("large.bin", large.as_slice()),
+        ("last.json", b"{}".as_slice()),
+    ];
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let mut out = ZipWriter::new(File::create(&package).unwrap());
+    let mut files = Vec::new();
+    for (path, bytes) in entries {
+        out.start_file(path, options).unwrap();
+        out.write_all(bytes).unwrap();
+        files.push(PackageFile {
+            path: path.into(),
+            bytes: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+        });
+    }
+    out.start_file(MANIFEST, options).unwrap();
+    serde_json::to_writer(&mut out, &serde_json::json!({ "files": files })).unwrap();
+    out.finish().unwrap();
+    let mut zip = open_zip(&package, "测试包").unwrap();
+    let tasks = Operations::default();
+    let task = "cancel-zip-entry";
+    let operation = Operation::with_events(tasks.clone(), Some(task.into()), |_| {}).unwrap();
+
+    let result = operation.run(|operation| {
+        operation.measuring(files.len())?;
+        extract_listed_with(
+            &mut zip,
+            &files,
+            &staging,
+            |_| true,
+            "测试包",
+            |_| true,
+            || {
+                if std::fs::metadata(&partial).is_ok_and(|file| file.len() > 0) {
+                    assert!(tasks.cancel(task));
+                }
+                operation.check()
+            },
+            || operation.advance_record(false),
+        )
+    });
+
+    assert!(result.unwrap_err().starts_with("OPERATION_CANCELLED:"));
+    assert_eq!(std::fs::read(staging.join("first.json")).unwrap(), b"{}");
+    let written = std::fs::metadata(partial).unwrap().len();
+    assert!(written > 0 && written < large.len() as u64);
+    assert!(!staging.join("last.json").exists());
+    let progress = serde_json::to_value(tasks.status(task).unwrap()).unwrap();
+    assert_eq!(progress["stage"], "cancelled");
+    assert_eq!(progress["completed"], 1);
+}
+
+#[test]
 fn old_package_with_offline_images_installs_only_production_images_without_changing_source() {
     let from = TempDir::new("retired-images-from");
     let (source, _, store) = source_project(&from.0);

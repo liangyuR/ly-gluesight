@@ -333,6 +333,7 @@ pub(crate) fn stage(
         |path| allowed(path, images),
         LABEL,
         |_| true,
+        || operation.check(),
         || operation.advance(FrameState::Measured),
     )?;
     let text = crate::fsio::read_text(&staging.join(CANDIDATE).join("workspace.json"))

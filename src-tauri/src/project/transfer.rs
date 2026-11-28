@@ -97,20 +97,35 @@ pub struct ProjectImported {
     pub notes: Vec<String>,
 }
 
-pub(crate) fn copy_hashed(
+const COPY_CHUNK_BYTES: usize = 1 << 20;
+
+pub(crate) fn copy_hashed(from: impl Read, to: impl Write) -> std::io::Result<(u64, String)> {
+    copy_hashed_with(
+        from,
+        to,
+        &mut vec![0; COPY_CHUNK_BYTES],
+        || Ok(()),
+        std::convert::identity,
+    )
+}
+
+fn copy_hashed_with<E>(
     mut from: impl Read,
     mut to: impl Write,
-) -> std::io::Result<(u64, String)> {
+    buffer: &mut [u8],
+    mut check: impl FnMut() -> Result<(), E>,
+    mut io_error: impl FnMut(std::io::Error) -> E,
+) -> Result<(u64, String), E> {
     let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 1 << 20];
     let mut total = 0u64;
     loop {
-        let n = from.read(&mut buffer)?;
+        check()?;
+        let n = from.read(buffer).map_err(&mut io_error)?;
         if n == 0 {
             break;
         }
         hasher.update(&buffer[..n]);
-        to.write_all(&buffer[..n])?;
+        to.write_all(&buffer[..n]).map_err(&mut io_error)?;
         total += n as u64;
     }
     Ok((total, format!("{:x}", hasher.finalize())))
@@ -620,11 +635,20 @@ pub(crate) fn extract_listed<R: Read + Seek>(
     allowed: impl Fn(&str) -> bool,
     label: &str,
 ) -> Result<(), String> {
-    extract_listed_with(zip, files, staging, allowed, label, |_| true, || Ok(()))
+    extract_listed_with(
+        zip,
+        files,
+        staging,
+        allowed,
+        label,
+        |_| true,
+        || Ok(()),
+        || Ok(()),
+    )
 }
 
 /// 同 [`extract_listed`]，但只写出 `wanted` 的条目（其余仍须在清单里、通过 `allowed`，不解出）；
-/// 每处理一个条目调一次 `progress`，它报错（如任务取消）时停止。
+/// 读写每块前调用 `check`，每处理完一个条目调用 `progress`；回调报错时停止。
 pub(crate) fn extract_listed_with<R: Read + Seek>(
     zip: &mut ZipArchive<R>,
     files: &[PackageFile],
@@ -632,10 +656,12 @@ pub(crate) fn extract_listed_with<R: Read + Seek>(
     allowed: impl Fn(&str) -> bool,
     label: &str,
     wanted: impl Fn(&str) -> bool,
+    mut check: impl FnMut() -> Result<(), String>,
     mut progress: impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     let listed: BTreeMap<&str, &PackageFile> = files.iter().map(|f| (f.path.as_str(), f)).collect();
     let mut seen = HashSet::new();
+    let mut buffer = vec![0; COPY_CHUNK_BYTES];
     for index in 0..zip.len() {
         let entry = zip
             .by_index(index)
@@ -670,8 +696,13 @@ pub(crate) fn extract_listed_with<R: Read + Seek>(
         let mut out = BufWriter::new(
             File::create_new(&target).map_err(|e| format!("写入暂存文件 {name} 失败：{e}"))?,
         );
-        let (bytes, sha256) = copy_hashed(entry.take(expected.bytes + 1), &mut out)
-            .map_err(|e| format!("解出 {name} 失败：{e}"))?;
+        let (bytes, sha256) = copy_hashed_with(
+            entry.take(expected.bytes + 1),
+            &mut out,
+            &mut buffer,
+            &mut check,
+            |e| format!("解出 {name} 失败：{e}"),
+        )?;
         out.flush().map_err(|e| e.to_string())?;
         if bytes != expected.bytes || sha256 != expected.sha256.to_ascii_lowercase() {
             return Err(format!("{label}文件 {name} 校验和不符，文件已损坏或被改动"));
