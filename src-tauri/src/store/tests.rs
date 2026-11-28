@@ -1520,7 +1520,22 @@ fn named_frame_uses_the_record_project_camera_order_and_preserves_missing_rows()
 }
 
 #[test]
-fn upgrading_v10_removes_retired_records_without_losing_production_and_prevents_replay() {
+fn history_startup_finishes_retirement_after_an_old_or_interrupted_upgrade() {
+    for (version, keep_markers, sources) in [
+        (
+            10,
+            false,
+            &["offlineSynthetic", "offlineSample", "offlineCandidate"][..],
+        ),
+        (11, false, &[][..]),
+        (11, true, &["offlineSynthetic"][..]),
+        (11, true, &["trialSynthetic"][..]),
+    ] {
+        check_retired_history_recovery(version, keep_markers, sources);
+    }
+}
+
+fn check_retired_history_recovery(version: i64, keep_markers: bool, sources: &[&str]) {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
     let recipe = burst_fixture::recipe();
@@ -1534,6 +1549,7 @@ fn upgrading_v10_removes_retired_records_without_losing_production_and_prevents_
     ];
     let ids: Vec<_> = cycles
         .iter()
+        .take(1 + sources.len())
         .map(|cycle| {
             store
                 .insert(&burst_part(&recipe, cycle, &judgement, &burst))
@@ -1546,17 +1562,31 @@ fn upgrading_v10_removes_retired_records_without_losing_production_and_prevents_
     let retained = store.detail(ids[0]).unwrap();
     {
         let conn = store.conn.lock().unwrap();
-        conn.execute_batch("DROP INDEX parts_maintenance; DROP TRIGGER production_source_insert; DROP TRIGGER production_source_update; PRAGMA ignore_check_constraints = ON; PRAGMA user_version = 10;").unwrap();
-        for (id, source) in
-            ids[1..]
-                .iter()
-                .zip(["offlineSynthetic", "offlineSample", "offlineCandidate"])
-        {
+        let triggers: Vec<String> = conn
+            .prepare(
+                "SELECT sql FROM sqlite_schema WHERE type='trigger'
+             AND name IN ('production_source_insert', 'production_source_update')",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        conn.execute_batch("DROP INDEX parts_maintenance; DROP TRIGGER production_source_insert; DROP TRIGGER production_source_update; PRAGMA ignore_check_constraints = ON;").unwrap();
+        conn.pragma_update(None, "user_version", version).unwrap();
+        for (id, source) in ids[1..].iter().zip(sources) {
             conn.execute(
                 "UPDATE parts SET source = ?2, recording_directory = ?3 WHERE id = ?1",
                 params![id, source, format!("not-a-production-path-{id}")],
             )
             .unwrap();
+        }
+        if keep_markers {
+            for trigger in triggers {
+                conn.execute_batch(&trigger).unwrap();
+            }
+        } else {
+            conn.execute("DROP TABLE retired_recordings", []).unwrap();
         }
     }
     drop(store);
@@ -1564,7 +1594,7 @@ fn upgrading_v10_removes_retired_records_without_losing_production_and_prevents_
         let store = Store::open(&db.path()).unwrap();
         assert!(
             store.backup_path().is_none(),
-            "v10 production data must be upgraded in place"
+            "production data must be upgraded in place"
         );
         let page = store.query(&HistoryQuery::default()).unwrap();
         assert_eq!(
@@ -1598,8 +1628,17 @@ fn upgrading_v10_removes_retired_records_without_losing_production_and_prevents_
             conn.query_row("SELECT COUNT(*) FROM retired_recordings", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),
-            3
+            sources.len() as i64
         );
+        let trigger_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE type='trigger'
+             AND name IN ('production_source_insert', 'production_source_update')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(trigger_count, 2);
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
