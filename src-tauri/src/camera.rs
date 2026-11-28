@@ -12,6 +12,7 @@ use ly_plc::now_ms;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::Sender;
+use tokio::sync::Notify;
 
 use crate::applog::throttle::{Tally, Throttle};
 use crate::applog::{events, Fields};
@@ -555,6 +556,7 @@ impl CapturedFrame {
 struct RigShared {
     app: AppHandle,
     tx: Sender<Frame>,
+    frame_events: Arc<Notify>,
     /// 需要整帧图像（图像测量或帧录制）；模拟测量时不必拷整帧
     capture: AtomicBool,
     recipe_capture: Arc<crate::recipe_capture::RecipeCaptureHost>,
@@ -578,7 +580,7 @@ struct Shared {
     budget_dropped: AtomicU64,
     /// 彩色模式（配置的 image_mode）：每帧留原始马赛克，RGB 在测量、预览要用时才去马赛克
     color: AtomicBool,
-    recent: Mutex<VecDeque<Instant>>,
+    recent: Mutex<RecentFrames>,
     preview: Mutex<Previews>,
     last_full: Mutex<Option<CapturedFrame>>,
     identity: Mutex<crate::shot_router::Ledgers>,
@@ -609,8 +611,52 @@ struct Shared {
 #[serde(rename_all = "camelCase")]
 struct CameraFrameEvent<'a> {
     #[serde(flatten)]
-    frame: &'a Frame,
+    frame: CameraFrameMetadata,
     camera_id: &'a str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CameraFrameMetadata {
+    cam: u8,
+    session: u64,
+    counter: CounterSource,
+    frame_counter: u64,
+    trigger_counter: u64,
+    lost_packets: u32,
+    ts: i64,
+    dev_ts: Option<u64>,
+}
+
+impl From<&Frame> for CameraFrameMetadata {
+    fn from(frame: &Frame) -> Self {
+        Self {
+            cam: frame.cam,
+            session: frame.session,
+            counter: frame.counter,
+            frame_counter: frame.frame_counter,
+            trigger_counter: frame.trigger_counter,
+            lost_packets: frame.lost_packets,
+            ts: frame.ts,
+            dev_ts: frame.dev_ts,
+        }
+    }
+}
+
+#[derive(Default)]
+struct RecentFrames {
+    arrivals: VecDeque<Instant>,
+    pending: Option<CameraFrameMetadata>,
+}
+
+impl RecentFrames {
+    fn remember(&mut self, frame: CameraFrameMetadata, session: u64) -> bool {
+        frame.session == session && self.pending.replace(frame).is_none()
+    }
+
+    fn take(&mut self, session: u64) -> Option<CameraFrameMetadata> {
+        self.pending.take().filter(|frame| frame.session == session)
+    }
 }
 
 impl Shared {
@@ -785,39 +831,54 @@ impl Shared {
         self.lost_packets
             .fetch_add(frame.lost_packets as u64, Ordering::Relaxed);
         let now = Instant::now();
-        {
+        let (active, notify) = {
             let mut recent = self.recent.lock().unwrap();
-            recent.push_back(now);
+            recent.arrivals.push_back(now);
             while recent
+                .arrivals
                 .front()
                 .is_some_and(|t| now.duration_since(*t) > Duration::from_secs(3))
             {
-                recent.pop_front();
+                recent.arrivals.pop_front();
             }
+            let active = !self.is_retired();
+            let notify =
+                active && recent.remember(frame.into(), self.session.load(Ordering::SeqCst));
+            (active, notify)
+        };
+        if notify {
+            self.rig.frame_events.notify_one();
         }
-        if self.is_retired() {
-            return false;
+        active
+    }
+
+    fn publish_frame_event(&self) {
+        let frame = {
+            let mut recent = self.recent.lock().unwrap();
+            recent.take(self.session.load(Ordering::SeqCst))
+        };
+        let Some(frame) = frame else { return };
+        if self.is_retired() || frame.session != self.session.load(Ordering::SeqCst) {
+            return;
         }
-        if frame.session == self.session.load(Ordering::SeqCst) {
-            let _ = self.rig.app.emit(
-                "camera://frame",
-                CameraFrameEvent {
-                    frame,
-                    camera_id: &self.camera_id,
-                },
-            );
-        }
-        true
+        let _ = self.rig.app.emit(
+            "camera://frame",
+            CameraFrameEvent {
+                frame,
+                camera_id: &self.camera_id,
+            },
+        );
     }
 
     fn fps(&self) -> f32 {
         let recent = self.recent.lock().unwrap();
-        match (recent.front(), recent.back()) {
+        let arrivals = &recent.arrivals;
+        match (arrivals.front(), arrivals.back()) {
             (Some(a), Some(b))
-                if recent.len() > 1
+                if arrivals.len() > 1
                     && Instant::now().duration_since(*b) < Duration::from_secs(3) =>
             {
-                (recent.len() - 1) as f32 / b.duration_since(*a).as_secs_f32().max(0.001)
+                (arrivals.len() - 1) as f32 / b.duration_since(*a).as_secs_f32().max(0.001)
             }
             _ => 0.0,
         }
@@ -1134,7 +1195,7 @@ impl CameraSlot {
                 dropped: AtomicU64::new(0),
                 budget_dropped: AtomicU64::new(0),
                 color: AtomicBool::new(config.image_mode.color()),
-                recent: Mutex::new(VecDeque::new()),
+                recent: Mutex::default(),
                 preview: Mutex::new(Previews::default()),
                 last_full: Mutex::new(None),
                 identity: Mutex::new(crate::shot_router::Ledgers::default()),
@@ -2109,6 +2170,7 @@ impl CameraRig {
         let rig = Arc::new(RigShared {
             app: app.clone(),
             tx,
+            frame_events: Arc::default(),
             capture: AtomicBool::new(false),
             recipe_capture: crate::recipe_capture::RecipeCaptureHost::open(
                 crate::storage::project(app).join("recipe-capture"),
@@ -2383,9 +2445,27 @@ impl CameraRig {
     }
 
     pub fn start(app: &AppHandle) {
-        for s in app.state::<CycleHost>().camera.slots() {
+        let cycle = app.state::<CycleHost>();
+        for s in cycle.camera.slots() {
             supervise(app, &s);
         }
+        let frame_events = Arc::clone(&cycle.camera.rig.frame_events);
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                frame_events.notified().await;
+                let slots = {
+                    let Some(cycle) = app.try_state::<CycleHost>() else {
+                        break;
+                    };
+                    cycle.camera.slots()
+                };
+                for slot in slots {
+                    slot.shared.publish_frame_event();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
     }
 }
 
@@ -3087,6 +3167,38 @@ fn retired_camera_group_cannot_change_the_new_groups_gate_evidence() {
     let closed = now + Duration::from_millis(1);
     new.gate.observe(0, false, closed);
     assert_eq!(new.gate.closed_since(&[0], closed), Some(closed));
+}
+
+#[cfg(test)]
+#[test]
+fn camera_frame_notifications_keep_each_cameras_last_frame_once_and_discard_old_sessions() {
+    let frame = |cam, session, frame_counter| CameraFrameMetadata {
+        cam,
+        session,
+        counter: CounterSource::SdkFrame,
+        frame_counter,
+        trigger_counter: frame_counter,
+        lost_packets: 0,
+        ts: 17,
+        dev_ts: Some(19),
+    };
+    let mut left = RecentFrames::default();
+    let mut right = RecentFrames::default();
+    assert!(left.remember(frame(0, 1, 1), 1));
+    assert!(!left.remember(frame(0, 1, 2), 1));
+    assert!(right.remember(frame(1, 3, 5), 3));
+    assert!(!left.remember(frame(0, 1, 3), 1));
+    assert_eq!(left.take(1), Some(frame(0, 1, 3)));
+    assert_eq!(right.take(3), Some(frame(1, 3, 5)));
+    assert_eq!(left.take(1), None);
+    assert_eq!(right.take(3), None);
+
+    assert!(left.remember(frame(0, 1, 4), 1));
+    assert_eq!(left.take(4), None);
+    assert!(left.remember(frame(0, 4, 1), 4));
+    assert!(!left.remember(frame(0, 1, 5), 4));
+    assert_eq!(left.take(4), Some(frame(0, 4, 1)));
+    assert_eq!(left.take(4), None);
 }
 
 #[cfg(test)]
