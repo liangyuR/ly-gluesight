@@ -420,7 +420,7 @@ pub(crate) fn write_zip_with<M: Serialize>(
     target: &Path,
     entries: Vec<(String, PathBuf)>,
     manifest: impl FnOnce(Vec<PackageFile>) -> M,
-    mut check: impl FnMut() -> Result<(), String>,
+    check: impl Fn() -> Result<(), String>,
     mut progress: impl FnMut() -> Result<(), String>,
     commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<M, String> {
@@ -443,25 +443,25 @@ pub(crate) fn write_zip_with<M: Serialize>(
             } else {
                 6
             };
-            let mut write_entry = |source: &mut dyn Read, length: u64, check: &mut _| {
+            let mut write_entry = |source: &mut dyn Read, length: u64| {
                 let options = SimpleFileOptions::default()
                     .compression_method(CompressionMethod::Deflated)
                     .compression_level(Some(level))
                     .large_file(length >= u32::MAX as u64);
                 zip.start_file(name.as_str(), options)
                     .map_err(|e| e.to_string())?;
-                copy_hashed_with(source, &mut zip, &mut buffer, check, |e| {
+                copy_hashed_with(source, &mut zip, &mut buffer, &check, |e| {
                     format!("写入 {name} 失败：{e}")
                 })
             };
             let (bytes, sha256) = if compressed(&path) {
-                let restored = crate::image_file::read_original_checked(&path, &mut check)?;
-                write_entry(&mut restored.as_slice(), restored.len() as u64, &mut check)?
+                let restored = crate::image_file::read_original_checked(&path, &check)?;
+                write_entry(&mut restored.as_slice(), restored.len() as u64)?
             } else {
                 let file =
                     File::open(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
                 let length = file.metadata().map_err(|e| e.to_string())?.len();
-                write_entry(&mut BufReader::new(file), length, &mut check)?
+                write_entry(&mut BufReader::new(file), length)?
             };
             files.push(PackageFile {
                 path: name,

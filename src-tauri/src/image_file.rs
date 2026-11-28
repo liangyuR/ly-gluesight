@@ -204,46 +204,86 @@ impl StoredOriginal {
     }
 }
 
-fn read_stored_with(
-    path: &Path,
-    read: impl FnOnce(&mut std::fs::File) -> Result<Vec<u8>, String>,
-) -> Result<StoredOriginal, String> {
+fn open_original(path: &Path) -> Result<(std::fs::File, bool), String> {
     crate::raw_compress::activity().touch();
-    let (mut file, compressed) = open_stored(path, true)?;
-    let bytes = read(&mut file)?;
-    Ok(StoredOriginal { compressed, bytes })
+    open_stored(path, true)
+}
+
+fn read_file_bytes(path: &Path, file: &mut std::fs::File) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+    Ok(bytes)
 }
 
 pub(crate) fn read_stored_original(path: &Path) -> Result<StoredOriginal, String> {
-    use std::io::Read;
-    read_stored_with(path, |file| {
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
+    let (mut file, compressed) = open_original(path)?;
+    let bytes = read_file_bytes(path, &mut file)?;
+    Ok(StoredOriginal { compressed, bytes })
+}
+
+struct CheckedInput<R, C> {
+    reader: R,
+    check: C,
+}
+
+impl<R: std::io::Read, C: Fn() -> Result<(), String>> std::io::Read for CheckedInput<R, C> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        (self.check)().map_err(std::io::Error::other)?;
+        self.reader.read(bytes)
+    }
+}
+
+fn read_original_with<C: Fn() -> Result<(), String>>(
+    path: &Path,
+    check: C,
+    read: impl FnOnce(&mut std::fs::File, &C) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    use std::io::{BufReader, Seek};
+
+    check()?;
+    let (mut file, compressed) = open_original(path)?;
+    if compressed {
+        let mut input = BufReader::with_capacity(
+            128 << 10,
+            CheckedInput {
+                reader: file,
+                check: &check,
+            },
+        );
+        let result = gsr::try_read_bayer(&mut input, &check)
             .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+        if let Some(original) = result {
+            return Ok(original);
+        }
+        file = input.into_inner().reader;
+        file.rewind()
+            .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+    }
+    let bytes = read(&mut file, &check)?;
+    check()?;
+    if compressed {
+        gsr::decode_checked(&bytes, check).map_err(|e| format!("读取 {} 失败：{e}", path.display()))
+    } else {
         Ok(bytes)
-    })
+    }
 }
 
 /// 原图文件的原始字节（未压缩时的全部字节）：`path` 是 `.pgm` 而文件已压缩成同名 `.gsr`，或 `path` 本身就是 `.gsr` 时
 /// 还原后返回；压缩文件损坏时报错。
 pub fn read_original(path: &Path) -> Result<Vec<u8>, String> {
-    let stored = read_stored_original(path)?;
-    if stored.compressed {
-        stored.expand(path)
-    } else {
-        Ok(stored.bytes)
-    }
+    read_original_with(path, || Ok(()), |file, _| read_file_bytes(path, file))
 }
 
 pub(crate) fn read_original_checked(
     path: &Path,
-    mut check: impl FnMut() -> Result<(), String>,
+    check: impl Fn() -> Result<(), String>,
 ) -> Result<Vec<u8>, String> {
     use std::io::Read;
     const READ_BLOCK_BYTES: u64 = 1 << 20;
 
-    check()?;
-    let stored = read_stored_with(path, |file| {
+    read_original_with(path, check, |file, check| {
         let mut bytes = Vec::new();
         if let Some(length) = file
             .metadata()
@@ -266,14 +306,7 @@ pub(crate) fn read_original_checked(
             }
         }
         Ok(bytes)
-    })?;
-    check()?;
-    if stored.compressed {
-        gsr::decode_checked(&stored.bytes, check)
-            .map_err(|e| format!("读取 {} 失败：{e}", path.display()))
-    } else {
-        Ok(stored.bytes)
-    }
+    })
 }
 
 /// 原图的 PNM 头与原始文件长度（未压缩时的字节数），只读文件开头；找文件的规则同 [`read_original`]，不查路径上的链接。
@@ -530,6 +563,42 @@ mod tests {
         damaged[last] ^= 1;
         std::fs::write(path.with_extension("gsr"), damaged).unwrap();
         assert!(load(&path).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn streamed_gsr_file_requires_one_complete_frame_and_no_trailing_data() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gluesight-gsr-stream-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("large.gsr");
+        let mut original = pnm_header(2050, 2048, 1, Some(BayerPattern::Rg)).into_bytes();
+        let mut state = 0x2545_f491u32;
+        original.extend((0..2050 * 2048).map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        }));
+        let encoded = gsr::encode(&original).unwrap();
+        std::fs::write(&path, &encoded).unwrap();
+        assert_eq!(read_original(&path).unwrap(), original);
+
+        let edits: [fn(&mut Vec<u8>); 3] = [
+            |bytes| bytes.truncate(bytes.len() - 1),
+            |bytes| *bytes.last_mut().unwrap() ^= 1,
+            |bytes| bytes.push(0),
+        ];
+        for edit in edits {
+            let mut damaged = encoded.clone();
+            edit(&mut damaged);
+            std::fs::write(&path, damaged).unwrap();
+            assert!(read_original(&path).is_err());
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }

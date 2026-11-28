@@ -222,6 +222,75 @@ fn can_stream_bayer(payload: &[u8], pixels: usize) -> bool {
         && payload.get(5).is_some_and(|&window| window <= window_limit)
 }
 
+fn checksummed_payload(payload: &[u8]) -> bool {
+    payload.get(..4) == Some(&ZSTD_MAGIC)
+        && payload
+            .get(4)
+            .is_some_and(|flags| flags & ZSTD_CHECKSUM_FLAG != 0)
+}
+
+fn restore_streamed_bayer(
+    input: impl BufRead,
+    out: &mut [u8],
+    info: PnmInfo,
+    check: &mut impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    let fail = |error| format!("压缩原图解压失败：{error}");
+    let mut decoder = zstd::stream::read::Decoder::with_buffer(input)
+        .map_err(fail)?
+        .single_frame();
+    decoder
+        .window_log_max(BAYER_STREAM_WINDOW_LOG)
+        .map_err(fail)?;
+    let mut source = BufReader::with_capacity(128 << 10, decoder);
+    planes_restore_stream(
+        &mut source,
+        out,
+        info.width as usize,
+        info.height as usize,
+        check,
+    )?;
+    check()?;
+    if !source
+        .into_inner()
+        .finish()
+        .fill_buf()
+        .map_err(fail)?
+        .is_empty()
+    {
+        return Err("压缩原图带有多余数据".into());
+    }
+    Ok(())
+}
+
+pub(super) fn try_read_bayer(
+    input: &mut impl BufRead,
+    mut check: impl FnMut() -> Result<(), String>,
+) -> Result<Option<Vec<u8>>, String> {
+    check()?;
+    let prefix = input
+        .fill_buf()
+        .map_err(|error| format!("压缩原图无法读取：{error}"))?;
+    let Ok(frame) = container(prefix) else {
+        return Ok(None);
+    };
+    if frame.transform != BAYER_PLANES
+        || !checksummed_payload(frame.payload)
+        || !can_stream_bayer(frame.payload, frame.pixels)
+    {
+        return Ok(None);
+    }
+    let header_len = frame.header.len();
+    let mut out = Vec::with_capacity(header_len + frame.pixels);
+    out.extend_from_slice(frame.header);
+    out.resize(header_len + frame.pixels, 0);
+    let (info, crc) = (frame.info, frame.crc);
+    input.consume(FIXED + header_len);
+    restore_streamed_bayer(input, &mut out[header_len..], info, &mut check)?;
+    verify_crc(&out, crc, &mut check)?;
+    Ok(Some(out))
+}
+
 fn decompress_exact(
     payload: &[u8],
     destination: &mut impl zstd::zstd_safe::WriteBuf,
@@ -290,11 +359,7 @@ pub(super) fn decode_checked(
         header,
         payload,
     } = container(bytes)?;
-    if payload.get(..4) != Some(&ZSTD_MAGIC)
-        || payload
-            .get(4)
-            .is_none_or(|flags| flags & ZSTD_CHECKSUM_FLAG == 0)
-    {
+    if !checksummed_payload(payload) {
         return Err("压缩原图的负载不是带校验和的 Zstandard 帧".into());
     }
     if zstd::zstd_safe::find_frame_compressed_size(payload) != Ok(payload.len()) {
@@ -321,19 +386,7 @@ pub(super) fn decode_checked(
             check()?;
             let original = &mut out[header.len()..];
             if can_stream_bayer(payload, pixels) {
-                let mut decoder = zstd::stream::read::Decoder::with_buffer(payload)
-                    .map_err(|error| format!("压缩原图解压失败：{error}"))?
-                    .single_frame();
-                decoder
-                    .window_log_max(BAYER_STREAM_WINDOW_LOG)
-                    .map_err(|error| format!("压缩原图解压失败：{error}"))?;
-                planes_restore_stream(
-                    BufReader::with_capacity(128 << 10, decoder),
-                    original,
-                    width,
-                    height,
-                    &mut check,
-                )?;
+                restore_streamed_bayer(payload, original, info, &mut check)?;
             } else {
                 let mut planes = Vec::with_capacity(pixels);
                 decompress_exact(payload, &mut planes, pixels)?;
@@ -342,6 +395,15 @@ pub(super) fn decode_checked(
             }
         }
     }
+    verify_crc(&out, crc, &mut check)?;
+    Ok(out)
+}
+
+fn verify_crc(
+    out: &[u8],
+    crc: u32,
+    check: &mut impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     let mut hasher = crc32fast::Hasher::new();
     for block in out.chunks(RESTORE_BLOCK_BYTES) {
         check()?;
@@ -351,7 +413,7 @@ pub(super) fn decode_checked(
     if hasher.finalize() != crc {
         return Err("压缩原图校验和不符".into());
     }
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]
