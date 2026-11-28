@@ -6,9 +6,10 @@ import { SnackbarProvider } from "qing-steel";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi } from "../src/features/cycle/api";
 import { cameraApi } from "../src/features/camera/api";
+import type { CameraConfig } from "../src/features/camera/types";
 import { desktopAvailable } from "../src/lib/desktop";
 import { subscribe } from "../src/features/plc/api";
-import type { WorkspaceView } from "../src/features/workspace/types";
+import type { Workspace, WorkspaceView } from "../src/features/workspace/types";
 import { burstRecipe, burstSummary, burstWorkspaceView, deferred } from "./fixtures";
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDoc: vi.fn() } }));
@@ -50,6 +51,70 @@ async function open() {
   await waitFor(() => expect(hook.result.current.data?.workspace.doc.id).toBe("A"));
   return hook;
 }
+
+describe("配方库刷新", () => {
+  it("后台读取期间操作再请求刷新 → 只提交后续目录，显式等待随目录完成", async () => {
+    const { result } = await open();
+    await waitFor(() => expect(result.current.drafts).toHaveLength(2));
+    const previous = result.current.drafts;
+    const oldList = deferred<Workspace[]>(), newList = deferred<Workspace[]>();
+    const load = vi.mocked(workspaceApi.list).mockReturnValueOnce(oldList.promise).mockReturnValueOnce(newList.promise);
+    await act(async () => { changed("B"); });
+    const callsDuringRead = load.mock.calls.length;
+
+    let finished = false;
+    let refreshed!: Promise<void>;
+    await act(async () => {
+      refreshed = result.current.reloadList().then(() => { finished = true; });
+      changed("B");
+      changed("B");
+    });
+    const oldCandidate = { ...previous[1], doc: { ...previous[1].doc, name: "旧候选名称" } };
+    await act(async () => oldList.resolve([previous[0], oldCandidate]));
+    expect(result.current.drafts[1].doc.name).toBe(previous[1].doc.name);
+    expect(finished).toBe(false);
+    expect(load).toHaveBeenCalledTimes(callsDuringRead + 1);
+
+    await act(async () => {
+      newList.resolve([previous[0]]);
+      await refreshed;
+    });
+    expect(result.current.drafts.map(draft => draft.doc.id)).toEqual(["A"]);
+    expect(finished).toBe(true);
+  });
+
+  it("旧读取失败且已有后续刷新 → 跳过旧错误，后续失败仍可重试", async () => {
+    const { result } = await open();
+    await waitFor(() => expect(result.current.drafts).toHaveLength(2));
+    const oldList = deferred<Workspace[]>(), newList = deferred<Workspace[]>();
+    const oldCameras = deferred<CameraConfig[]>();
+    const load = vi.mocked(workspaceApi.list).mockReturnValueOnce(oldList.promise).mockReturnValueOnce(newList.promise);
+    vi.mocked(cameraApi.rigConfig).mockReturnValueOnce(oldCameras.promise);
+    await act(async () => { changed("B"); });
+    const callsDuringRead = load.mock.calls.length;
+
+    let refreshed!: Promise<void>;
+    await act(async () => {
+      refreshed = result.current.reloadList();
+      void refreshed.catch(() => {});
+    });
+    await act(async () => oldList.reject(new Error("旧目录读取失败")));
+    expect(result.current.error).toBe("");
+    expect(load).toHaveBeenCalledTimes(callsDuringRead);
+    await act(async () => oldCameras.resolve([]));
+
+    await act(async () => {
+      newList.reject(new Error("当前目录读取失败"));
+      await expect(refreshed).rejects.toThrow("当前目录读取失败");
+    });
+    expect(result.current.drafts.map(draft => draft.doc.id)).toEqual(["A", "B"]);
+    expect(result.current.error).toBe("当前目录读取失败");
+    load.mockResolvedValueOnce([result.current.drafts[0]]);
+    await act(() => result.current.reloadList());
+    expect(result.current.drafts.map(draft => draft.doc.id)).toEqual(["A"]);
+    expect(result.current.error).toBe("");
+  });
+});
 
 describe("候选工作台的主流程保护", () => {
 

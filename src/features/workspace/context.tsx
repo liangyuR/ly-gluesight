@@ -46,11 +46,13 @@ interface WorkspaceContextValue {
 }
 const Context = createContext<WorkspaceContextValue | null>(null);
 const equal = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b);
+type CatalogRefresh = { queued: boolean; promise: Promise<void> };
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [list, setList] = useState<RecipeSummary[]>([]);
   const [unavailable, setUnavailable] = useState<UnavailableRecipe[]>([]);
   const [recipeErrors, setRecipeErrors] = useState("");
+  const [catalogError, setCatalogError] = useState("");
   const [drafts, setDrafts] = useState<Workspace[]>([]);
   const [cameras, setCameras] = useState<CameraConfig[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -71,6 +73,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [urgent, setUrgent] = useState(false);
   const failedSave = useRef("");
   const requestSerial = useRef(0);
+  const catalogScope = useRef<{ inFlight: CatalogRefresh | null } | null>(null);
   const acting = useRef(false);
   const selected = useRef<string | null>(null);
   const dirtyRef = useRef(false);
@@ -145,12 +148,42 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const reloadList = useCallback(async () => {
-    if (!desktopAvailable()) return;
-    const [recipes, workspaces, configs] = await Promise.all([recipeApi.list(), workspaceApi.list(), cameraApi.rigConfig()]);
-    setList(recipes.recipes); setDrafts(workspaces); setCameras(configs);
-    setUnavailable(recipes.unavailable ?? []);
-    setRecipeErrors(recipes.errors.join("；"));
+  const reloadList = useCallback((): Promise<void> => {
+    const scope = catalogScope.current;
+    if (!scope) return Promise.resolve();
+    if (scope.inFlight) {
+      scope.inFlight.queued = true;
+      return scope.inFlight.promise;
+    }
+
+    const run = async (): Promise<void> => {
+      try {
+        while (catalogScope.current === scope) {
+          refresh.queued = false;
+          const [recipes, workspaces, configs] = await Promise.allSettled([
+            recipeApi.list(), workspaceApi.list(), cameraApi.rigConfig(),
+          ]);
+          if (catalogScope.current !== scope) return;
+          if (refresh.queued) continue;
+          if (recipes.status === "rejected") throw recipes.reason;
+          if (workspaces.status === "rejected") throw workspaces.reason;
+          if (configs.status === "rejected") throw configs.reason;
+
+          setList(recipes.value.recipes);
+          setDrafts(workspaces.value);
+          setCameras(configs.value);
+          setUnavailable(recipes.value.unavailable ?? []);
+          setRecipeErrors(recipes.value.errors.join("；"));
+          setCatalogError("");
+          return;
+        }
+      } finally {
+        scope.inFlight = null;
+      }
+    };
+    const refresh: CatalogRefresh = { queued: false, promise: Promise.resolve().then(run) };
+    scope.inFlight = refresh;
+    return refresh.promise;
   }, []);
 
   const select = useCallback(async (id: string) => {
@@ -173,11 +206,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!desktopAvailable()) return;
-    let alive = true;
-    // 不自动打开任何配方：打开哪个由配方页的地址决定（/recipe/<编号>/…）
-    reloadList().catch(e => { if (alive) setError(errorText(e)); });
+    const scope = { inFlight: null };
+    catalogScope.current = scope;
+    const report = (error: unknown) => { if (catalogScope.current === scope) setCatalogError(errorText(error)); };
     const refresh = (id: string) => {
-      void reloadList().catch(e => setError(errorText(e)));
+      if (catalogScope.current !== scope) return;
+      void reloadList().catch(report);
       if (id && id === selected.current) {
         pendingRefresh.current = id;
         setRefreshRevision(revision => revision + 1);
@@ -187,8 +221,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const offCameras = subscribe<unknown>("camera://changed", () => refresh(selected.current ?? ""));
     const offCalibration = subscribe<unknown>("calibration://changed", () => refresh(selected.current ?? ""));
     const offSettings = subscribe<unknown>("cycle://settings-changed", () => refresh(selected.current ?? ""));
-    return () => { alive = false; requestSerial.current++; off(); offCameras(); offCalibration(); offSettings(); };
-  }, [reloadList, select, accept]);
+    // 不自动打开任何配方：打开哪个由配方页的地址决定（/recipe/<编号>/…）
+    void reloadList().catch(report);
+    return () => {
+      catalogScope.current = null;
+      requestSerial.current++;
+      off(); offCameras(); offCalibration(); offSettings();
+    };
+  }, [reloadList]);
 
   useEffect(() => {
     const id = pendingRefresh.current;
@@ -280,7 +320,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(timer);
   }, [doc, data, corridorDrafts, dirty, frameDirty, busy, saving, saveRetry, urgent, accept]);
 
-  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || recipeErrors, busy: busy || saving, saving, acting: busy, pendingSave, unsavable, saveNow: () => setUrgent(true), dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft, segmentDraft, segmentDirty, setSegmentDraft,
+  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || catalogError || recipeErrors, busy: busy || saving, saving, acting: busy, pendingSave, unsavable, saveNow: () => setUrgent(true), dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft, segmentDraft, segmentDirty, setSegmentDraft,
     clearSelection:()=>{if(dirtyRef.current){setError("当前草稿尚未保存，请先保存或撤销修改");return;}pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setCorridorDrafts({});setNavigationDraft(null);setSegmentDraft(null);setError("");clearSnack();},
     discardDrafts:()=>{if(acting.current||savingRef.current)return false;dirtyRef.current=false;navigationDirtyRef.current=false;segmentDirtyRef.current=false;failedSave.current="";setDoc(data?.workspace.doc??null);setPreview(data?.layout??null);setPreviewError("");setCorridorDrafts({});setNavigationDraft(null);setSegmentDraft(null);setError("");return true;},
     corridorDrafts, select, reloadList, setDoc,
