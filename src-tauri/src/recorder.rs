@@ -1366,7 +1366,12 @@ fn prune(
     parts[1..].sort_by_key(|path| passed(path));
     let mut total = 0u64;
     let mut candidates = Vec::new();
-    for (i, path) in parts.iter().enumerate() {
+    let first_scan = if max_bytes == u64::MAX {
+        keep.max(1)
+    } else {
+        0
+    };
+    for (i, path) in parts.iter().enumerate().skip(first_scan) {
         match dir_bytes(path) {
             Ok(bytes) => total = total.saturating_add(bytes),
             Err(error) => {

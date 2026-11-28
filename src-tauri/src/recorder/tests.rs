@@ -432,3 +432,37 @@ fn prune_across_disks_removes_oldest_parts_whichever_disk_they_are_on() {
     assert!(!oldest.exists() && !older.exists());
     assert!(newer.is_dir() && newest.is_dir());
 }
+
+#[test]
+fn protected_recordings_still_count_toward_the_capacity_limit() {
+    let dir = TestDir::new();
+    let root = dir.root();
+    let mib = 1024 * 1024;
+    let oldest = old_recording(&root, 1, 2 * mib);
+    let protected = old_recording(&root, 2, 2 * mib);
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(vec![root.clone()], Some(callback));
+    let mut recording = recorder
+        .begin(
+            RecordMode::All,
+            Some(&root),
+            "SN-CAPACITY",
+            recipe(),
+            "capacity-prune",
+            None,
+        )
+        .unwrap();
+    recorder.burst_frame(&mut recording, &frame(10), 0, 1);
+    recorder.finish(
+        recording,
+        Verdict::Ok,
+        "",
+        u32::MAX,
+        3 * mib,
+        vec![protected.clone()],
+    );
+    let outcome = wait(&outcomes);
+    assert!(outcome.retention_errors.is_empty(), "{outcome:?}");
+    assert!(!oldest.exists());
+    assert!(protected.is_dir() && outcome.directory.unwrap().is_dir());
+}
