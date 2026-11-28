@@ -18,7 +18,7 @@ use crate::recipe::Recipe;
 use crate::segmentation::RegionKind;
 use crate::store::{
     same_measurement_layout, FrameRecord, HistoryPage, HistoryQuery, PartDetail, PartSummary,
-    Store, StoredMeasurement,
+    RejudgeSelection, Store, StoredMeasurement,
 };
 
 pub fn local_midnight_ms(day: NaiveDate) -> i64 {
@@ -312,7 +312,7 @@ pub(crate) fn rejudge_history(
     operation: Option<&Operation>,
 ) -> Result<RejudgeResult, String> {
     let reader = store.rejudge_reader()?;
-    let rows = reader.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
+    let rows = reader.measurements(&request.query, &request.ids, REJUDGE_LIMIT)?;
     rejudge_rows(
         rows,
         request,
@@ -415,7 +415,10 @@ fn rejudge_burst(
 }
 
 fn rejudge_rows(
-    mut rows: impl ExactSizeIterator<Item = Result<StoredMeasurement, String>>,
+    RejudgeSelection {
+        mut rows,
+        limit_hit,
+    }: RejudgeSelection<impl ExactSizeIterator<Item = Result<StoredMeasurement, String>>>,
     request: &RejudgeRequest,
     current_project: &str,
     mut snapshot: impl FnMut(&str, &str) -> Result<Option<Arc<Recipe>>, String>,
@@ -423,8 +426,7 @@ fn rejudge_rows(
     mut burst_frames: impl FnMut(i64) -> Result<Vec<FrameRecord>, String>,
     operation: Option<&Operation>,
 ) -> Result<RejudgeResult, String> {
-    let limit_hit = rows.len() > REJUDGE_LIMIT;
-    let total_candidates = rows.len().min(REJUDGE_LIMIT);
+    let total_candidates = rows.len();
     if let Some(operation) = operation {
         operation.rejudging(total_candidates)?;
     }

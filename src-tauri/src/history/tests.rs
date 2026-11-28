@@ -105,7 +105,10 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_limit_only_change() {
         let candidate = Arc::new(doc.build().unwrap());
         let (row, frames) = burst_row(&original);
         let result = rejudge_rows(
-            std::iter::once(Ok(row)),
+            RejudgeSelection {
+                rows: std::iter::once(Ok(row)),
+                limit_hit: false,
+            },
             &request,
             "default",
             |_, _| Ok(Some(original.clone())),
@@ -162,7 +165,10 @@ fn rejudge_counts_arrived_but_uninspected_frame_as_present() {
         ..Default::default()
     };
     let result = rejudge_rows(
-        std::iter::once(Ok(row)),
+        RejudgeSelection {
+            rows: std::iter::once(Ok(row)),
+            limit_hit: false,
+        },
         &request,
         "default",
         |_, _| Ok(Some(recipe.clone())),
@@ -191,7 +197,10 @@ fn rejudge_skips_reversed_region_and_processes_the_rest_of_the_batch() {
     let mut frame_reads = Vec::new();
 
     let result = rejudge_rows(
-        [damaged, healthy].into_iter().map(Ok),
+        RejudgeSelection {
+            rows: [damaged, healthy].into_iter().map(Ok),
+            limit_hit: false,
+        },
         &RejudgeRequest::default(),
         "default",
         |_, _| Ok(Some(recipe.clone())),
@@ -238,10 +247,13 @@ fn cancelling_rejudge_during_a_read_counts_finished_and_skipped_records_then_sto
     let mut reads = Vec::new();
     let result = operation.run(|operation| {
         rejudge_rows(
-            [skipped, row, remaining].into_iter().map(|row| {
-                candidates_read.push(row.id);
-                Ok(row)
-            }),
+            RejudgeSelection {
+                rows: [skipped, row, remaining].into_iter().map(|row| {
+                    candidates_read.push(row.id);
+                    Ok(row)
+                }),
+                limit_hit: false,
+            },
             &RejudgeRequest::default(),
             "default",
             |_, _| Ok(Some(recipe.clone())),

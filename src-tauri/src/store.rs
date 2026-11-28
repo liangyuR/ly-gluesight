@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -428,6 +428,11 @@ pub struct StoredMeasurement {
     pub verdict: Verdict,
     /// 段配方记录当时的区域判定（区域、丢帧告警）；没有帧记录的为 None。逐帧指标按需用 `RejudgeReader::burst_frames` 读
     pub burst: Option<BurstJudgement>,
+}
+
+pub(crate) struct RejudgeSelection<R> {
+    pub rows: R,
+    pub limit_hit: bool,
 }
 
 pub struct Store {
@@ -2739,6 +2744,13 @@ impl Store {
 }
 
 const BURST_JUDGEMENT_BY_ID: &str = "SELECT burst_judgement FROM parts WHERE id = ?1";
+const REJUDGE_BURST_BATCH: usize = 32;
+
+fn decode_recorded_burst(id: i64, text: Option<&str>) -> Result<Option<BurstJudgement>, String> {
+    text.map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| format!("检测记录 {id} 的区域判定损坏：{error}"))
+}
 
 fn read_burst_judgement(
     stmt: &mut Statement<'_>,
@@ -2748,11 +2760,7 @@ fn read_burst_judgement(
         .query_row([id], |row| row.get(0))
         .optional()
         .map_err(db_err)?;
-    text.flatten()
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|error| format!("检测记录 {id} 的区域判定损坏：{error}"))
+    decode_recorded_burst(id, text.flatten().as_deref())
 }
 
 impl RejudgeReader {
@@ -2761,7 +2769,10 @@ impl RejudgeReader {
         q: &HistoryQuery,
         ids: &[i64],
         limit: usize,
-    ) -> Result<impl ExactSizeIterator<Item = Result<StoredMeasurement, String>> + '_, String> {
+    ) -> Result<
+        RejudgeSelection<impl ExactSizeIterator<Item = Result<StoredMeasurement, String>> + '_>,
+        String,
+    > {
         let (filter, args) = if ids.is_empty() {
             Store::filter(q, "p.")
         } else {
@@ -2771,10 +2782,11 @@ impl RejudgeReader {
             )
         };
         let sql = format!(
-            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, p.project_id FROM parts p{filter} ORDER BY p.ts DESC, p.id DESC LIMIT {limit}"
+            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, p.project_id FROM parts p{filter} ORDER BY p.ts DESC, p.id DESC LIMIT {}",
+            limit + 1,
         );
         let mut stmt = self.conn.prepare(&sql).map_err(db_err)?;
-        let candidates = stmt
+        let mut candidates = stmt
             .query_map(params_from_iter(args.iter()), |row| {
                 Ok(StoredMeasurement {
                     id: row.get(0)?,
@@ -2790,11 +2802,42 @@ impl RejudgeReader {
             .map_err(db_err)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(db_err)?;
-        let mut burst = self.conn.prepare(BURST_JUDGEMENT_BY_ID).map_err(db_err)?;
-        Ok(candidates.into_iter().map(move |mut row| {
-            row.burst = read_burst_judgement(&mut burst, row.id)?;
+        let limit_hit = candidates.len() > limit;
+        candidates.truncate(limit);
+        let mut candidates = candidates.into_iter();
+        let mut burst = self.conn.prepare(
+            "SELECT id, burst_judgement FROM parts WHERE id IN (SELECT value FROM json_each(?1))",
+        ).map_err(db_err)?;
+        let mut buffered = HashMap::with_capacity(REJUDGE_BURST_BATCH);
+        let rows = (0..candidates.len()).map(move |index| {
+            if index % REJUDGE_BURST_BATCH == 0 {
+                let ids: Vec<_> = candidates
+                    .as_slice()
+                    .iter()
+                    .take(REJUDGE_BURST_BATCH)
+                    .map(|row| row.id)
+                    .collect();
+                let list = serde_json::to_string(&ids).map_err(|error| error.to_string())?;
+                let entries = burst
+                    .query_map([list], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)))
+                    })
+                    .map_err(db_err)?;
+                for entry in entries {
+                    let (id, raw) = entry.map_err(db_err)?;
+                    buffered.insert(id, raw);
+                }
+            }
+            let mut row = candidates.next().expect("候选迭代器长度不足");
+            let raw = buffered
+                .remove(&row.id)
+                .transpose()
+                .map_err(db_err)?
+                .flatten();
+            row.burst = decode_recorded_burst(row.id, raw.as_deref())?;
             Ok(row)
-        }))
+        });
+        Ok(RejudgeSelection { rows, limit_hit })
     }
 
     pub(crate) fn burst_judgement(&self, id: i64) -> Result<Option<BurstJudgement>, String> {

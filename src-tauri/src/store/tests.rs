@@ -681,6 +681,7 @@ fn manual_tags_survive_reopen_and_keep_history_filter_counts_neighbors_and_rejud
             .unwrap()
             .measurements(&query, &[], 10)
             .unwrap()
+            .rows
             .map(|part| part.unwrap().id)
             .collect::<Vec<_>>(),
         [ids[2], ids[0]]
@@ -1502,6 +1503,7 @@ fn rejudge_reader_reads_during_uncommitted_write_and_refreshes_after_commit() {
             let query = HistoryQuery::default();
             let rows = reader
                 .measurements(&query, &[id], 1)?
+                .rows
                 .collect::<Result<Vec<_>, _>>()?;
             let snapshot = reader.recipe_snapshot(store.project(), revision)?;
             let frames = reader.burst_frames(id)?;
@@ -1513,6 +1515,7 @@ fn rejudge_reader_reads_during_uncommitted_write_and_refreshes_after_commit() {
                 .map_err(|error| error.to_string())?;
             let refreshed = reader
                 .measurements(&query, &[id], 1)?
+                .rows
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(refreshed)
         });
@@ -2115,4 +2118,58 @@ fn snapshot_with_retired_measure_overrides_needs_raw_remeasurement() {
             "{case}"
         );
     }
+}
+
+#[test]
+fn rejudge_iteration_keeps_frozen_candidates_and_reports_damage_on_the_affected_row() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let insert = |cycle, sn, ts| {
+        store
+            .insert(&PartRecord {
+                sn,
+                ts,
+                ..burst_part(&recipe, cycle, &judgement, &burst)
+            })
+            .unwrap()
+    };
+    let removed = insert("rejudge-removed", "SN-REMOVED", 120);
+    let damaged = insert("rejudge-damaged", "SN-DAMAGED", 80);
+    let first = insert("rejudge-first", "SN-FIRST", 120);
+
+    let reader = store.rejudge_reader().unwrap();
+    let selection = reader
+        .measurements(&HistoryQuery::default(), &[], 3)
+        .unwrap();
+    assert!(!selection.limit_hit);
+    let mut rows = selection.rows;
+    insert("rejudge-new", "SN-NEW", 160);
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute("DELETE FROM parts WHERE id = ?1", [removed])
+            .unwrap();
+        conn.execute(
+            "UPDATE parts SET burst_judgement = '[' WHERE id = ?1",
+            [damaged],
+        )
+        .unwrap();
+    }
+
+    let row = rows.next().unwrap().unwrap();
+    assert_eq!((row.id, row.sn.as_str(), row.ts), (first, "SN-FIRST", 120));
+    assert!(row.burst.is_some());
+
+    let row = rows.next().unwrap().unwrap();
+    assert_eq!(
+        (row.id, row.sn.as_str(), row.ts),
+        (removed, "SN-REMOVED", 120)
+    );
+    assert!(row.burst.is_none());
+
+    let error = rows.next().unwrap().err().expect("损坏项应在读取时报告");
+    assert!(error.contains(&format!("检测记录 {damaged} 的区域判定损坏")));
+    assert!(rows.next().is_none());
 }
