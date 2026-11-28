@@ -1,8 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
-import { subscribe } from "../plc";
 import { decodeFrame, FRAME_HEADER_BYTES, frameImageData } from "../../lib/frame";
-import type { BandwidthEstimate, CameraConfig, CameraConfigSaved, CameraImaging, CameraStatus, DeviceSummary, Frame, PreviewImage } from "./types";
+import type { BandwidthEstimate, CameraConfig, CameraConfigSaved, CameraImaging, CameraStatus, DeviceSummary, PreviewImage } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_release","camera_reconnect","camera_set_imaging"].includes(cmd))
@@ -51,51 +50,28 @@ export const cameraApi = {
   reconnect: (cam: number, id: string) => call<string>("camera_reconnect", { cam, id }, () => ""),
 };
 
-/** 相机组状态每秒刷新；各相机最近一帧攒起来每 250 ms 交一次（缩略图本来也是 250 ms 取一次），页面不必跟着每帧重画。 */
+/** 相机组状态每秒刷新。 */
 export function useRigStatus() {
   const [statuses, setStatuses] = useState<CameraStatus[]>([]);
-  const [lastFrame, setLastFrame] = useState<Record<string, Frame>>({});
   useEffect(() => {
-    let alive = true, pending = false, fresh = false;
-    const latest: Record<string, Frame> = Object.create(null);
+    let alive = true, pending = false;
     const refresh = () => {
       if (pending) return;
       pending = true;
       cameraApi
         .rigStatus()
-        .then(next => {
-          if (!alive) return;
-          setStatuses(next);
-          const ids = new Set(next.map(status => status.id));
-          for (const id of Object.keys(latest)) {
-            if (ids.has(id)) continue;
-            delete latest[id];
-            fresh = true;
-          }
-        })
+        .then(next => { if (alive) setStatuses(next); })
         .catch(() => { if (alive) setStatuses([]); })
         .finally(() => (pending = false));
     };
     refresh();
     const timer = setInterval(refresh, 1000);
-    const flush = setInterval(() => {
-      if (!fresh) return;
-      fresh = false;
-      setLastFrame({ ...latest });
-    }, 250);
-    const off = subscribe<Frame>("camera://frame", (f) => {
-      if (!alive || !f.cameraId || f.session < (latest[f.cameraId]?.session ?? 0)) return;
-      latest[f.cameraId] = f;
-      fresh = true;
-    });
     return () => {
       alive = false;
       clearInterval(timer);
-      clearInterval(flush);
-      off();
     };
   }, []);
-  return { statuses, lastFrame };
+  return { statuses };
 }
 
 /**

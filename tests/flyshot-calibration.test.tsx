@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import {beforeEach,expect,it,vi} from "vitest";
 import {invoke} from "@tauri-apps/api/core";
+import {listen} from "@tauri-apps/api/event";
 import { SnackbarProvider } from "qing-steel";
 import FlyshotCalibrationPage from "../src/pages/FlyshotCalibrationPage";
 import {cameraApi,defaultCameraConfig,useRigStatus} from "../src/features/camera/api";
@@ -12,6 +13,7 @@ import type {FrozenImage} from "../src/features/workspace/types";
 import { deferred } from "./fixtures";
 const desktop=vi.hoisted(()=>({on:false}));
 vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:()=>desktop.on}));
+vi.mock("@tauri-apps/api/event",()=>({listen:vi.fn()}));
 vi.mock("../src/features/camera/api",async importOriginal=>{
  const original=await importOriginal<typeof import("../src/features/camera/api")>();
  return {...original,cameraApi:{...original.cameraApi,rigConfig:vi.fn()},useRigStatus:vi.fn()};
@@ -29,8 +31,9 @@ beforeEach(()=>{
  localStorage.clear();
  desktop.on=false;
  vi.mocked(invoke).mockReset().mockResolvedValue(null);
+ vi.mocked(listen).mockReset().mockResolvedValue(()=>{});
  vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"}]);
- vi.mocked(useRigStatus).mockReturnValue({statuses:[status(1)],lastFrame:{}} as ReturnType<typeof useRigStatus>);
+ vi.mocked(useRigStatus).mockReturnValue({statuses:[status(1)]});
  vi.mocked(useProductionBusy).mockReturnValue(false);
  vi.spyOn(HTMLCanvasElement.prototype,"getContext").mockReturnValue(null);
 });
@@ -38,9 +41,12 @@ beforeEach(()=>{
 it("单视角相机完成标定 → 显示新标定结果，相机条改为已标定并计入标定数",async()=>{
  desktop.on=true;
  vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"}]);
+ const {useRigStatus:readRigStatus}=await vi.importActual<typeof import("../src/features/camera/api")>("../src/features/camera/api");
+ vi.mocked(useRigStatus).mockImplementation(readRigStatus);
  let calibrated=false;
  const calibration={mmPerPx:0.05,rms:0.02,pattern:[11,8],square:5,ts:1};
  vi.mocked(invoke).mockImplementation(async command=>{
+  if(command==="camera_rig_status")return [status(1)];
   if(command==="workspace_station_capture")return frozen("CAM-1",1,"calibration-image","live");
   if(command==="workspace_station_image")return frame;
   if(command==="vision_calibrate"){calibrated=true;return calibration;}
@@ -57,6 +63,8 @@ it("单视角相机完成标定 → 显示新标定结果，相机条改为已�
  expect(await screen.findByText(/^RMS 0.0200 mm · 0.0500 mm\/px/)).toBeVisible();
  expect(await screen.findByText("已标定 · 0.0500 mm/px")).toBeVisible();
  expect(screen.getByText("标定 1 / 1")).toBeVisible();
+ expect(invoke).toHaveBeenCalledWith("camera_rig_status",undefined);
+ expect(vi.mocked(listen).mock.calls.some(([event])=>event==="camera://frame")).toBe(false);
  const target={cam:0,id:"CAM-1",view:1};
  expect(invoke).toHaveBeenCalledWith("vision_calib_info",target);
  expect(invoke).toHaveBeenCalledWith("workspace_station_restore",target);
@@ -67,7 +75,7 @@ it("单视角相机完成标定 → 显示新标定结果，相机条改为已�
 
 it("相机未就绪 → 禁止拍照但可导入离线标定图",async()=>{
  desktop.on=true;
- vi.mocked(useRigStatus).mockReturnValue({statuses:[{...status(0),ready:false,message:"相机未连接"}],lastFrame:{}} as ReturnType<typeof useRigStatus>);
+ vi.mocked(useRigStatus).mockReturnValue({statuses:[{...status(0),ready:false,message:"相机未连接"}]});
  vi.mocked(invoke).mockImplementation(async command=>{
   if(command==="workspace_station_import")return frozen("CAM-1",1,"imported-image","import");
   if(command==="workspace_station_image")return frame;
@@ -137,7 +145,7 @@ it("三目相机图 2 回查期间切换相机 → 新相机只恢复图 1，旧
     { ...defaultCameraConfig, id: "CAM-1", name: "相机 1", serial: "SN1", viewCount: 3 },
     { ...defaultCameraConfig, id: "CAM-2", name: "相机 2", serial: "SN2", viewCount: 3 },
   ]);
-  vi.mocked(useRigStatus).mockReturnValue({ statuses: [status(1), { ...status(1), id: "CAM-2", cam: 1, name: "相机 2" }], lastFrame: {} });
+  vi.mocked(useRigStatus).mockReturnValue({ statuses: [status(1), { ...status(1), id: "CAM-2", cam: 1, name: "相机 2" }] });
   const previous = deferred<FrozenImage>();
   const ipc = vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "workspace_station_image") return frame;
