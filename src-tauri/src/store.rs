@@ -534,6 +534,30 @@ fn db_err(e: rusqlite::Error) -> String {
     format!("检测记录数据库错误：{e}")
 }
 
+const HISTORY_ID_LIMITS: &str = "SELECT MAX(COALESCE((SELECT MAX(id) FROM main.parts), 0), \
+    COALESCE((SELECT MAX(id) FROM main.history_deletions), 0)) AS occupied, \
+    COALESCE((SELECT id FROM main.history_id_floor WHERE singleton = 1), 0) AS floor";
+
+fn delete_history_rows(
+    tx: &Transaction<'_>,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<usize, String> {
+    let last_id: Option<i64> = tx
+        .query_row("SELECT MAX(id) FROM main.parts", [], |row| row.get(0))
+        .map_err(db_err)?;
+    let deleted = tx.execute(sql, params).map_err(db_err)?;
+    if let Some(id) = last_id.filter(|&id| deleted > 0 && id > 0) {
+        tx.execute(
+            "INSERT INTO main.history_id_floor (singleton, id) VALUES (1, ?1) \
+             ON CONFLICT(singleton) DO UPDATE SET id = excluded.id WHERE id < excluded.id",
+            [id],
+        )
+        .map_err(db_err)?;
+    }
+    Ok(deleted)
+}
+
 fn enum_name(value: impl Serialize) -> String {
     serde_json::to_value(value)
         .unwrap()
@@ -1007,6 +1031,10 @@ impl Store {
                  cycle_id TEXT
              );
              CREATE INDEX IF NOT EXISTS history_deletions_cycle ON history_deletions(cycle_id);
+             CREATE TABLE IF NOT EXISTS history_id_floor (
+                 singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                 id INTEGER NOT NULL CHECK(id > 0)
+             );
              CREATE TABLE IF NOT EXISTS workspace_instances (
                  project_id TEXT NOT NULL,
                  id INTEGER NOT NULL CHECK(id > 0),
@@ -1345,7 +1373,9 @@ impl Store {
                  expected_total, tolerance_total, device_triggers, camera_frames, flags, burst_judgement, mode, project_id, id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
                  ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33,
-                 (SELECT MAX(COALESCE((SELECT MAX(id) FROM parts), 0), COALESCE((SELECT MAX(id) FROM history_deletions), 0)) + 1))",
+                 (SELECT MAX(COALESCE((SELECT MAX(id) FROM parts), 0),
+                             COALESCE((SELECT MAX(id) FROM history_deletions), 0),
+                             COALESCE((SELECT id FROM history_id_floor WHERE singleton = 1), 0)) + 1))",
             params![
                 r.ts,
                 r.sn,
@@ -2734,12 +2764,11 @@ impl Store {
                 })
                 .collect()
         };
-        let count = tx
-            .execute(
-                &format!("DELETE FROM parts WHERE ts < ?1 AND {kept}"),
-                params![ts, keep],
-            )
-            .map_err(db_err)?;
+        let count = delete_history_rows(
+            &tx,
+            &format!("DELETE FROM parts WHERE ts < ?1 AND {kept}"),
+            params![ts, keep],
+        )?;
         tx.commit().map_err(db_err)?;
         Ok((count, orphaned))
     }

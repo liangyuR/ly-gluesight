@@ -13,6 +13,7 @@ import { useRejudgeTask, type RejudgeScope } from "../features/history/rejudgeTa
 
 type Item = Page["items"][number];
 type TextFilters = { sn: string; tag: string };
+type RecordAction = { action: "tags" | "delete"; ids: number[]; initialTags: string[] };
 
 const PAGE = 50;
 const TEXT_FILTER_DELAY_MS = 250;
@@ -79,7 +80,7 @@ export default function HistoryPage() {
   const [revealing, setRevealing] = useState(false);
   const [rejudge, setRejudge] = useState<RejudgeScope | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
-  const [recordAction, setRecordAction] = useState<"tags" | "delete" | null>(null);
+  const [recordAction, setRecordAction] = useState<RecordAction | null>(null);
   const [notice, setNotice] = useState(initial?.historyNotice ?? null);
   const [packageIds, setPackageIds] = useState<number[] | null>(null);
   const [packagePreview, setPackagePreview] = useState<HistoryPackagePreview | null>(null);
@@ -239,9 +240,8 @@ export default function HistoryPage() {
     setExported(null);
     setOperationError("");
     setSelected([]);
-    setRecordAction(null);
   }, [query]);
-  useEffect(() => { setSelected([]); setRecordAction(null); }, [offset]);
+  useEffect(() => { setSelected([]); }, [offset]);
 
   const load = useCallback(async function load() {
     if (!alive.current) return;
@@ -300,7 +300,10 @@ export default function HistoryPage() {
 
   const selectedItems = page?.items.filter(item => selected.includes(String(item.id))) ?? [];
   const canExportSelected = selectedItems.length === selected.length && selectedItems.every(item => !!item.cycleId && !!item.flags);
-  const selectedTags = selectedItems.length === 1 ? selectedItems[0].tags ?? [] : [];
+  const openRecordAction = (action: RecordAction["action"]) => {
+    const initialTags = selectedItems.length === 1 ? selectedItems[0].tags ?? [] : [];
+    setRecordAction({ action, ids: selected.map(Number), initialTags });
+  };
   const savedTags = () => {
     setRecordAction(null); setSelected([]); setNotice({ message: "人工 Tag 已保存。", warnings: [] }); void load();
   };
@@ -490,8 +493,8 @@ export default function HistoryPage() {
           <div className="hist-selection-bar" data-active={selected.length > 0 || undefined} role="toolbar" aria-label="已选历史件操作">
             <Text variant="label" muted={!selected.length}>已选 {selected.length} 件</Text>
             <Button size="sm" leadingIcon={<Package size={15} />} onClick={() => setPackageIds(selected.map(Number))} disabled={!selected.length || !canExportSelected || loading || stale}>导出历史件（{selected.length}）</Button>
-            <Button size="sm" leadingIcon={<Tag size={15} />} disabled={!selected.length || loading || stale} onClick={() => setRecordAction("tags")}>编辑 Tag（{selected.length}）</Button>
-            <Button size="sm" leadingIcon={<Trash2 size={15} />} disabled={!selected.length || loading || stale} onClick={() => setRecordAction("delete")}>删除历史件（{selected.length}）</Button>
+            <Button size="sm" leadingIcon={<Tag size={15} />} disabled={!selected.length || loading || stale} onClick={() => openRecordAction("tags")}>编辑 Tag（{selected.length}）</Button>
+            <Button size="sm" leadingIcon={<Trash2 size={15} />} disabled={!selected.length || loading || stale} onClick={() => openRecordAction("delete")}>删除历史件（{selected.length}）</Button>
             {selected.length > 0 && <Button variant="text" size="sm" onClick={() => setSelected([])}>取消选择</Button>}
           </div>
           {notice && <Alert tone={notice.warnings.length ? "warn" : "ok"}>{notice.message}{notice.warnings.length > 0 && <ul className="hist-package-list">{notice.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}</Alert>}
@@ -544,7 +547,7 @@ export default function HistoryPage() {
         onOpenRecord={(id) => openRecord(id, rejudge)}
         onClose={() => setRejudge(null)}
       />}
-      {recordAction && <HistoryRecordDialog action={recordAction} ids={selected.map(Number)} initialTags={selectedTags} onClose={() => setRecordAction(null)} onSaved={savedTags} onDeleted={deletedRecords} onBusyChange={setMutationBusy} />}
+      {recordAction && <HistoryRecordDialog {...recordAction} onClose={() => setRecordAction(null)} onSaved={savedTags} onDeleted={deletedRecords} onBusyChange={setMutationBusy} />}
       {packageIds && <HistoryExportDialog ids={packageIds} onClose={() => setPackageIds(null)} />}
       {packagePreview && <HistoryImportDialog preview={packagePreview} projectName={projects.current?.name} onClose={() => setPackagePreview(null)} onImported={load} />}
     </div>

@@ -30,6 +30,77 @@ impl Drop for TestDb {
 }
 
 #[test]
+fn removed_history_ids_are_not_reused_by_production_or_import_after_reopen() {
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let insert = |store: &Store, cycle, ts| {
+        store
+            .insert(&PartRecord {
+                ts,
+                ..burst_part(&recipe, cycle, &judgement, &burst)
+            })
+            .unwrap()
+    };
+    let source = TestDb::new();
+    let source_store = Store::open(&source.path()).unwrap();
+    let source_first = insert(&source_store, "source-first", 100);
+    let source_old = insert(&source_store, "source-old-id", 100);
+    insert(&source_store, "source-third", 100);
+    let source_high = insert(&source_store, "source-high-id", 100);
+    drop(source_store);
+
+    for mode in ["production", "import", "keep_ids", "rollback"] {
+        let db = TestDb::new();
+        let store = Store::open(&db.path()).unwrap();
+        let kept = insert(&store, "retained", 100);
+        let (removed, last) = if mode == "rollback" {
+            let merged = store
+                .merge_project(&source.path(), "abandoned", false, true)
+                .unwrap();
+            let last = merged.ids[&source_high];
+            assert!(store.summary(last).is_ok());
+            store.forget_project("abandoned").unwrap();
+            (last, last)
+        } else {
+            let expired = insert(&store, "expired", 10);
+            let last = if mode == "keep_ids" {
+                insert(&store, "retained-high-id", 100)
+            } else {
+                expired
+            };
+            assert_eq!(store.purge_before(50, &BTreeSet::new()).unwrap().0, 1);
+            (expired, last)
+        };
+        drop(store);
+
+        let store = Store::open(&db.path()).unwrap();
+        assert_eq!(
+            store.summary(kept).unwrap().cycle_id.as_deref(),
+            Some("retained")
+        );
+        let next = match mode {
+            "production" | "rollback" => insert(&store, "production-next", 100),
+            "import" => {
+                let merged = store
+                    .import_parts(&source.path(), "default", |_| Ok(()))
+                    .unwrap();
+                merged.ids[&source_first]
+            }
+            _ => {
+                let merged = store
+                    .merge_project(&source.path(), "legacy", true, false)
+                    .unwrap();
+                assert_eq!(merged.ids[&source_high], source_high);
+                merged.ids[&source_old]
+            }
+        };
+        assert!(next > last, "{mode}: id {next} must follow {last}");
+        assert!(store.summary(removed).is_err());
+    }
+}
+
+#[test]
 fn covering_index_upgrade_preserves_scoped_and_cross_project_history() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

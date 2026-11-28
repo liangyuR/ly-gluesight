@@ -623,6 +623,53 @@ it("保存常用与自定义 Tag → 列表显示标签并按标签精确筛选"
   expect(screen.getByRole("button", { name: "查看 SN SN-101 的记录" })).toBeVisible();
 });
 
+it.each([
+  { change: "首页新件入库", nextPage: false },
+  { change: "末页自动回退", nextPage: true },
+])("批量 Tag 保存失败后$change → 重试保留原记录和标签", async ({ nextPage }) => {
+  const total = nextPage ? 52 : 50;
+  let records = Array.from({ length: total }, (_, index) => burstPartSummary(total - index));
+  const setTags = vi.fn().mockRejectedValueOnce(new Error("暂时无法保存 Tag")).mockResolvedValue(["夜班复核"]);
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "project_current") return projects[0].meta;
+    if (command === "project_list") return projects;
+    if (command === "history_set_tags") return setTags(args);
+    if (command === "history_query") {
+      const { offset = 0, limit = 50 } = (args as { query: HistoryQuery }).query;
+      return { ...page(records), items: records.slice(offset, offset + limit) };
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  const user = userEvent.setup();
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await row(total);
+  if (nextPage) await user.click(screen.getByRole("button", { name: "下一页" }));
+  await row(1);
+  await user.click(screen.getByRole("checkbox", { name: /SN-102/ }));
+  await user.click(screen.getByRole("checkbox", { name: /SN-101/ }));
+  await user.click(screen.getByRole("button", { name: "编辑 Tag（2）" }));
+  const dialog = () => within(screen.getByRole("dialog", { name: "编辑 Tag" }));
+  await user.type(dialog().getByLabelText("自定义 Tag"), "夜班复核{Enter}");
+  await user.click(dialog().getByRole("button", { name: "保存 Tag" }));
+  expect(await dialog().findByText("暂时无法保存 Tag")).toBeVisible();
+  const request = { ids: [2, 1], tags: ["夜班复核"] };
+  expect(setTags.mock.calls).toEqual([[request]]);
+
+  if (nextPage) {
+    records = records.slice(2);
+    emitHistory("history://changed", [52, 51]);
+  } else {
+    records = [burstPartSummary(51), ...records];
+    emitHistory("history://inserted", 51);
+  }
+  expect(await screen.findByText(nextPage ? "SN-150" : "SN-151", { selector: ".hist-sn .sn" })).toBeInTheDocument();
+  expect(dialog().getByText(/为所选 2 件/)).toBeVisible();
+  await user.click(dialog().getByRole("button", { name: "保存 Tag" }));
+  expect(await screen.findByText("人工 Tag 已保存。")).toBeVisible();
+  expect(setTags.mock.calls).toEqual([[request], [request]]);
+});
+
 it("确认删除已选历史件 → 记录与统计刷新，取消确认则保留记录", async () => {
   let deleted = false;
   vi.mocked(invoke).mockImplementation(async (command) => {

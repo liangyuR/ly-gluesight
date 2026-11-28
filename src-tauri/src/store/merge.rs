@@ -9,7 +9,10 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{add_part_mode, add_part_tags, db_err, Store, DB_VERSION, PROJECT_DB_VERSION};
+use super::{
+    add_part_mode, add_part_tags, db_err, delete_history_rows, Store, DB_VERSION,
+    HISTORY_ID_LIMITS, PROJECT_DB_VERSION,
+};
 
 /// 两份配方快照按当前格式读入后相同：旧快照里已退役的字段（如 `planVersion`）不算差异。
 fn same_snapshot(a: &str, b: &str) -> bool {
@@ -207,8 +210,8 @@ impl Store {
     pub fn forget_project(&self, project: &str) -> Result<(), String> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(db_err)?;
+        delete_history_rows(&tx, "DELETE FROM parts WHERE project_id = ?1", [project])?;
         for sql in [
-            "DELETE FROM parts WHERE project_id = ?1",
             "DELETE FROM recipe_snapshots WHERE project_id = ?1",
             "DELETE FROM workspace_instances WHERE project_id = ?1",
             "DELETE FROM project_merges WHERE project_id = ?1",
@@ -445,11 +448,10 @@ pub(super) fn merge_rows(
             .map_err(db_err)?;
         rows.collect::<Result<_, _>>().map_err(db_err)?
     };
-    let main_max: i64 = conn
-        .query_row("SELECT MAX(COALESCE((SELECT MAX(id) FROM main.parts), 0), COALESCE((SELECT MAX(id) FROM main.history_deletions), 0))", [], |r| {
-            r.get(0)
-        })
+    let (occupied, floor): (i64, i64) = conn
+        .query_row(HISTORY_ID_LIMITS, [], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(db_err)?;
+    let main_max = occupied.max(floor);
     let source_max = sources.last().map_or(0, |(id, _)| *id);
     let mut next = if keep_ids {
         main_max.max(source_max) + 1
@@ -485,6 +487,7 @@ pub(super) fn merge_rows(
                 }
                 None => {
                     let keep = keep_ids
+                        && (floor == 0 || *old > floor)
                         && !assigned.contains(old)
                         && !existing_id
                             .query_row([old], |r| r.get::<_, bool>(0))
