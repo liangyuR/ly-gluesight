@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import CameraPage from "../src/pages/CameraPage";
 import { defaultCameraConfig } from "../src/features/camera/api";
 import type { BandwidthEstimate, CameraConfig, CameraStatus } from "../src/features/camera/types";
+import { burstRecipe, burstWorkspaceView, workspaceCatalogEntry } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -44,6 +45,19 @@ async function openCamera(label: string) {
   renderPage();
   await userEvent.click(within(await screen.findByRole("article", { name: label })).getByRole("button", { name: /参数详情|进入详情选择设备/ }));
 }
+
+it("相机仅被待生效配方引用 → 配方目录仍阻止移除并显示引用来源", async () => {
+  const draft = workspaceCatalogEntry(burstWorkspaceView(burstRecipe({ id: "A" })).workspace);
+  const catalog = [{ ...draft, cameras: ["cam1"], publish: { state: "waiting" },
+    pending: { id: draft.id, name: "待生效配方", productCode: draft.productCode, cameras: ["cam2"] } }];
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) =>
+    command === "workspace_catalog" ? Promise.resolve(catalog) : original(command, args, options));
+  await openCamera("右相机 cam2");
+
+  expect(await screen.findByText(/被 待发布配方 待生效配方（A） 引用/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "移除相机" })).toBeDisabled();
+});
 
 describe("相机参数未保存修改", () => {
   it("配置落盘但设备离线 → 显示应用失败、保留当前页面且不再提示未保存", async () => {

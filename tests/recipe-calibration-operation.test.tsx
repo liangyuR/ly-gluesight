@@ -10,7 +10,7 @@ import { WorkspaceProvider } from "../src/features/workspace/context";
 import type { OperationProgress } from "../src/features/workspace/operation";
 import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import type { WorkspaceView } from "../src/features/workspace/types";
-import { burstRecipe, burstSummary, burstWorkspaceView, deferred, pathSegment } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, deferred, pathSegment, workspaceCatalogEntry } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -35,7 +35,7 @@ it("取消测量示教件仅显示取消状态并解锁，重试实际失败仍�
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
       case "recipe_list": return { recipes: [burstSummary(recipe)], errors: [], unavailable: [] };
-      case "workspace_list": return [view.workspace];
+      case "workspace_catalog": return [workspaceCatalogEntry(view.workspace)];
       case "workspace_get": return view;
       case "camera_rig_config": return [];
       case "workspace_history_candidates": return { total: 0, items: [] };
@@ -49,7 +49,7 @@ it("取消测量示教件仅显示取消状态并解锁，重试实际失败仍�
       default: throw new Error(`意外的桌面调用：${command}`);
     }
   });
-  const listReads = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "workspace_list").length;
+  const listReads = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "workspace_catalog").length;
   const user = userEvent.setup();
   render(<MemoryRouter initialEntries={["/recipe/A/calibration"]}><SnackbarProvider><WorkspaceProvider>
     <Routes><Route path="/recipe/:recipeId/calibration" element={<CalibrationRoute />} /></Routes>

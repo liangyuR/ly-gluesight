@@ -11,7 +11,7 @@ import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import { SnackbarProvider } from "qing-steel";
 import { workspaceApi } from "../src/features/workspace/api";
 import type { WorkspaceView } from "../src/features/workspace/types";
-import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, deferred, type BurstRecipeDoc } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, deferred, workspaceCatalogEntry, type BurstRecipeDoc } from "./fixtures";
 import { stubSvgPointer } from "./svg-pointer";
 // 只替身桌面后端：invoke 按命令名分派到 backend 夹具，其余全是真实模块。
 // 例外：原图解码要用 canvas（jsdom 没有），workspaceApi.image 直接给出解码结果。
@@ -28,7 +28,7 @@ let backend: Record<string, Handler> = {};
 function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = {}) {
   backend = {
     recipe_list: () => ({ recipes: [burstSummary(candidate.workspace.doc as BurstRecipeDoc)], errors: [], unavailable: [] }),
-    workspace_list: () => [candidate.workspace],
+    workspace_catalog: () => [workspaceCatalogEntry(candidate.workspace)],
     workspace_get: () => candidate,
     camera_rig_config: () => [{ id: "CAM-1", name: "拼接设备", source: "sim", viewCount: 3, serial: "DEVICE",
       triggerSource: "Line0", triggerActivation: "LevelHigh", frameRate: 10, triggerDelayUs: 0, debouncerUs: 0, strobe: false, chunk: true }],

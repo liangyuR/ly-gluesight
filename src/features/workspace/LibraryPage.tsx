@@ -10,7 +10,7 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar } from "./components";
 import { PackageExportDialog, PackageImportDialog } from "./PackageDialogs";
-import { isCurrentFlow, type PackagePreview, type Workspace, type WorkspaceDeleteTarget } from "./types";
+import { isCurrentFlow, type PackagePreview, type WorkspaceCatalogEntry, type WorkspaceDeleteTarget } from "./types";
 import { recipeHref } from "./recipeRoutes";
 
 type RecipeDeletion = { id: string; target: WorkspaceDeleteTarget; legacy: boolean; removed: boolean };
@@ -44,24 +44,32 @@ export default function LibraryPage() {
   const unsavedParts=[segmentDirty&&"分段草稿",navigationDirty&&"工件导航图",frameDirty&&"走廊示教草稿",dirty&&"候选配置"].filter(Boolean).join("、");
   const guard=(label:string,run:()=>void)=>{if(unsaved)setLeaving({label,run});else run();};
   const cards = useMemo(() => {
-    const recipes = new Map<string, { production?: RecipeSummary; listed?: Workspace }>();
+    const recipes = new Map<string, { production?: RecipeSummary; listed?: WorkspaceCatalogEntry }>();
     for (const production of list) recipes.set(production.id, { production });
     for (const listed of drafts) {
-      const id = listed.doc.id;
-      recipes.set(id, { ...recipes.get(id), listed });
+      recipes.set(listed.id, { ...recipes.get(listed.id), listed });
     }
     return Array.from(recipes, ([id, { production, listed }]) => {
-      const draft = listed && loaded?.doc.id === id && (
+      const saved = listed && loaded?.doc.id === id && (
         loaded.instanceId > listed.instanceId ||
         (loaded.instanceId === listed.instanceId && loaded.revision >= listed.revision)
-      ) ? loaded : listed;
-      const name = draft?.doc.name ?? production?.name ?? id;
-      const productCode = production?.productCode ?? draft?.doc.productCode;
+      ) ? loaded : undefined;
+      const draft = listed && {
+        instanceId: saved?.instanceId ?? listed.instanceId,
+        revision: saved?.revision ?? listed.revision,
+        flow: saved?.flow ?? listed.flow,
+        name: saved?.doc.name ?? listed.name,
+        productCode: saved?.doc.productCode ?? listed.productCode,
+        pending: saved ? !!saved.pending : !!listed.pending,
+        hasTeachingPiece: saved ? !!saved.teachingPiece : listed.hasTeachingPiece,
+      };
+      const name = draft?.name ?? production?.name ?? id;
+      const productCode = production?.productCode ?? draft?.productCode;
       const searchFields = [
         id.toLowerCase(),
         name.toLowerCase(),
         String(productCode ?? ""),
-        String(draft?.doc.productCode ?? ""),
+        String(draft?.productCode ?? ""),
       ];
       return { id, production, draft, name, productCode, searchFields, stale: !!draft && !isCurrentFlow(draft) };
     });
@@ -72,7 +80,7 @@ export default function LibraryPage() {
       unavailable.some(recipe => recipe.fileName.replace(/\.json$/i, "").toLowerCase() === normalized);
   };
   const usedCodes = useMemo(
-    () => new Set([...list.map(r => r.productCode), ...drafts.map(w => w.doc.productCode)]),
+    () => new Set([...list.map(r => r.productCode), ...drafts.map(w => w.productCode)]),
     [list, drafts],
   );
   const identityError=(form:{id:string;name:string;productCode:number})=>!/^[A-Za-z0-9_-]{1,32}$/.test(form.id)?"配方编号只能包含字母、数字、下划线和短横线，最多 32 位":
@@ -80,13 +88,15 @@ export default function LibraryPage() {
     !Number.isInteger(form.productCode)||form.productCode<1||form.productCode>32767?"型号需为 1–32767 的整数":
     usedCodes.has(form.productCode)?"型号已被其他配方使用":"";
   const invalid=creating?identityError(creating):"";
-  const prepare = async (copyId?: string) => {
+  const prepare = async (copyId?: string, candidate?: WorkspaceDeleteTarget["candidate"]) => {
     if(pending.current||blocked)return;
     pending.current=true;
     setWorking(true); setDialogError("");
     try {
-      const copied = copyId ? (drafts.find(w => w.doc.id === copyId)?.doc ?? await recipeApi.doc(copyId)) : null;
-      const template = copied ? structuredClone(copied) : await recipeApi.template();
+      const copied = copyId ? await (candidate
+        ? workspaceApi.candidateDoc(copyId, candidate.instanceId, candidate.revision)
+        : recipeApi.doc(copyId)) : null;
+      const template = copied ?? await recipeApi.template();
       if(!current.current.alive)return;
       let id = copied ? copied.id.slice(0,25) + "-COPY" : template.id;
       let suffix = 2;
@@ -179,7 +189,7 @@ export default function LibraryPage() {
     <div className="wp-library-grid">{visible.map(r => <Panel key={r.id} title={r.name} hoverEffect={!r.stale && !blocked} className="wp-recipe-card" actions={<Menu label={`${r.id} 配方操作`} align="end"
       trigger={<IconButton aria-label={`更多操作 ${r.id}`} title="更多操作" disabled={blocked}><Ellipsis size={18} /></IconButton>}
       items={[
-        ...(!r.stale ? [{ id: "copy", label: "复制配方", icon: <Copy size={16} />, onSelect: () => guard("复制 "+r.id,()=>void prepare(r.id)) },
+        ...(!r.stale ? [{ id: "copy", label: "复制配方", icon: <Copy size={16} />, onSelect: () => guard("复制 "+r.id,()=>void prepare(r.id,r.draft)) },
           ...(r.draft ? [{ id: "export", label: "导出工件配方", icon: <Package size={16} />, disabled: !!r.draft.pending, onSelect: () => guard("导出工件配方 "+r.id,()=>setExporting(r.id)) }] : [])] : []),
         { id: "delete", label: "删除配方", icon: <Trash2 size={16} />, danger: true, disabled: !!r.draft?.pending, onSelect: () => {
           const target = {
@@ -193,7 +203,7 @@ export default function LibraryPage() {
       <p className="wp-recipe-identity muted"><span>{r.id}</span><span aria-hidden="true"> · </span>{`PLC 型号 ${r.productCode}`}</p>
       <p className="wp-recipe-versions"><span className={r.production ? "" : "c-warn"}>{r.production ? `${r.production.stage === "collect" ? "采集版" : "已发布"} v${r.production.version}` : "未发布"}</span></p>
       {r.draft?.pending && <Badge tone="warn">等待生效</Badge>}
-      {r.stale ? <p className="c-warn">旧流程候选已停用，请删除后重建。</p> : !(r.draft ? r.draft.teachingPiece : r.production?.teachingPiece) && <p className="wp-recipe-notice muted">尚未选择示教件</p>}
+      {r.stale ? <p className="c-warn">旧流程候选已停用，请删除后重建。</p> : !(r.draft ? r.draft.hasTeachingPiece : r.production?.teachingPiece) && <p className="wp-recipe-notice muted">尚未选择示教件</p>}
       {!r.stale && <div className="wp-actions wp-recipe-open"><Button variant="filled" size="sm" disabled={blocked} onClick={()=>r.id===selectedId?open(r.id):guard("打开 "+r.id,()=>open(r.id))}>打开配方</Button></div>}
     </Panel>)}{visibleUnavailable.map(r => <Panel key={"unavailable:"+r.fileName} title={r.name || r.id || r.fileName} detail={r.fileName} className="wp-recipe-card" actions={<Badge tone="warn">不可用</Badge>}>
       <p className="muted">文件格式 {r.schemaVersion ?? "未知"} · 当前格式 {r.currentSchemaVersion}</p>

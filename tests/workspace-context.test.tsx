@@ -9,8 +9,8 @@ import { cameraApi } from "../src/features/camera/api";
 import type { CameraConfig } from "../src/features/camera/types";
 import { desktopAvailable } from "../src/lib/desktop";
 import { subscribe } from "../src/features/plc/api";
-import type { Workspace, WorkspaceView } from "../src/features/workspace/types";
-import { burstRecipe, burstSummary, burstWorkspaceView, deferred } from "./fixtures";
+import type { WorkspaceCatalogEntry, WorkspaceView } from "../src/features/workspace/types";
+import { burstRecipe, burstSummary, burstWorkspaceView, deferred, workspaceCatalogEntry } from "./fixtures";
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDoc: vi.fn() } }));
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn(), preview: vi.fn() } }));
@@ -21,7 +21,7 @@ beforeEach(() => {
   const a = burstView(), b = burstView("B");
   vi.mocked(desktopAvailable).mockReturnValue(true);
   vi.mocked(recipeApi.list).mockResolvedValue({ recipes: [burstSummary(a.workspace.doc as ReturnType<typeof burstRecipe>), burstSummary(b.workspace.doc as ReturnType<typeof burstRecipe>)], errors: [], unavailable: [] });
-  vi.mocked(workspaceApi.list).mockResolvedValue([a.workspace, b.workspace]);
+  vi.mocked(workspaceApi.list).mockResolvedValue([a.workspace, b.workspace].map(workspaceCatalogEntry));
   vi.mocked(workspaceApi.get).mockImplementation(async id => burstView(id));
   vi.mocked(workspaceApi.saveDoc).mockResolvedValue(a);
   vi.mocked(recipeApi.preview).mockResolvedValue(a.layout);
@@ -37,7 +37,7 @@ const burstView = (id = "A") => burstWorkspaceView(burstRecipe({ id }));
 async function openBurst() {
   const view = burstView();
   vi.mocked(recipeApi.list).mockResolvedValue({ recipes: [burstSummary(view.workspace.doc as ReturnType<typeof burstRecipe>)], errors: [], unavailable: [] });
-  vi.mocked(workspaceApi.list).mockResolvedValue([view.workspace]);
+  vi.mocked(workspaceApi.list).mockResolvedValue([workspaceCatalogEntry(view.workspace)]);
   vi.mocked(workspaceApi.get).mockImplementation(async () => burstView());
   vi.mocked(recipeApi.preview).mockResolvedValue(view.layout);
   vi.mocked(workspaceApi.saveDoc).mockResolvedValue(view);
@@ -57,7 +57,7 @@ describe("配方库刷新", () => {
     const { result } = await open();
     await waitFor(() => expect(result.current.drafts).toHaveLength(2));
     const previous = result.current.drafts;
-    const oldList = deferred<Workspace[]>(), newList = deferred<Workspace[]>();
+    const oldList = deferred<WorkspaceCatalogEntry[]>(), newList = deferred<WorkspaceCatalogEntry[]>();
     const load = vi.mocked(workspaceApi.list).mockReturnValueOnce(oldList.promise).mockReturnValueOnce(newList.promise);
     await act(async () => { changed("B"); });
     const callsDuringRead = load.mock.calls.length;
@@ -69,9 +69,9 @@ describe("配方库刷新", () => {
       changed("B");
       changed("B");
     });
-    const oldCandidate = { ...previous[1], doc: { ...previous[1].doc, name: "旧候选名称" } };
+    const oldCandidate = { ...previous[1], name: "旧候选名称" };
     await act(async () => oldList.resolve([previous[0], oldCandidate]));
-    expect(result.current.drafts[1].doc.name).toBe(previous[1].doc.name);
+    expect(result.current.drafts[1].name).toBe(previous[1].name);
     expect(finished).toBe(false);
     expect(load).toHaveBeenCalledTimes(callsDuringRead + 1);
 
@@ -79,14 +79,14 @@ describe("配方库刷新", () => {
       newList.resolve([previous[0]]);
       await refreshed;
     });
-    expect(result.current.drafts.map(draft => draft.doc.id)).toEqual(["A"]);
+    expect(result.current.drafts.map(draft => draft.id)).toEqual(["A"]);
     expect(finished).toBe(true);
   });
 
   it("旧读取失败且已有后续刷新 → 跳过旧错误，后续失败仍可重试", async () => {
     const { result } = await open();
     await waitFor(() => expect(result.current.drafts).toHaveLength(2));
-    const oldList = deferred<Workspace[]>(), newList = deferred<Workspace[]>();
+    const oldList = deferred<WorkspaceCatalogEntry[]>(), newList = deferred<WorkspaceCatalogEntry[]>();
     const oldCameras = deferred<CameraConfig[]>();
     const load = vi.mocked(workspaceApi.list).mockReturnValueOnce(oldList.promise).mockReturnValueOnce(newList.promise);
     vi.mocked(cameraApi.rigConfig).mockReturnValueOnce(oldCameras.promise);
@@ -107,11 +107,11 @@ describe("配方库刷新", () => {
       newList.reject(new Error("当前目录读取失败"));
       await expect(refreshed).rejects.toThrow("当前目录读取失败");
     });
-    expect(result.current.drafts.map(draft => draft.doc.id)).toEqual(["A", "B"]);
+    expect(result.current.drafts.map(draft => draft.id)).toEqual(["A", "B"]);
     expect(result.current.error).toBe("当前目录读取失败");
     load.mockResolvedValueOnce([result.current.drafts[0]]);
     await act(() => result.current.reloadList());
-    expect(result.current.drafts.map(draft => draft.doc.id)).toEqual(["A"]);
+    expect(result.current.drafts.map(draft => draft.id)).toEqual(["A"]);
     expect(result.current.error).toBe("");
   });
 });

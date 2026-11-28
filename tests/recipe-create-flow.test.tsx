@@ -12,7 +12,7 @@ import { WorkspaceProvider } from "../src/features/workspace/context";
 import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import type { RecipeDoc } from "../src/features/cycle/types";
 import type { WorkspaceView } from "../src/features/workspace/types";
-import { burstCameras, burstRecipe, burstWorkspaceView, pathSegment, progressV2 } from "./fixtures";
+import { burstCameras, burstRecipe, burstSummary, burstWorkspaceView, pathSegment, progressV2, workspaceCatalogEntry } from "./fixtures";
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
 
@@ -49,7 +49,7 @@ describe("创建配方流程", () => {
       switch (command) {
         case "recipe_list": return { recipes: [], errors: [] };
         case "recipe_template": return structuredClone(template());
-        case "workspace_list": return created ? [structuredClone(created.workspace)] : [];
+        case "workspace_catalog": return created ? [workspaceCatalogEntry(created.workspace)] : [];
         case "workspace_create":
           created = createdView(structuredClone((args as { doc: RecipeDoc }).doc));
           return structuredClone(created);
@@ -99,4 +99,40 @@ describe("创建配方流程", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("workspace_history_candidates", { id: "SHELL-2026", query: expect.objectContaining({ offset: 0 }) }));
     expect(screen.getByRole("navigation", { name: "配方位置" })).toHaveTextContent("SHELL-2026 · 新壳体配方");
   }, 20_000);
+
+  it.each([
+    { source: "候选", hasCandidate: true },
+    { source: "生产版", hasCandidate: false },
+  ])("从配方库复制$source → 点复制后按来源读取文档并预填副本", async ({ hasCandidate }) => {
+    const production = burstRecipe({ id: "A", name: "生产配方" });
+    const saved = burstWorkspaceView(burstRecipe({ id: "A", name: "已保存候选" })).workspace;
+    const catalog = workspaceCatalogEntry(saved);
+    const source = hasCandidate ? saved.doc : production;
+    const ipc = vi.mocked(invoke).mockReset().mockImplementation(async command => {
+      switch (command) {
+        case "workspace_catalog": return hasCandidate ? [catalog] : [];
+        case "recipe_list": return { recipes: [burstSummary(production)], errors: [], unavailable: [] };
+        case "camera_rig_config": return [];
+        case "workspace_candidate_doc": return saved.doc;
+        case "recipe_doc": return production;
+        default: throw new Error(`未声明的桌面调用：${command}`);
+      }
+    });
+    const documentReads = () => ipc.mock.calls.filter(([command]) =>
+      ["workspace_candidate_doc", "recipe_doc", "workspace_get"].includes(command));
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/recipe"]}><SnackbarProvider><WorkspaceProvider>
+      <LibraryPage />
+    </WorkspaceProvider></SnackbarProvider></MemoryRouter>);
+
+    expect(await screen.findByRole("heading", { name: source.name })).toBeVisible();
+    expect(documentReads()).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "更多操作 A" }));
+    await user.click(screen.getByRole("menuitem", { name: "复制配方" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "建立候选配方" }));
+    expect(dialog.getByRole("textbox", { name: "配方名称" })).toHaveValue(`${source.name}（副本）`);
+    expect(documentReads()).toEqual(hasCandidate
+      ? [["workspace_candidate_doc", { id: "A", instanceId: saved.instanceId, revision: saved.revision }]]
+      : [["recipe_doc", { id: "A" }]]);
+  });
 });

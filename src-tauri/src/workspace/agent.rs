@@ -338,15 +338,17 @@ async fn status(
     expected_instance: Option<u64>,
 ) -> Result<Vec<Content>, ToolError> {
     let Some(id) = args.recipe else {
-        let candidates: Vec<Value> = super::workspace_list(app.state())
+        let candidates: Vec<Value> = app
+            .state::<WorkspaceHost>()
+            .catalog()
             .iter()
             .map(|w| {
                 json!({
-                    "recipe": w.doc.id,
-                    "name": w.doc.name,
+                    "recipe": w.id,
+                    "name": w.name,
                     "revision": w.revision,
-                    "segmentRecipe": w.doc.is_burst(),
-                    "teachingPiece": w.teaching_piece.is_some(),
+                    "segmentRecipe": w.segment_recipe,
+                    "teachingPiece": w.has_teaching_piece,
                 })
             })
             .collect();

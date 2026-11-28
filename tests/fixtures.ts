@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import type { DetectParams, Readiness, ReadinessItem, Recipe, RecipeDoc, RecipeOption, Snapshot } from "../src/features/cycle/types";
 import type { PartDetail, PartSummary } from "../src/features/history/types";
-import type { FrozenImage, WorkspaceView } from "../src/features/workspace/types";
+import type { FrozenImage, Workspace, WorkspaceCatalogEntry, WorkspaceView } from "../src/features/workspace/types";
 import type { useWorkspace } from "../src/features/workspace/context";
 import type {
   BurstJudgement, CalibrationView, CaptureRoundV2, FrameMetrics, FrameRecord, KindDefaults, PathSegment, PlanExport, ProgressV2,
@@ -15,9 +15,21 @@ export function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+export function workspaceCatalogEntry(workspace: Workspace): WorkspaceCatalogEntry {
+  const summarize = ({ id, name, productCode, inspect }: RecipeDoc) => ({
+    id, name, productCode, cameras: inspect?.map(({ camera }) => camera) ?? [],
+  });
+  return {
+    ...summarize(workspace.doc), instanceId: workspace.instanceId, revision: workspace.revision,
+    flow: workspace.flow, publish: workspace.publish,
+    pending: workspace.pending ? summarize(workspace.pending.doc) : null,
+    hasTeachingPiece: workspace.teachingPiece != null, segmentRecipe: !!workspace.doc.segments?.length,
+  };
+}
+
 export function workspaceState(view = burstWorkspaceView()): ReturnType<typeof useWorkspace> {
   return {
-    list: [burstSummary(view.workspace.doc as BurstRecipeDoc)], drafts: [view.workspace], cameras: [], unavailable: [], selectedId: view.workspace.doc.id,
+    list: [burstSummary(view.workspace.doc as BurstRecipeDoc)], drafts: [workspaceCatalogEntry(view.workspace)], cameras: [], unavailable: [], selectedId: view.workspace.doc.id,
     data: view, doc: view.workspace.doc, preview: view.layout, previewError: "", error: "",
     saveState: "saved", retrySave: vi.fn(), busy: false, saving: false, acting: false, pendingSave: false, unsavable: false, saveNow: vi.fn(), dirty: false, frameDirty: false, corridorDrafts: {}, segmentDraft: null, segmentDirty: false, setSegmentDraft: vi.fn(), navigationDraft: null, navigationDirty: false, setNavigationDraft: vi.fn(),
     select: vi.fn(async () => view), clearSelection: vi.fn(), discardDrafts: vi.fn(() => true), reloadList: vi.fn(async () => {}),

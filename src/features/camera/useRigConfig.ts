@@ -28,10 +28,10 @@ export function useRigConfig({ withReferences, preferredId, reloadKey }: { withR
       const found:Record<string,string[]>={};
       const remember=(ids:string[],name:string)=>ids.forEach(id=>{const values=found[id]??=[];if(!values.includes(name))values.push(name);});
       production.recipes.forEach(r=>remember(r.cameras,`生产配方 ${r.name}（${r.id}）`));
-      drafts.forEach(w=>{
-        for(const [doc,label] of [[w.doc,"候选配方"],[w.pending?.doc,"待发布配方"]] as const){
-          if(doc)remember(doc.inspect?.map(item=>item.camera)??[],`${label} ${doc.name}（${doc.id}）`);
-        }
+      drafts.forEach(draft=>{
+        remember(draft.cameras, `候选配方 ${draft.name}（${draft.id}）`);
+        const pending = draft.pending;
+        if (pending) remember(pending.cameras, `待发布配方 ${pending.name}（${pending.id}）`);
       });
       return {found,error:""};
     }).catch(e=>({found:{},error:`相机引用尚未读取：${errorText(e)}。在配方库处理后刷新再移除相机。`})):Promise.resolve({found:{},error:""});

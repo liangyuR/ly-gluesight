@@ -10,7 +10,7 @@ import { cameraApi } from "../src/features/camera/api";
 import { desktopAvailable, desktopCall } from "../src/lib/desktop";
 import { subscribe } from "../src/features/plc/api";
 import type { PackageImportTarget, WorkspaceView } from "../src/features/workspace/types";
-import { burstRecipe, burstSummary, burstWorkspaceView } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, workspaceCatalogEntry } from "./fixtures";
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: vi.fn(), desktopCall: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn(), preview: vi.fn() } }));
@@ -47,7 +47,7 @@ beforeEach(() => {
   vi.mocked(subscribe).mockImplementation(() => () => {});
   vi.mocked(desktopCall).mockImplementation(async (command, args) => {
     switch (command) {
-      case "workspace_list": return [current.workspace];
+      case "workspace_catalog": return [workspaceCatalogEntry(current.workspace)];
       case "workspace_get": return current;
       case "operation_status": return null;
       case "workspace_package_pick":

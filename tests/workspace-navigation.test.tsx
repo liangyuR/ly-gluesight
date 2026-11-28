@@ -9,7 +9,7 @@ import { WorkspaceProvider } from "../src/features/workspace/context";
 import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import ValidationPage from "../src/features/workspace/ValidationPage";
-import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, deferred } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, deferred, workspaceCatalogEntry } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
@@ -28,7 +28,7 @@ beforeEach(() => {
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
       case "recipe_list": return { recipes: [burstSummary(view.workspace.doc as ReturnType<typeof burstRecipe>)], errors: [], unavailable: [] };
-      case "workspace_list": return [structuredClone(view.workspace)];
+      case "workspace_catalog": return [workspaceCatalogEntry(view.workspace)];
       case "workspace_get": return structuredClone(view);
       case "workspace_navigation_image": return [1, 2, 3];
       case "camera_rig_config": case "camera_rig_status": return [];

@@ -7,7 +7,7 @@ import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi } from "../src/features/cycle/api";
 import { desktopAvailable } from "../src/lib/desktop";
-import { burstRecipe, burstSummary, burstWorkspaceView, workspaceState } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, workspaceCatalogEntry, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { create: vi.fn(), get: vi.fn(), remove: vi.fn() } }));
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { template: vi.fn(), doc: vi.fn(), removeUnavailable: vi.fn() } }));
@@ -58,7 +58,7 @@ it("生产与候选型号不同 → 可以按任一型号或卡片编号、名�
 });
 
 it("已加载候选比列表新 → 按最新修订删除，刷新失败时只重试刷新", async () => {
-  ws.drafts = [structuredClone(ws.drafts[0]), view("B").workspace];
+  ws.drafts = [structuredClone(ws.drafts[0]), workspaceCatalogEntry(view("B").workspace)];
   const current = ws.data!.workspace;
   current.doc.name = "最新候选 A";
   current.revision++;
@@ -81,7 +81,7 @@ it("已加载候选比列表新 → 按最新修订删除，刷新失败时只�
 
 it("确认后出现同编号同修订的新候选 → 保留原说明并要求重新确认", async () => {
   const loaded = ws.data!.workspace;
-  const legacy = { ...loaded, flow: 1, instanceId: loaded.instanceId + 1 };
+  const legacy = { ...workspaceCatalogEntry(loaded), flow: 1, instanceId: loaded.instanceId + 1 };
   ws.drafts = [legacy];
   const page = show();
   await userEvent.click(screen.getByRole("button", { name: "更多操作 A" }));

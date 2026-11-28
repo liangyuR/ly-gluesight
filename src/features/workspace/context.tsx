@@ -8,7 +8,7 @@ import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import type { CameraTeachDraft } from "../plan/types";
 import type { NavigationMapData } from "./navigation/types";
-import type { Workspace, WorkspaceView } from "./types";
+import type { WorkspaceCatalogEntry, WorkspaceView } from "./types";
 import { corridorStationError, draftKey, sameCorridor, savedDraft, withCorridor } from "./teach";
 import { useSnackbar, type SnackbarMessage } from "qing-steel";
 import type { WorkbenchDraft } from "./workbenchDraft";
@@ -20,7 +20,7 @@ export type SnackMessage = string | SnackbarMessage;
 export interface NavigationDraft { map: NavigationMapData; revision: number }
 
 interface WorkspaceContextValue {
-  list: RecipeSummary[]; drafts: Workspace[]; cameras: CameraConfig[]; unavailable: UnavailableRecipe[];
+  list: RecipeSummary[]; drafts: WorkspaceCatalogEntry[]; cameras: CameraConfig[]; unavailable: UnavailableRecipe[];
   selectedId: string | null; data: WorkspaceView | null; doc: RecipeDoc | null; preview: Recipe | null;
   /** busy：显式操作或自动保存进行中；saving：其中的自动保存（期间可以继续编辑，改动并入下一次保存）；acting：只算显式操作 */
   previewError: string; error: string; busy: boolean; saving: boolean; acting: boolean; dirty: boolean; frameDirty: boolean;
@@ -53,7 +53,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [unavailable, setUnavailable] = useState<UnavailableRecipe[]>([]);
   const [recipeErrors, setRecipeErrors] = useState("");
   const [catalogError, setCatalogError] = useState("");
-  const [drafts, setDrafts] = useState<Workspace[]>([]);
+  const [drafts, setDrafts] = useState<WorkspaceCatalogEntry[]>([]);
   const [cameras, setCameras] = useState<CameraConfig[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [data, setData] = useState<WorkspaceView | null>(null);

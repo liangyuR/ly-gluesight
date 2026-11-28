@@ -62,7 +62,7 @@ beforeEach(() => {
       case "history_set_tags": return setTags(args as { ids: number[]; tags: string[] });
       case "history_delete": return deleteRecords();
       case "recipe_list": return { recipes: [], errors: [] };
-      case "workspace_list": case "camera_rig_config": case "workspace_comparison_summaries": return [];
+      case "workspace_catalog": case "camera_rig_config": case "workspace_comparison_summaries": return [];
       case "project_current": return project;
       case "project_list": return [{ id: project.id, meta: project, current: true, error: null }];
       case "workspace_history_compare_options": {

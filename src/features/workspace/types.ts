@@ -62,6 +62,17 @@ export interface Workspace {
   /** 换示教件的逐笔对照（RB-11）；没有对照时缺省，发布时清空 */
   passAlignment?: PassAlignment;
 }
+export interface WorkspaceRecipeReference {
+  id: string;
+  name: string;
+  productCode: number;
+  cameras: string[];
+}
+export interface WorkspaceCatalogEntry extends WorkspaceRecipeReference, Pick<Workspace, "instanceId" | "revision" | "flow" | "publish"> {
+  pending: WorkspaceRecipeReference | null;
+  hasTeachingPiece: boolean;
+  segmentRecipe: boolean;
+}
 export interface WorkspaceDeleteTarget {
   candidate: Pick<Workspace, "instanceId" | "revision"> | null;
   productionRevisionId: string | null;

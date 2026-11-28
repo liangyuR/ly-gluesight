@@ -5,7 +5,7 @@ import type { NavigationMapData } from "./navigation/types";
 import type { RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PassSkipSuggestView, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidatePage, HistoryCandidateQuery, PackageExported, PackageImported, PackageImportTarget, PackagePreview, PassLink, SegmentSaveImpact, Workspace, WorkspaceDeleteTarget, WorkspaceView } from "./types";
+import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidatePage, HistoryCandidateQuery, PackageExported, PackageImported, PackageImportTarget, PackagePreview, PassLink, SegmentSaveImpact, WorkspaceCatalogEntry, WorkspaceDeleteTarget, WorkspaceView } from "./types";
 
 let liveSeq = 0;
 
@@ -25,7 +25,8 @@ export const workspaceApi = {
   navigationDelete: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_navigation_delete", { id, revision }),
   navigationImage: (id: string, imageId: string) => desktopCall<ArrayBuffer | number[]>("workspace_navigation_image", { id, imageId }),
   captureGet: (roundId?: string) => desktopCall<CaptureRoundV2 | null>("recipe_capture_get", { roundId }),
-  list: () => desktopCall<Workspace[]>("workspace_list"),
+  list: () => desktopCall<WorkspaceCatalogEntry[]>("workspace_catalog"),
+  candidateDoc: (id: string, instanceId: number, revision: number) => desktopCall<RecipeDoc>("workspace_candidate_doc", { id, instanceId, revision }),
   get: (id: string) => desktopCall<WorkspaceView>("workspace_get", { id }),
   create: (doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_create", { doc }),
   remove: (id: string, target: WorkspaceDeleteTarget) => desktopCall<void>("workspace_delete", { id, target }),

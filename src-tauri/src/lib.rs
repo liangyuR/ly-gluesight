@@ -345,6 +345,8 @@ pub fn run() {
             vision::vision_calib_info,
             vision::vision_calibrate,
             workspace::workspace_list,
+            workspace::workspace_catalog,
+            workspace::workspace_candidate_doc,
             recipe_capture::recipe_capture_get,
             recipe_capture::recipe_capture_list,
             recipe_capture::recipe_capture_frame_image,

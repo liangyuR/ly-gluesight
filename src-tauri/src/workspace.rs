@@ -372,6 +372,31 @@ pub enum PublishState {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkspaceCatalogEntry {
+    id: String,
+    name: String,
+    product_code: u16,
+    cameras: Vec<String>,
+    instance_id: u64,
+    revision: u64,
+    flow: u32,
+    publish: PublishState,
+    pending: Option<WorkspaceCatalogPending>,
+    has_teaching_piece: bool,
+    segment_recipe: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceCatalogPending {
+    id: String,
+    name: String,
+    product_code: u16,
+    cameras: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceView {
     pub workspace: Workspace,
     pub layout: Recipe,
@@ -462,6 +487,54 @@ impl LiveFrames {
 }
 
 impl WorkspaceHost {
+    fn catalog(&self) -> Vec<WorkspaceCatalogEntry> {
+        let mut entries: Vec<_> = self
+            .items
+            .lock()
+            .unwrap()
+            .values()
+            .map(|w| WorkspaceCatalogEntry {
+                id: w.doc.id.clone(),
+                name: w.doc.name.clone(),
+                product_code: w.doc.product_code,
+                cameras: w.doc.plan_cameras(),
+                instance_id: w.instance_id,
+                revision: w.revision,
+                flow: w.flow,
+                publish: w.publish.clone(),
+                pending: w.pending.as_ref().map(|release| WorkspaceCatalogPending {
+                    id: release.doc.id.clone(),
+                    name: release.doc.name.clone(),
+                    product_code: release.doc.product_code,
+                    cameras: release.doc.plan_cameras(),
+                }),
+                has_teaching_piece: w.teaching_piece.is_some(),
+                segment_recipe: w.doc.is_burst(),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.id.cmp(&b.id));
+        entries
+    }
+
+    fn candidate_doc(
+        &self,
+        id: &str,
+        instance_id: u64,
+        revision: u64,
+    ) -> Result<RecipeDoc, String> {
+        safe_id(id)?;
+        let items = self.items.lock().unwrap();
+        let w = items.get(id).ok_or("候选配置不存在")?;
+        w.expect_instance(instance_id)?;
+        if w.legacy() {
+            return Err(pieces::LEGACY.into());
+        }
+        if w.revision != revision {
+            return Err("候选配置已更新，请重新加载后操作".into());
+        }
+        Ok(w.doc.clone())
+    }
+
     pub(crate) fn comparison_snapshot(
         &self,
         id: &str,
@@ -637,6 +710,21 @@ pub fn workspace_list(host: State<'_, WorkspaceHost>) -> Vec<Workspace> {
     let mut out: Vec<_> = host.items.lock().unwrap().values().cloned().collect();
     out.sort_by(|a, b| a.doc.id.cmp(&b.doc.id));
     out
+}
+
+#[tauri::command]
+pub fn workspace_catalog(host: State<'_, WorkspaceHost>) -> Vec<WorkspaceCatalogEntry> {
+    host.catalog()
+}
+
+#[tauri::command]
+pub fn workspace_candidate_doc(
+    host: State<'_, WorkspaceHost>,
+    id: String,
+    instance_id: u64,
+    revision: u64,
+) -> Result<RecipeDoc, String> {
+    host.candidate_doc(&id, instance_id, revision)
 }
 
 fn unloaded_hint(dir: &Path) -> String {
@@ -2158,6 +2246,75 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn candidate_copy_requires_the_listed_instance_even_when_revision_is_reused() {
+        let root = ImportTestDir::new();
+        let store = Store::open(&root.0.join("history.sqlite")).unwrap();
+        let mut original = Workspace::new(crate::recipe::samples_burst());
+        original.ensure_instance(&store).unwrap();
+        let saved = original.doc.clone();
+        let mut pending = saved.clone();
+        pending.name = "待生效的配置".into();
+        original.pending = Some(Box::new(Release {
+            doc: pending,
+            bundle_id: "pending-release".into(),
+            revision: original.revision,
+            validation: Validation {
+                revision: original.revision,
+                passed: true,
+                checked_at: 1,
+                checks: Vec::new(),
+                environment_tag: Value::Null,
+            },
+            validation_site: ValidationSite::Offline,
+            navigation: None,
+            _frames: Discarded,
+            _overview: Discarded,
+            _base_revision: Discarded,
+        }));
+        original.publish = PublishState::Waiting;
+        let host = WorkspaceHost {
+            root: root.0.join("workspaces"),
+            items: Mutex::new(HashMap::from([(saved.id.clone(), original)])),
+            notes: Vec::new(),
+            live_burst: Mutex::default(),
+            live_views: Mutex::default(),
+            station: Mutex::default(),
+            mix_samples: Mutex::default(),
+            capture_seq: std::sync::atomic::AtomicU64::new(0),
+            comparisons: comparisons::Comparisons::default(),
+            frame_metadata: recorded::FrameMetadataCache::default(),
+            history_bundle: Mutex::default(),
+        };
+        let listed = host.catalog().pop().unwrap();
+        assert_eq!(
+            host.candidate_doc(&listed.id, listed.instance_id, listed.revision)
+                .unwrap(),
+            saved
+        );
+
+        let mut replacement = Workspace::new(saved);
+        replacement.doc.name = "重建后的候选".into();
+        replacement.ensure_instance(&store).unwrap();
+        assert_eq!(replacement.revision, listed.revision);
+        host.items
+            .lock()
+            .unwrap()
+            .insert(listed.id.clone(), replacement.clone());
+        assert!(host
+            .candidate_doc(&listed.id, listed.instance_id, listed.revision)
+            .is_err());
+        let current = host.catalog().pop().unwrap();
+        assert!(host
+            .candidate_doc(&current.id, current.instance_id, current.revision + 1)
+            .is_err());
+        assert_eq!(
+            host.candidate_doc(&current.id, current.instance_id, current.revision)
+                .unwrap(),
+            replacement.doc
+        );
     }
 
     /// 第 1 帧带着录制文件 `file` 进内存预览，再来两帧大图把它挤出去。
