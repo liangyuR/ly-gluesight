@@ -46,7 +46,7 @@ fn exclusion_changes_image_statistics_without_compressing_counts_and_restore_rem
     apply_capture_review(&mut w, &source, CaptureReviewEdit::Save(Vec::new())).unwrap();
     apply_capture_review(&mut w, &source, CaptureReviewEdit::Confirm).unwrap();
     let measure = |_: usize, _: &str, seq: u64| Ok(measured(if seq == 3 { 100.0 } else { 1.0 }));
-    let metrics = measure_calibration_round(&w, &source, measure);
+    let metrics = measure_calibration_round(&w, &source, measure, None).unwrap();
     let entry = burst::calibration_round(&w.doc, &source, &metrics);
     assert_eq!(entry.x_means[0], Some(34.0));
     w.calibration.rounds.push(entry);
@@ -68,7 +68,7 @@ fn exclusion_changes_image_statistics_without_compressing_counts_and_restore_rem
     .unwrap();
     assert!(w.calibration.rounds.is_empty());
     assert_eq!(w.doc.segments[0].expected_frames, Some(5));
-    let metrics = measure_calibration_round(&w, &source, measure);
+    let metrics = measure_calibration_round(&w, &source, measure, None).unwrap();
     let entry = burst::calibration_round(&w.doc, &source, &metrics);
     assert_eq!(entry.x_means[0], Some(1.0));
     assert_eq!(entry.group_count, 5);
@@ -91,7 +91,7 @@ fn exclusion_changes_image_statistics_without_compressing_counts_and_restore_rem
         },
     )
     .unwrap();
-    let metrics = measure_calibration_round(&w, &source, measure);
+    let metrics = measure_calibration_round(&w, &source, measure, None).unwrap();
     assert_eq!(
         burst::calibration_round(&w.doc, &source, &metrics).x_means[0],
         Some(34.0)

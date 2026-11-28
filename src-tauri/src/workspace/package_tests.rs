@@ -5,6 +5,10 @@ use crate::workspace::pieces_tests::measured_teaching;
 
 const ROUND: &str = "capture-1-0";
 
+fn inspect(path: &Path) -> Result<PackageManifest, String> {
+    read_manifest(&mut transfer::open_zip(path, LABEL)?).map(|(manifest, _)| manifest)
+}
+
 struct Dirs {
     base: PathBuf,
     source: PathBuf,

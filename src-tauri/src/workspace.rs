@@ -2000,7 +2000,7 @@ pub async fn workspace_station_capture(
             return Err("图编号超出设备范围".into());
         }
         let selected = view.unwrap_or(1);
-        let image = cycle.camera.capture_view(cam, selected, None)?;
+        let image = cycle.camera.capture_view(cam, selected)?;
         if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
             return Err("取样期间设备或节拍状态变化，样本已丢弃".into());
         }

@@ -171,15 +171,21 @@ pub(super) fn require_available(w: &Workspace, round: &str, seq: u64) -> Result<
     Ok(())
 }
 
-pub fn measure_calibration_round(
+pub(super) fn measure_calibration_round(
     w: &Workspace,
     round: &CaptureRoundV2,
     mut measure: impl FnMut(usize, &str, u64) -> Result<crate::burst_judge::FrameMetrics, String>,
-) -> Vec<crate::burst_judge::FrameMetrics> {
-    burst::measure_round(&w.doc.plan_cameras(), round, |camera, camera_id, seq| {
-        require_available(w, &round.round_id, seq)?;
-        measure(camera, camera_id, seq)
-    })
+    operation: Option<&crate::operation::Operation>,
+) -> Result<Vec<crate::burst_judge::FrameMetrics>, String> {
+    burst::measure_round_with_operation(
+        &w.doc.plan_cameras(),
+        round,
+        |camera, camera_id, seq| {
+            require_available(w, &round.round_id, seq)?;
+            measure(camera, camera_id, seq)
+        },
+        operation,
+    )
 }
 
 fn validate_cuts(cuts: &[u64], groups: u64, segments: usize) -> Result<(), String> {

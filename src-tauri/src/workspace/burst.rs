@@ -825,6 +825,7 @@ pub(super) fn segment_range(
 /// 段走廊的示教帧（D-SB-45）：这台相机是该段的检测相机；示教轮次已确认手动分段（单段配方不需要），帧组落在这一段内；
 /// 与这台相机已有的示教帧同尺寸。同一相机同一段只留一帧，已画的走廊原样保留。相机还没有像素当量时用 `default_scale`
 /// （设备标定的当量）。
+#[cfg(test)]
 pub(super) fn apply_segment_teaching(
     w: &mut Workspace,
     teaching: CameraTeaching,
@@ -1761,15 +1762,6 @@ pub(super) fn check_round(doc: &RecipeDoc, round: &CaptureRoundV2) -> Result<(),
 
 /// 量一轮的每一帧：按计划相机、帧组序号 1..=帧组数排列；缺帧记 Missing，`measure` 失败的帧记 Error（规格 §0 所有帧都测）。
 /// `measure(计划相机下标, 相机编号, seq)`。
-pub(super) fn measure_round(
-    cameras: &[String],
-    round: &CaptureRoundV2,
-    measure: impl FnMut(usize, &str, u64) -> Result<FrameMetrics, String>,
-) -> Vec<FrameMetrics> {
-    measure_round_with_operation(cameras, round, measure, None)
-        .expect("无取消任务的测量总会返回帧结果")
-}
-
 pub(super) fn measure_round_with_operation(
     cameras: &[String],
     round: &CaptureRoundV2,
@@ -2580,31 +2572,7 @@ pub struct TeachPreviewRange {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn measure_teaching_range(
-    w: &Workspace,
-    round: &CaptureRoundV2,
-    camera: &str,
-    segment: u32,
-    from: Option<u64>,
-    to: Option<u64>,
-    expected_revision: Option<u64>,
-    measure: impl FnMut(u64) -> Result<FrameMetrics, String>,
-) -> Result<TeachPreviewRange, String> {
-    measure_teaching_range_operation(
-        w,
-        round,
-        camera,
-        segment,
-        from,
-        to,
-        expected_revision,
-        measure,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn measure_teaching_range_operation(
+pub(super) fn measure_teaching_range_operation(
     w: &Workspace,
     round: &CaptureRoundV2,
     camera: &str,

@@ -60,7 +60,7 @@ pub(super) fn configs(doc: &RecipeDoc, config: &str) -> BTreeMap<String, Value> 
         .collect()
 }
 
-/// 测成的一帧，胶中心偏移 x（mm）；相机下标与 seq 由 measure_round 填。
+/// 测成的一帧，胶中心偏移 x（mm）；相机下标与 seq 由整轮测量填入。
 pub(super) fn measured(x: f64) -> FrameMetrics {
     FrameMetrics {
         camera: 0,

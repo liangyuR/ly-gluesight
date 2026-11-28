@@ -588,11 +588,10 @@ fn measure(
         let graphs = vision::CorridorSet::build(&recipe, &burst::teaching_sizes(w)?)?;
         let choice = burst::calibration_corridors(w, &round.round_id, round.group_count)?;
         let round_id = &round.round_id;
-        burst::measure_round_with_operation(
-            &w.doc.plan_cameras(),
+        capture_review::measure_calibration_round(
+            w,
             round,
             |camera, camera_id, seq| {
-                capture_review::require_available(w, &round.round_id, seq)?;
                 let Some(segment) = choice[camera][(seq - 1) as usize] else {
                     return Ok(burst::frame_without_metrics(
                         camera,

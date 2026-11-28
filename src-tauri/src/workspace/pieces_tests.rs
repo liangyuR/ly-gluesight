@@ -1,5 +1,6 @@
-use super::burst::{calibration_round, measure_round, CameraTeaching};
+use super::burst::{calibration_round, CameraTeaching};
 use super::burst_tests::{burst_workspace, capture_round, measured, DEVICE};
+use super::capture_review::measure_calibration_round;
 use super::capture_review::{apply_capture_review, CaptureReviewEdit};
 use super::pieces::{measure_teaching, replace_teaching_piece, teaching_measured, TeachingPiece};
 use super::*;
@@ -72,9 +73,7 @@ pub(super) fn measured_teaching(kinds: &[SegmentKind], x: f64) -> Workspace {
 
 fn measure_with(w: &Workspace, teach: &CaptureRoundV2, x: f64) -> Result<Workspace, String> {
     measure_teaching(w, teach, |w, round| {
-        Ok(measure_round(&w.doc.plan_cameras(), round, |_, _, _| {
-            Ok(measured(x))
-        }))
+        measure_calibration_round(w, round, |_, _, _| Ok(measured(x)), None)
     })
     .map(|outcome| outcome.next)
 }
@@ -116,7 +115,7 @@ fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts
     let other = capture_round("other", &w.doc, GROUPS, DEVICE, &[]);
     apply_capture_review(&mut w, &other, CaptureReviewEdit::Save(vec![14])).unwrap();
     apply_capture_review(&mut w, &other, CaptureReviewEdit::Confirm).unwrap();
-    let metrics = measure_round(&w.doc.plan_cameras(), &other, |_, _, _| Ok(measured(0.0)));
+    let metrics = measure_calibration_round(&w, &other, |_, _, _| Ok(measured(0.0)), None).unwrap();
     w.calibration
         .rounds
         .push(calibration_round(&w.doc, &other, &metrics));

@@ -612,15 +612,6 @@ pub enum FrameGraph<'a> {
     Heading(&'a HeadingGraph),
 }
 
-impl FrameGraph<'_> {
-    pub fn camera(&self) -> &str {
-        match self {
-            Self::Corridor(c) => &c.camera,
-            Self::Heading(h) => &h.camera,
-        }
-    }
-}
-
 impl<'a> FrameGraph<'a> {
     pub(crate) fn mix_plan(self) -> Option<&'a super::mix::MixPlan> {
         match self {

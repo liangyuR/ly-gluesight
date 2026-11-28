@@ -246,10 +246,6 @@ fn read_manifest<R: std::io::Read + std::io::Seek>(
     Ok((manifest, format!("{:x}", Sha256::digest(text.as_bytes()))))
 }
 
-pub(crate) fn inspect(path: &Path) -> Result<PackageManifest, String> {
-    read_manifest(&mut transfer::open_zip(path, LABEL)?).map(|(manifest, _)| manifest)
-}
-
 const ROUND_JSON_MAX: u64 = 1 << 20;
 
 /// 预览用：清单与包里各采集轮次的 `round.json`（这里不核对校验和，导入解包时核对）。

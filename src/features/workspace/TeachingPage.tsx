@@ -306,7 +306,7 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
   const previewing = choosingNow || mode === "skip" || mode === "pending";
   const { picked, error: pickError, loading: roundLoading, retry: retryRound } = useTeachingRound(doc.id, data.workspace.instanceId, teachingRoundId, previewing);
   const reviews = data.workspace.captureReview?.rounds ?? {};
-  // 单段配方所有帧都在第 1 段，不需要先确认手动分段（与后端 apply_segment_teaching 一致）
+  // 单段配方所有帧都在第 1 段，不需要先确认手动分段
   const range = segment == null || !picked ? null : plan.segments.length === 1 ? { start: 1, end: picked.view.groupCount } : confirmedSegmentRange(reviews[picked.view.roundId], plan.segments, segment);
   const inSegment = !!range && seq >= range.start && seq <= range.end;
   const arrived = !!picked && frameArrived(picked.view, camera, seq);

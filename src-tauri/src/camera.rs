@@ -124,11 +124,6 @@ pub struct BurstRender {
     pub seed: u64,
 }
 
-/// 内部合成夹具的取图依据。
-pub enum TriggerPayload {
-    Burst(BurstRender),
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CameraSource {
@@ -938,14 +933,8 @@ fn device_ns(ticks: u64, hz: u64) -> Option<u64> {
     (hz > 0 && ticks > 0).then(|| (u128::from(ticks) * 1_000_000_000 / u128::from(hz)) as u64)
 }
 
-/// 模拟 / 样本集的一帧：帧计数与触发计数都是本会话的帧号。
-fn synthetic_frame(
-    cam: u8,
-    session: u64,
-    n: u64,
-    images: Vec<Arc<FrameImage>>,
-    manual: bool,
-) -> Frame {
+/// 内部模拟相机的软触发帧，帧计数与触发计数都取本会话帧号。
+fn synthetic_frame(cam: u8, session: u64, n: u64, images: Vec<Arc<FrameImage>>) -> Frame {
     Frame {
         cam,
         session,
@@ -955,7 +944,7 @@ fn synthetic_frame(
         lost_packets: 0,
         ts: now_ms(),
         dev_ts: Some(n.saturating_mul(crate::frame_clock::SYNTH_PERIOD_NS)),
-        manual,
+        manual: true,
         images,
         bayer: None,
     }
@@ -1429,12 +1418,7 @@ impl CameraSlot {
         (self.shared.session.load(Ordering::SeqCst), *seq)
     }
 
-    fn trigger_frame(
-        &self,
-        lose_in_transfer: bool,
-        payload: Option<TriggerPayload>,
-        manual: bool,
-    ) -> Result<Option<CaptureTicket>, String> {
+    fn trigger_frame(&self) -> Result<Option<CaptureTicket>, String> {
         let config = self.config();
         if let Err(e) = config.validate() {
             self.state.lock().unwrap().message = e.clone();
@@ -1449,25 +1433,14 @@ impl CameraSlot {
                     frame_counter: n,
                 };
                 let shared = self.shared.clone();
-                if lose_in_transfer {
-                    shared.deliver_in_order(session, n, None);
-                    return Ok(Some(ticket));
-                }
                 tauri::async_runtime::spawn(async move {
                     let started = Instant::now();
-                    let images = tauri::async_runtime::spawn_blocking(move || match payload {
-                        // 三台独立单视角相机各出一幅（D-SB-11）
-                        Some(TriggerPayload::Burst(r)) if config.view_count == 1 => {
-                            Ok(vec![Arc::new(simimage::render_burst(&r))])
-                        }
-                        Some(TriggerPayload::Burst(_)) => Err(format!(
-                            "段配方的相机必须是单视角，模拟相机 {} 配了 {} 个视角",
-                            config.id, config.view_count
-                        )),
-                        _ if config.view_count == 3 => {
+                    let images = tauri::async_runtime::spawn_blocking(move || {
+                        if config.view_count == 3 {
                             simimage::background_views(config.view_count, n)
+                        } else {
+                            Ok(Vec::new())
                         }
-                        _ => Ok(Vec::new()),
                     })
                     .await
                     .map_err(|e| e.to_string())
@@ -1481,7 +1454,7 @@ impl CameraSlot {
                             shared.deliver_in_order(
                                 session,
                                 n,
-                                Some(synthetic_frame(cam, session, n, images, manual)),
+                                Some(synthetic_frame(cam, session, n, images)),
                             );
                         }
                         Err(e) => {
@@ -1522,7 +1495,7 @@ impl CameraSlot {
         }
     }
 
-    fn soft_trigger(&self, payload: Option<TriggerPayload>) -> Result<CaptureRequest, String> {
+    fn soft_trigger(&self) -> Result<CaptureRequest, String> {
         let config = self.config();
         config.validate()?;
         if matches!(config.source, CameraSource::Mvs | CameraSource::Simulator)
@@ -1549,7 +1522,7 @@ impl CameraSlot {
             matches!(config.source, CameraSource::Mvs | CameraSource::Simulator),
             Ordering::SeqCst,
         );
-        match self.trigger_frame(false, payload, true) {
+        match self.trigger_frame() {
             Ok(Some(ticket)) => Ok(CaptureRequest::Exact(ticket)),
             Ok(None) => Ok(CaptureRequest::After {
                 session,
@@ -2219,16 +2192,12 @@ impl CameraRig {
         self.slot(cam as usize).and_then(|s| s.last_view(view))
     }
 
-    pub fn capture_views(
-        &self,
-        cam: u8,
-        payload: Option<TriggerPayload>,
-    ) -> Result<Vec<Arc<FrameImage>>, String> {
+    fn capture_views(&self, cam: u8) -> Result<Vec<Arc<FrameImage>>, String> {
         let cycle = self.rig.app.state::<CycleHost>();
         let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
         check_idle(&cycle)?;
         let slot = self.slot(cam as usize).ok_or("相机不存在")?;
-        self.capture_idle(&slot, payload)
+        self.capture_idle(&slot)
     }
 
     pub(crate) fn capture_mix_reference(
@@ -2256,10 +2225,7 @@ impl CameraRig {
             .observed_imaging(Some(session))
             .and_then(|v| v.white_balance)
             .ok_or("当前相机会话没有有效白平衡回读")?;
-        let image = self
-            .capture_idle(&slot, None)?
-            .pop()
-            .ok_or("相机没有返回单帧")?;
+        let image = self.capture_idle(&slot)?.pop().ok_or("相机没有返回单帧")?;
         if !image.is_color()
             || slot.shared.session.load(Ordering::SeqCst) != session
             || slot
@@ -2272,26 +2238,20 @@ impl CameraRig {
         Ok((image, config.serial, white))
     }
 
-    fn capture_idle(
-        &self,
-        slot: &CameraSlot,
-        payload: Option<TriggerPayload>,
-    ) -> Result<Vec<Arc<FrameImage>>, String> {
+    fn capture_idle(&self, slot: &CameraSlot) -> Result<Vec<Arc<FrameImage>>, String> {
         let config = slot.config();
         config.validate()?;
         if !slot.is_ready() {
             return Err(format!("相机未就绪：{}", slot.status().message));
         }
-        let images = if config.source == CameraSource::Sim
-            && !matches!(payload, Some(TriggerPayload::Burst(_)))
-        {
+        let images = if config.source == CameraSource::Sim {
             let images = slot.last_views();
             if images.is_empty() {
                 return Err("模拟相机尚未出图，请先运行一个模拟工件".into());
             }
             images
-        } else if config.source == CameraSource::Sim || config.trigger_source == "Software" {
-            let request = slot.soft_trigger(payload)?;
+        } else if config.trigger_source == "Software" {
+            let request = slot.soft_trigger()?;
             let captured = slot.wait_capture(request, Duration::from_secs(2))?;
             captured.ok_or("2 秒内没有收到本次触发的完整图像；检查触发与相机连接")?
         } else {
@@ -2308,17 +2268,12 @@ impl CameraRig {
         Ok(images)
     }
 
-    pub fn capture_view(
-        &self,
-        cam: u8,
-        view: u8,
-        payload: Option<TriggerPayload>,
-    ) -> Result<Arc<FrameImage>, String> {
+    pub fn capture_view(&self, cam: u8, view: u8) -> Result<Arc<FrameImage>, String> {
         let slot = self.slot(cam as usize).ok_or("相机不存在")?;
         if view == 0 || view > slot.config().view_count {
             return Err(format!("相机没有视角 {view}"));
         }
-        self.capture_views(cam, payload)?
+        self.capture_views(cam)?
             .get(view as usize - 1)
             .cloned()
             .ok_or_else(|| format!("这一帧缺少视角 {view}"))
@@ -2883,7 +2838,7 @@ async fn camera_soft_trigger_inner(cycle: State<'_, CycleHost>, cam: usize) -> R
     let _gate = camera_gate(&cycle).await?;
     check_idle(&cycle)?;
     let slot = cycle.camera.slot(cam).ok_or("相机不存在")?;
-    slot.soft_trigger(None).map(|_| ())
+    slot.soft_trigger().map(|_| ())
 }
 
 /// 相机页保存曝光与增益：写回 cameras.json，并立即写入已连接的海康相机；未连接时在下次打开时写入。

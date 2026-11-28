@@ -1,3 +1,4 @@
+use super::burst::measure_teaching_range_operation;
 use super::burst_tests::{burst_workspace, capture_round, measured, DEVICE};
 use super::*;
 use crate::burst_judge::FrameState;
@@ -458,7 +459,7 @@ fn narrow_trial_reads_only_its_window_and_preserves_frame_numbers_and_segment_co
         let image = crate::image_file::load(&inputs.join(format!("{seq}.pgm")))?;
         Ok(measured(f64::from(image.pixels[0])))
     };
-    let window = measure_teaching_range(
+    let window = measure_teaching_range_operation(
         &w,
         &round,
         &camera,
@@ -467,6 +468,7 @@ fn narrow_trial_reads_only_its_window_and_preserves_frame_numbers_and_segment_co
         Some(16),
         Some(w.revision),
         measure,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -500,7 +502,7 @@ fn narrow_trial_reads_only_its_window_and_preserves_frame_numbers_and_segment_co
             .collect::<Vec<_>>(),
         vec![12.0, 15.0, 16.0]
     );
-    let full = measure_teaching_range(
+    let full = measure_teaching_range_operation(
         &w,
         &round,
         &camera,
@@ -509,6 +511,7 @@ fn narrow_trial_reads_only_its_window_and_preserves_frame_numbers_and_segment_co
         None,
         Some(w.revision),
         measure,
+        None,
     )
     .unwrap();
     assert_eq!(full.frames[0].seq, 11);
