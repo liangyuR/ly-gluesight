@@ -35,7 +35,7 @@ export default function CameraPage() {
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   const {guard,dialog}=useUnsavedGuard({dirty,save:()=>form.current?.save()??Promise.resolve(true),discard:()=>form.current?.discard()});
 
-  const statusOf=(i:number)=>statuses.find(s=>s.cam===i)??null;
+  const statusOf=(i:number)=>statuses.find(s=>s.cam===i&&s.id===configs[i]?.id)??null;
   const cam=detailId==null?-1:configs.findIndex(c=>c.id===detailId);
   const config=configs[cam]??null;
   const status=config?statusOf(cam):null;
@@ -83,11 +83,11 @@ export default function CameraPage() {
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
   const released=!!status?.released;
-  const handOverBlocked=!desktop||busy||!!action||configSaving||loading;
+  const handOverBlocked=!desktop||!status||busy||!!action||configSaving||loading;
   const handOver=async()=>{
     if(!config||config.source!=="mvs"||!config.serial||pending.current||handOverBlocked)return;
     pending.current=true;setAction(released?"reconnect":"release");setHandError("");
-    try{if(released)await cameraApi.reconnect(cam);else await cameraApi.release(cam);}
+    try{if(released)await cameraApi.reconnect(cam, config.id);else await cameraApi.release(cam, config.id);}
     catch(e){if(mounted.current)setHandError(errorText(e));}
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
@@ -106,7 +106,7 @@ export default function CameraPage() {
     <ReturnButton disabled={!!action} guard={guard} hint="配置后保存并应用，再返回继续。"/>
     {notice}
     <CameraOverview configs={configs} statuses={statuses} lastFrame={lastFrame} lockedReason={lockedReason} canReconnect={desktop&&!busy} loading={loading} adding={action==="add"} error={error}
-      onOpen={open} onRefresh={()=>{void reload();refreshReferences();}} onAdd={()=>void add()} onReconnect={i=>cameraApi.reconnect(i)}
+      onOpen={open} onRefresh={()=>{void reload();refreshReferences();}} onAdd={()=>void add()} onReconnect={cameraApi.reconnect}
       footer={<div className="cg-row" style={{justifyContent:"flex-end"}}>{calibration("前往标定")}</div>}/>
     {dialog}
   </div>;

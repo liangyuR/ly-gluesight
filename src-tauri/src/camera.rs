@@ -2822,20 +2822,25 @@ async fn camera_gate(cycle: &CycleHost) -> Result<tokio::sync::MutexGuard<'_, ()
 }
 
 #[tauri::command]
-pub async fn camera_soft_trigger(app: AppHandle, cam: usize) -> Result<(), String> {
-    let result = camera_soft_trigger_inner(app.state::<CycleHost>(), cam).await;
+pub async fn camera_soft_trigger(app: AppHandle, cam: usize, id: String) -> Result<(), String> {
+    let result = camera_soft_trigger_inner(app.state::<CycleHost>(), cam, &id).await;
     crate::cycle::log_op(
         &crate::applog::events::OP_CAMERA,
-        serde_json::json!({"action": "soft_trigger", "cam": cam}),
+        serde_json::json!({"action": "soft_trigger", "cam": cam, "id": id}),
         &result,
     );
     result
 }
 
-async fn camera_soft_trigger_inner(cycle: State<'_, CycleHost>, cam: usize) -> Result<(), String> {
+async fn camera_soft_trigger_inner(
+    cycle: State<'_, CycleHost>,
+    cam: usize,
+    id: &str,
+) -> Result<(), String> {
     let _gate = camera_gate(&cycle).await?;
     check_idle(&cycle)?;
     let slot = cycle.camera.slot(cam).ok_or("相机不存在")?;
+    check_camera_target(&slot.config().id, id)?;
     slot.soft_trigger().map(|_| ())
 }
 
@@ -2892,23 +2897,24 @@ async fn camera_set_imaging_inner(
 
 /// 把海康相机释放给 MVS 客户端（调焦、光圈）：关闭设备，后台不再自动重连，直到重新连接。
 #[tauri::command]
-pub async fn camera_release(app: AppHandle, cam: usize) -> Result<(), String> {
-    let result = camera_release_inner(app.clone(), cam).await;
+pub async fn camera_release(app: AppHandle, cam: usize, id: String) -> Result<(), String> {
+    let result = camera_release_inner(app.clone(), cam, &id).await;
     crate::cycle::log_op(
         &crate::applog::events::OP_CAMERA,
-        serde_json::json!({"action": "release", "cam": cam}),
+        serde_json::json!({"action": "release", "cam": cam, "id": id}),
         &result,
     );
     result
 }
 
-async fn camera_release_inner(app: AppHandle, cam: usize) -> Result<(), String> {
+async fn camera_release_inner(app: AppHandle, cam: usize, id: &str) -> Result<(), String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
     let _gate = camera_gate(&cycle).await?;
     check_access(&cycle, CameraAccess::Maintenance)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
     let config = slot.config();
+    check_camera_target(&config.id, id)?;
     if config.source != CameraSource::Mvs {
         return Err("只有海康相机可以释放给 MVS 客户端".into());
     }
@@ -2928,22 +2934,23 @@ async fn camera_release_inner(app: AppHandle, cam: usize) -> Result<(), String> 
 
 /// 收回已释放的海康相机并重新打开；MVS 客户端还占着时返回打开失败的原因，后台继续每 2 s 重试。
 #[tauri::command]
-pub async fn camera_reconnect(app: AppHandle, cam: usize) -> Result<String, String> {
-    let result = camera_reconnect_inner(app.clone(), cam).await;
+pub async fn camera_reconnect(app: AppHandle, cam: usize, id: String) -> Result<String, String> {
+    let result = camera_reconnect_inner(app.clone(), cam, &id).await;
     crate::cycle::log_op(
         &crate::applog::events::OP_CAMERA,
-        serde_json::json!({"action": "reconnect", "cam": cam}),
+        serde_json::json!({"action": "reconnect", "cam": cam, "id": id}),
         &result,
     );
     result
 }
 
-async fn camera_reconnect_inner(app: AppHandle, cam: usize) -> Result<String, String> {
+async fn camera_reconnect_inner(app: AppHandle, cam: usize, id: &str) -> Result<String, String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
     let _gate = camera_gate(&cycle).await?;
     check_access(&cycle, CameraAccess::Maintenance)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
+    check_camera_target(&slot.config().id, id)?;
     slot.released.store(false, Ordering::SeqCst);
     let opened = tauri::async_runtime::spawn_blocking(move || slot.open())
         .await

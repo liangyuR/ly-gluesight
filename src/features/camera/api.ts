@@ -45,10 +45,10 @@ export const cameraApi = {
   remove: (cam: number, id: string) => call<void>("camera_remove", { cam, id }, () => undefined),
   listDevices: () => call<DeviceSummary[]>("camera_list_devices", undefined, () => []),
   preview: (cam: number, view?: number) => call<ArrayBuffer>("camera_preview", { cam, ...(view == null ? {} : { view }) }, () => new ArrayBuffer(0)).then(decodePreview),
-  softTrigger: (cam: number) => call<void>("camera_soft_trigger", { cam }, () => undefined),
+  softTrigger: (cam: number, id: string) => call<void>("camera_soft_trigger", { cam, id }, () => undefined),
   setImaging: (cam: number, id: string, imaging: CameraImaging) => call<void>("camera_set_imaging", { cam, id, imaging }, () => undefined),
-  release: (cam: number) => call<void>("camera_release", { cam }, () => undefined),
-  reconnect: (cam: number) => call<string>("camera_reconnect", { cam }, () => ""),
+  release: (cam: number, id: string) => call<void>("camera_release", { cam, id }, () => undefined),
+  reconnect: (cam: number, id: string) => call<string>("camera_reconnect", { cam, id }, () => ""),
 };
 
 /** 相机组状态每秒刷新；各相机最近一帧攒起来每 250 ms 交一次（缩略图本来也是 250 ms 取一次），页面不必跟着每帧重画。 */

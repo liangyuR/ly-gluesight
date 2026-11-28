@@ -225,14 +225,53 @@ describe("相机参数校验", () => {
   it("相机已释放给 MVS 时修改参数 → 不能保存并提示先重新连接", async () => {
     released = ["cam1"];
     await openCamera("左相机 cam1");
-    expect(await screen.findByRole("button", { name: "重新连接" })).toBeEnabled();
+    const reconnect = await screen.findByRole("button", { name: "重新连接" });
+    expect(reconnect).toBeEnabled();
     await userEvent.type(screen.getByRole("textbox", { name: "名称" }), "X");
     expect(screen.getByRole("button", { name: "保存并应用" })).toBeDisabled();
     expect(screen.getByText("已释放给 MVS，重新连接后再保存")).toBeVisible();
+    await userEvent.click(reconnect);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_reconnect", { cam: 0, id: "cam1" });
   });
 });
 
+it("相机总览中重连故障设备 → 按该卡片的相机身份操作，错误留在该卡片", async () => {
+  const ipc = vi.mocked(invoke);
+  const original = ipc.getMockImplementation()!;
+  ipc.mockImplementation(async (command, args, options) => {
+    if (command === "camera_rig_status") return configs.map((config, index) => ({
+      ...status(index, config), ...(config.id === "cam2" ? { ready: false, message: "设备连接中断" } : {}),
+    }));
+    if (command === "camera_reconnect") throw new Error("相机仍被 MVS 占用");
+    return original(command, args, options);
+  });
+  renderPage();
+  const faulty = within(await screen.findByRole("article", { name: "右相机 cam2" }));
+  await userEvent.click(await faulty.findByRole("button", { name: "立即重新连接" }));
+
+  expect(await faulty.findByText(/相机仍被 MVS 占用/)).toBeVisible();
+  expect(faulty.getByRole("button", { name: "立即重新连接" })).toBeEnabled();
+  expect(within(screen.getByRole("article", { name: "左相机 cam1" })).queryByText(/相机仍被 MVS 占用/)).not.toBeInTheDocument();
+  expect(ipc).toHaveBeenCalledWith("camera_reconnect", { cam: 1, id: "cam2" });
+});
+
 describe("出图验证", () => {
+  it("设备状态来自同一位置的另一台相机 → 详情不允许按该状态释放或重连", async () => {
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, args, options) => {
+      if (command === "camera_rig_status") return [
+        status(0, configs[0]),
+        { ...status(1, camera("cam3", "另一台相机")), ready: false, released: true, device: null },
+      ];
+      return original(command, args, options);
+    });
+    await openCamera("右相机 cam2");
+
+    const preview = within(screen.getByRole("region", { name: "出图验证" }));
+    expect(preview.getByRole("button", { name: "释放给 MVS" })).toBeDisabled();
+    expect(preview.queryByRole("button", { name: "重新连接" })).not.toBeInTheDocument();
+  });
+
   it("设备因触发参数初始化失败 → 参数面板保留原始故障，Fault 下历史 PLC 锁不阻止释放", async () => {
     const message = "未适配型号不支持所需的高电平门控，TriggerSelector 仅支持 FrameBurstStart";
     const original = vi.mocked(invoke).getMockImplementation()!;
@@ -249,17 +288,27 @@ describe("出图验证", () => {
     const release = screen.getByRole("button", { name: "释放给 MVS" });
     expect(release).toBeEnabled();
     await userEvent.click(release);
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_release", { cam: 0 });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_release", { cam: 0, id: "cam1" });
   });
 
   it("软触发相机有未保存的参数修改 → 取一帧不可用并提示先保存", async () => {
-    configs = [camera("cam1", "左相机", { triggerSource: "Software" })];
-    await openCamera("左相机 cam1");
-    const test = within(await screen.findByRole("region", { name: "出图验证" }));
-    await waitFor(() => expect(test.getByRole("button", { name: "取一帧" })).toBeEnabled());
+    configs[1] = camera("cam2", "右相机", { triggerSource: "Software" });
+    const capture = deferred<void>();
+    const ipc = vi.mocked(invoke);
+    const original = ipc.getMockImplementation()!;
+    ipc.mockImplementation((command, args, options) =>
+      command === "camera_soft_trigger" ? capture.promise : original(command, args, options));
+    await openCamera("右相机 cam2");
+    const preview = within(await screen.findByRole("region", { name: "出图验证" }));
+    await waitFor(() => expect(preview.getByRole("button", { name: "取一帧" })).toBeEnabled());
+    await userEvent.click(preview.getByRole("button", { name: "取一帧" }));
+    expect(preview.getByRole("button", { name: "取图中…" })).toBeDisabled();
+    expect(ipc).toHaveBeenCalledWith("camera_soft_trigger", { cam: 1, id: "cam2" });
+    await act(async () => capture.resolve(undefined));
+
     await userEvent.type(screen.getByRole("textbox", { name: "名称" }), "A");
-    expect(test.getByRole("button", { name: "取一帧" })).toBeDisabled();
-    expect(test.getByText("先保存并应用再测试")).toBeVisible();
+    expect(preview.getByRole("button", { name: "取一帧" })).toBeDisabled();
+    expect(preview.getByText("先保存并应用再测试")).toBeVisible();
   });
 });
 

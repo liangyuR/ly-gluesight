@@ -25,11 +25,11 @@ export default function FramePreview({ cam, status, lastFrame, config, blockedRe
   const reason = blockedReason || (!status?.ready ? (status?.message || "相机未就绪") : "");
   const canTrigger = !reason && supported && software;
   const soft = async () => {
-    if(pending.current||!canTrigger)return;
+    if(!config||pending.current||!canTrigger)return;
     const request=++serial.current;
     pending.current=true;setBusy(true);
     setError("");
-    try{await cameraApi.softTrigger(cam);}
+    try{await cameraApi.softTrigger(cam, config.id);}
     catch(e){if(mounted.current&&currentScope.current===scope&&serial.current===request)setError(String(e));}
     finally{if(mounted.current&&currentScope.current===scope&&serial.current===request){pending.current=false;setBusy(false);}}
   };

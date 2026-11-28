@@ -18,13 +18,13 @@ interface Props {
   onOpen: (i: number) => void;
   onRefresh: () => void;
   onAdd?: () => void;
-  onReconnect: (i: number) => Promise<string>;
+  onReconnect: (i: number, id: string) => Promise<string>;
   footer?: ReactNode;
 }
 
 export default function CameraOverview({ configs, statuses, lastFrame, lockedReason, canReconnect, loading, adding, error, onOpen, onRefresh, onAdd, onReconnect, footer }: Props) {
   const now = useNow(1000);
-  const status = (i: number) => statuses.find(s => s.cam === i) ?? null;
+  const status = (i: number) => statuses.find(s => s.cam === i && s.id === configs[i]?.id) ?? null;
   const health = configs.map((c, i) => cameraHealth(c, status(i)));
   const tally = (label: string) => health.filter(h => h.label === label).length;
   const connected = tally("已连接"), unbound = tally("未绑定"), down = health.filter(h => h.tone === "fault").length, released = tally("已释放给 MVS");
@@ -46,7 +46,7 @@ export default function CameraOverview({ configs, statuses, lastFrame, lockedRea
     </div>
     {error && <Alert tone="ng">{error}</Alert>}
     <div className="cg-grid">
-      {configs.map((c, i) => <CameraCard key={c.id} index={i} config={c} status={status(i)} frame={lastFrame[i]} now={now} locked={!!lockedReason} canReconnect={canReconnect} onOpen={() => onOpen(i)} onReconnect={() => onReconnect(i)} />)}
+      {configs.map((c, i) => <CameraCard key={c.id} index={i} config={c} status={status(i)} frame={lastFrame[i]} now={now} locked={!!lockedReason} canReconnect={canReconnect} onOpen={() => onOpen(i)} onReconnect={() => onReconnect(i, c.id)} />)}
     </div>
     <Alert>相机按各自设定帧率采集，帧序号配组不代表曝光同步。整轮帧数差异与缺帧请查看采集结果。</Alert>
     {footer}
