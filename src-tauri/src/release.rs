@@ -164,20 +164,7 @@ impl ReleaseBundle {
             return Err("发布配方的版本或实际布局不一致".into());
         }
         reject_links(&self.root, false)?;
-        let mut actual = BTreeMap::new();
-        inventory(&self.root, &self.root, &mut actual)?;
-        let listed = actual.remove("manifest.json").is_some();
-        for entry in &manifest.files {
-            match actual.remove(&entry.path) {
-                Some(bytes) if bytes == entry.bytes => {}
-                Some(_) => return Err(format!("发布资源 {} 的文件类型或大小不符", entry.path)),
-                None => return Err(format!("发布资源 {} 缺失或不是普通文件", entry.path)),
-            }
-        }
-        if !listed || !actual.is_empty() {
-            return Err("发布目录存在清单以外的文件或缺失文件".into());
-        }
-        Ok(())
+        verify_file_inventory(&self.root, &manifest.files)
     }
 
     /// 一轮相机读取共用目录核验，资源仍逐台从磁盘读取。
@@ -508,33 +495,14 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
         return Err("发布清单的配方身份或资源引用无效".into());
     }
     validate_versions(&manifest.versions)?;
-    let mut files = BTreeMap::new();
-    let mut names = BTreeSet::new();
-    for entry in &manifest.files {
-        validate_relative(&entry.path)?;
-        if entry.path == "manifest.json" || !names.insert(entry.path.to_ascii_lowercase()) {
-            return Err(format!("发布清单资源重复或自引用：{}", entry.path));
-        }
-        let bytes = read_file(&resource_path(root, &entry.path)?)?;
-        if bytes.len() as u64 != entry.bytes {
-            return Err(format!("发布资源 {} 的大小不符", entry.path));
-        }
-        files.insert(entry.path.as_str(), bytes);
-    }
-    let recipe: RecipeDoc = parse_resource(&files, &manifest.recipe)?;
+    let mut files = ReleaseFiles::new(root, &manifest.files)?;
+    let recipe: RecipeDoc = files.read_json(&manifest.recipe)?;
     let built = recipe.build()?;
-    let referenced = camera_resources(&manifest, &files, &recipe, &built)?;
-    let declared: BTreeSet<_> = manifest.files.iter().map(|f| f.path.clone()).collect();
-    if referenced != declared {
-        return Err("发布清单存在未声明、未引用或重复资源".into());
+    camera_resources(&manifest, &mut files, &recipe, &built)?;
+    if let Some(name) = files.remaining.keys().next() {
+        return Err(format!("发布清单包含未引用的资源 {name}"));
     }
-    let mut actual = BTreeMap::new();
-    inventory(root, root, &mut actual)?;
-    let mut expected = declared;
-    expected.insert("manifest.json".into());
-    if actual.into_keys().collect::<BTreeSet<_>>() != expected {
-        return Err("发布目录存在清单以外的文件或缺失文件".into());
-    }
+    verify_file_inventory(root, &manifest.files)?;
     Ok(ReleaseBundle {
         id: bundle_id.into(),
         root: root.to_path_buf(),
@@ -543,15 +511,15 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
     })
 }
 
-/// 段配方（schema 5）的资源核对，返回引用到的资源：清单按配方 inspect 顺序列出每台计划相机，资源在 `cameras/{index:02}/`，
+/// 段配方（schema 5）的资源核对：清单按配方 inspect 顺序列出每台计划相机，资源在 `cameras/{index:02}/`，
 /// 每台相机按配方段顺序列出它检测的各段（`s{segment:02}/`）；各段示教帧解码后的尺寸都与清单一致、走廊落在帧内；
 /// 标定是非空 JSON 对象；走廊资源按配方重算比对。
 fn camera_resources(
     manifest: &ReleaseManifest,
-    files: &BTreeMap<&str, Vec<u8>>,
+    files: &mut ReleaseFiles<'_>,
     recipe: &RecipeDoc,
     built: &Recipe,
-) -> Result<BTreeSet<String>, String> {
+) -> Result<(), String> {
     built.ready_burst().map_err(|reasons| reasons.join("；"))?;
     if recipe.id != manifest.recipe_id
         || built.revision_id != manifest.recipe_revision
@@ -561,8 +529,7 @@ fn camera_resources(
     {
         return Err("发布清单与配方快照的身份、版本或检测相机数量不一致".into());
     }
-    json_object(file_bytes(files, &manifest.graph)?, "发布测量图")?;
-    let mut referenced = BTreeSet::from([manifest.recipe.clone(), manifest.graph.clone()]);
+    json_object(&files.read(&manifest.graph)?, "发布测量图")?;
     for ((index, inspect), entry) in built.inspect.iter().enumerate().zip(&manifest.cameras) {
         let label = format!("相机 {}", inspect.camera);
         if entry.index != index || entry.camera != inspect.camera {
@@ -572,14 +539,7 @@ fn camera_resources(
         if entry.calibration != format!("{prefix}/calibration.json") {
             return Err(format!("{label} 的标定资源引用无效"));
         }
-        validate_relative(&entry.calibration)?;
-        if !referenced.insert(entry.calibration.clone()) {
-            return Err(format!("相机资源被重复引用：{}", entry.calibration));
-        }
-        json_object(
-            file_bytes(files, &entry.calibration)?,
-            &format!("{label} 标定"),
-        )?;
+        json_object(&files.read(&entry.calibration)?, &format!("{label} 标定"))?;
         let segments: Vec<u32> = entry.corridors.iter().map(|c| c.segment).collect();
         if segments != detected_segments(built, &inspect.camera) {
             return Err(format!("{label} 的各段资源与配方的检测段不一致"));
@@ -592,26 +552,20 @@ fn camera_resources(
             if !crate::recipe::valid_image_id(&corridor.image_id) {
                 return Err(format!("{label} 第 {segment} 段的示教图编号格式无效"));
             }
-            for name in [&corridor.image, &corridor.corridor] {
-                validate_relative(name)?;
-                if !referenced.insert(name.clone()) {
-                    return Err(format!("相机资源被重复引用：{name}"));
-                }
-            }
-            let (size, extension) = image_details(file_bytes(files, &corridor.image)?, &label)?;
+            let (size, extension) = image_details(&files.read(&corridor.image)?, &label)?;
             if entry.size != size || corridor.image != format!("{dir}/image.{extension}") {
                 return Err(format!(
                     "{label} 第 {segment} 段的示教帧尺寸或引用与清单不一致"
                 ));
             }
             check_corridor(inspect, segment, size)?;
-            let resource: CorridorResource = parse_resource(files, &corridor.corridor)?;
+            let resource: CorridorResource = files.read_json(&corridor.corridor)?;
             if resource != corridor_data(built, inspect, segment, size) {
                 return Err(format!("{label} 第 {segment} 段的走廊与配方快照不一致"));
             }
         }
     }
-    Ok(referenced)
+    Ok(())
 }
 
 /// 校验原图的尺寸、完整像素和扩展名。`label` 是报错主语（如“相机 camA”）。
@@ -719,19 +673,42 @@ fn add_file(
     Ok(())
 }
 
-fn file_bytes<'a>(files: &'a BTreeMap<&str, Vec<u8>>, name: &str) -> Result<&'a [u8], String> {
-    files
-        .get(name)
-        .map(Vec::as_slice)
-        .ok_or_else(|| format!("发布清单缺少资源 {name}"))
+struct ReleaseFiles<'a> {
+    root: &'a Path,
+    remaining: BTreeMap<&'a str, u64>,
 }
 
-fn parse_resource<T: serde::de::DeserializeOwned>(
-    files: &BTreeMap<&str, Vec<u8>>,
-    name: &str,
-) -> Result<T, String> {
-    serde_json::from_slice(file_bytes(files, name)?)
-        .map_err(|e| format!("发布资源 {name} 无法解析：{e}"))
+impl<'a> ReleaseFiles<'a> {
+    fn new(root: &'a Path, entries: &'a [FileEntry]) -> Result<Self, String> {
+        let mut names = BTreeSet::new();
+        let mut remaining = BTreeMap::new();
+        for entry in entries {
+            validate_relative(&entry.path)?;
+            let normalized = entry.path.to_ascii_lowercase();
+            if normalized == "manifest.json" || !names.insert(normalized) {
+                return Err(format!("发布清单资源重复或自引用：{}", entry.path));
+            }
+            remaining.insert(entry.path.as_str(), entry.bytes);
+        }
+        Ok(Self { root, remaining })
+    }
+
+    fn read(&mut self, name: &str) -> Result<Vec<u8>, String> {
+        let expected = self
+            .remaining
+            .remove(name)
+            .ok_or_else(|| format!("发布资源 {name} 未声明或被重复引用"))?;
+        let bytes = read_file(&resource_path(self.root, name)?)?;
+        if bytes.len() as u64 != expected {
+            return Err(format!("发布资源 {name} 的大小不符"));
+        }
+        Ok(bytes)
+    }
+
+    fn read_json<T: serde::de::DeserializeOwned>(&mut self, name: &str) -> Result<T, String> {
+        serde_json::from_slice(&self.read(name)?)
+            .map_err(|e| format!("发布资源 {name} 无法解析：{e}"))
+    }
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
@@ -913,6 +890,23 @@ fn inventory(root: &Path, dir: &Path, files: &mut BTreeMap<String, u64>) -> Resu
         } else {
             return Err(format!("发布目录包含非普通文件：{}", path.display()));
         }
+    }
+    Ok(())
+}
+
+fn verify_file_inventory(root: &Path, declared: &[FileEntry]) -> Result<(), String> {
+    let mut actual = BTreeMap::new();
+    inventory(root, root, &mut actual)?;
+    let listed = actual.remove("manifest.json").is_some();
+    for entry in declared {
+        match actual.remove(&entry.path) {
+            Some(bytes) if bytes == entry.bytes => {}
+            Some(_) => return Err(format!("发布资源 {} 的文件类型或大小不符", entry.path)),
+            None => return Err(format!("发布资源 {} 缺失或不是普通文件", entry.path)),
+        }
+    }
+    if !listed || !actual.is_empty() {
+        return Err("发布目录存在清单以外的文件或缺失文件".into());
     }
     Ok(())
 }
@@ -1154,6 +1148,56 @@ mod tests {
         fs::write(&path, bytes).unwrap();
 
         assert!(verified.camera(1).is_err());
+    }
+
+    #[test]
+    fn loading_requires_complete_declared_referenced_and_valid_resources() {
+        let root =
+            TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
+        let bundle = publish_burst_bundle(&root.0);
+        let reload = || load(&root.0, &bundle.recipe.id, &bundle.id);
+        let manifest_path = bundle.root.join("manifest.json");
+        let manifest = fs::read(&manifest_path).unwrap();
+        let image_name = &bundle.manifest.cameras[2].corridors[0].image;
+        let image_path = bundle.root.join(image_name);
+        let image = fs::read(&image_path).unwrap();
+        let mut corrupt = image.clone();
+        corrupt[0] = b'!';
+        fs::write(&image_path, corrupt).unwrap();
+        assert!(reload().is_err());
+        fs::write(&image_path, image).unwrap();
+
+        let mut undeclared = bundle.manifest.clone();
+        undeclared.files.retain(|entry| &entry.path != image_name);
+        fs::write(&manifest_path, json_bytes(&undeclared).unwrap()).unwrap();
+        assert!(reload().is_err());
+
+        let mut duplicate = bundle.manifest.clone();
+        let entry = duplicate
+            .files
+            .iter()
+            .find(|entry| &entry.path == image_name)
+            .unwrap();
+        duplicate.files.push(FileEntry {
+            path: entry.path.to_ascii_uppercase(),
+            bytes: entry.bytes,
+        });
+        fs::write(&manifest_path, json_bytes(&duplicate).unwrap()).unwrap();
+        assert!(reload().is_err());
+
+        let extra = bundle.root.join("extra.json");
+        fs::write(&extra, b"{}").unwrap();
+        let mut unreferenced = bundle.manifest.clone();
+        unreferenced.files.push(FileEntry {
+            path: "extra.json".into(),
+            bytes: 2,
+        });
+        fs::write(&manifest_path, json_bytes(&unreferenced).unwrap()).unwrap();
+        assert!(reload().is_err());
+        fs::write(&manifest_path, manifest).unwrap();
+        assert!(reload().is_err());
+        fs::remove_file(extra).unwrap();
+        assert_eq!(reload().unwrap().manifest, bundle.manifest);
     }
 
     #[test]
