@@ -1,13 +1,14 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type Event as TauriEvent } from "@tauri-apps/api/event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CameraPage from "../src/pages/CameraPage";
 import { defaultCameraConfig } from "../src/features/camera/api";
 import type { BandwidthEstimate, CameraConfig, CameraStatus } from "../src/features/camera/types";
-import { burstRecipe, burstWorkspaceView, workspaceCatalogEntry } from "./fixtures";
+import type { WorkspaceCatalogEntry } from "../src/features/workspace/types";
+import { burstRecipe, burstSummary, burstWorkspaceView, deferred, workspaceCatalogEntry } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -19,11 +20,19 @@ const status = (cam: number, config: CameraConfig): CameraStatus => ({ cam, id: 
 let configs: CameraConfig[];
 let released: string[];
 let bandwidth: BandwidthEstimate;
+let workspaceChanged: ((id: string) => void) | undefined;
 beforeEach(() => {
   configs = [camera("cam1", "左相机"), camera("cam2", "右相机")];
   released = [];
   bandwidth = { hz: 10, mbpsTotal: 524.3, perCamera: [262.1, 262.1], budgetMbps: 800, overBudget: false };
-  vi.mocked(listen).mockResolvedValue(() => {});
+  workspaceChanged = undefined;
+  vi.mocked(listen).mockImplementation(async (event, handler) => {
+    if (event === "workspace://changed") {
+      workspaceChanged = id => handler({ event, id: 1, payload: id } as TauriEvent<never>);
+      return () => { workspaceChanged = undefined; };
+    }
+    return () => {};
+  });
   vi.mocked(invoke).mockImplementation(async (command) => {
     switch (command) {
       case "camera_rig_config": return configs;
@@ -46,6 +55,11 @@ async function openCamera(label: string) {
   await userEvent.click(within(await screen.findByRole("article", { name: label })).getByRole("button", { name: /参数详情|进入详情选择设备/ }));
 }
 
+async function notifyWorkspaceChanged(id: string) {
+  expect(workspaceChanged).toBeDefined();
+  await act(async () => workspaceChanged!(id));
+}
+
 it("相机仅被待生效配方引用 → 配方目录仍阻止移除并显示引用来源", async () => {
   const draft = workspaceCatalogEntry(burstWorkspaceView(burstRecipe({ id: "A" })).workspace);
   const catalog = [{ ...draft, cameras: ["cam1"], publish: { state: "waiting" },
@@ -57,6 +71,56 @@ it("相机仅被待生效配方引用 → 配方目录仍阻止移除并显示�
 
   expect(await screen.findByText(/被 待发布配方 待生效配方（A） 引用/)).toBeVisible();
   expect(screen.getByRole("button", { name: "移除相机" })).toBeDisabled();
+});
+
+it("生产配方生效后解除相机引用 → 当前详情可移除，同时保留编辑中的名称", async () => {
+  const old = { ...burstSummary(burstRecipe({ id: "A", name: "工件 A" })), cameras: ["cam2"] };
+  let recipes = [old];
+  const ipc = vi.mocked(invoke);
+  const original = ipc.getMockImplementation()!;
+  ipc.mockImplementation((command, args, options) => command === "recipe_list"
+    ? Promise.resolve({ recipes, errors: [], unavailable: [] }) : original(command, args, options));
+  const rigReads = () => ipc.mock.calls.filter(([command]) => command === "camera_rig_config").length;
+  await openCamera("右相机 cam2");
+  expect(await screen.findByText(/被 生产配方 工件 A（A） 引用/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "移除相机" })).toBeDisabled();
+  await userEvent.type(screen.getByRole("textbox", { name: "名称" }), "（待保存）");
+  const readsBefore = rigReads();
+
+  recipes = [{ ...old, version: 2, revisionId: "A-v2", cameras: ["cam1"] }];
+  await notifyWorkspaceChanged("A");
+
+  expect(await screen.findByText("未被任何配方引用，可移除。")).toBeVisible();
+  expect(screen.getByRole("button", { name: "移除相机" })).toBeEnabled();
+  expect(screen.getByRole("textbox", { name: "名称" })).toHaveValue("右相机（待保存）");
+  expect(switcher().getByRole("button", { name: "右相机 cam2" })).toHaveAttribute("aria-current", "true");
+  expect(rigReads()).toBe(readsBefore);
+});
+
+it("引用查询期间再次收到配方通知 → 旧的无引用结果不能放开移除", async () => {
+  const previous = deferred<WorkspaceCatalogEntry[]>(), refreshed = deferred<WorkspaceCatalogEntry[]>();
+  const draft = workspaceCatalogEntry(burstWorkspaceView(burstRecipe({ id: "A" })).workspace);
+  const pending = { id: draft.id, name: "待生效配方", productCode: draft.productCode, cameras: ["cam2"] };
+  const readCatalog = vi.fn<() => Promise<WorkspaceCatalogEntry[]>>().mockResolvedValue([])
+    .mockResolvedValueOnce([]).mockReturnValueOnce(previous.promise).mockReturnValueOnce(refreshed.promise);
+  const ipc = vi.mocked(invoke);
+  const original = ipc.getMockImplementation()!;
+  ipc.mockImplementation((command, args, options) =>
+    command === "workspace_catalog" ? readCatalog() : original(command, args, options));
+  await openCamera("右相机 cam2");
+  const remove = () => screen.getByRole("button", { name: "移除相机" });
+  await waitFor(() => expect(remove()).toBeEnabled());
+
+  await notifyWorkspaceChanged("A");
+  expect(remove()).toBeDisabled();
+  await waitFor(() => expect(readCatalog).toHaveBeenCalledTimes(2));
+  await notifyWorkspaceChanged("A");
+  await act(async () => previous.resolve([]));
+  expect(remove()).toBeDisabled();
+
+  await act(async () => refreshed.resolve([{ ...draft, cameras: ["cam1"], publish: { state: "waiting" }, pending }]));
+  expect(await screen.findByText(/被 待发布配方 待生效配方（A） 引用/)).toBeVisible();
+  expect(remove()).toBeDisabled();
 });
 
 describe("相机参数未保存修改", () => {

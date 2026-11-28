@@ -23,7 +23,7 @@ export default function CameraPage() {
   const navigationState:CaptureNavigationState={...(location.state as CaptureNavigationState | null)};
   const {statuses,lastFrame}=useRigStatus();
   const busy=useProductionBusy();
-  const {configs,error,setError,loading,references,referencesReady,referenceError,reload}=useRigConfig({withReferences:true,preferredId:captureReturn?.cameraIds[0]});
+  const {configs,error,setError,loading,configReady,references,referencesReady,referenceError,refreshReferences,reload}=useRigConfig({withReferences:true,preferredId:captureReturn?.cameraIds[0]});
   const [detailId,setDetailId]=useState<string|null>(captureReturn?.cameraIds[0]??null);
   const [action,setAction]=useState("");
   const [removeError,setRemoveError]=useState("");
@@ -59,7 +59,7 @@ export default function CameraPage() {
     }catch(e){if(mounted.current)setError(errorText(e));}
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
-  const removeBlocked=!referencesReady?(referenceError||"相机引用尚未读取"):referencedBy.length?`被 ${referencedBy.join("、")} 引用，先在配方中改选相机`:configs.length<=1?"至少保留一台相机":"";
+  const removeBlocked=!configReady?(error||"相机配置尚未读取"):!referencesReady?(referenceError||"相机引用尚未读取"):referencedBy.length?`被 ${referencedBy.join("、")} 引用，先在配方中改选相机`:configs.length<=1?"至少保留一台相机":"";
   const remove=async()=>{
     if(!config||pending.current||loading||configSaving||locked||removeBlocked)return;
     if(!window.confirm("从相机组移除「"+config.name+"」？"))return;
@@ -92,7 +92,7 @@ export default function CameraPage() {
     <ReturnButton disabled={!!action} guard={guard} hint="配置后保存并应用，再返回继续。"/>
     {notice}
     <CameraOverview configs={configs} statuses={statuses} lastFrame={lastFrame} lockedReason={lockedReason} canReconnect={desktop&&!busy} loading={loading} adding={action==="add"} error={error}
-      onOpen={open} onRefresh={()=>void reload()} onAdd={()=>void add()} onReconnect={i=>cameraApi.reconnect(i)}
+      onOpen={open} onRefresh={()=>{void reload();refreshReferences();}} onAdd={()=>void add()} onReconnect={i=>cameraApi.reconnect(i)}
       footer={<div className="cg-row" style={{justifyContent:"flex-end"}}>{calibration("前往标定")}</div>}/>
     {dialog}
   </div>;
