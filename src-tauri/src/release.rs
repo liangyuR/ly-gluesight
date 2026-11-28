@@ -13,6 +13,7 @@ use crate::recipe::{CameraInspect, Recipe, RecipeDoc};
 pub const RELEASE_SCHEMA_BURST: u32 = 5;
 /// 旧拍照点配方的发布包版本，已停用：加载时给出明确提示。
 const LEGACY_RELEASE_SCHEMA: u32 = 3;
+pub(crate) const RELEASE_STAGING_PREFIX: &str = ".pending-";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -299,11 +300,21 @@ pub fn publish_burst(
     if inputs.len() != recipe.inspect.len() {
         return Err("发布资源未覆盖全部检测相机".into());
     }
-    let mut files = BTreeMap::new();
-    add_file(&mut files, "recipe.json".into(), json_bytes(&input.recipe)?)?;
     let graph = source_bytes(input.graph)?;
     json_object(&graph, "测量图")?;
-    add_file(&mut files, "graph.json".into(), graph)?;
+    let root = absolute_path(releases_root)?;
+    ensure_directory(&root)?;
+    let recipe_root = root.join(&recipe.id);
+    ensure_directory(&recipe_root)?;
+    let bundle_id = new_bundle_id()?;
+    if path_exists(&recipe_root.join(&bundle_id))? {
+        return Err("发布 ID 已存在，已有发布包不会被改写".into());
+    }
+    let stage = Staging::new(&recipe_root)?;
+    let mut files = vec![
+        stage.write_resource("recipe.json".into(), json_bytes(&input.recipe)?)?,
+        stage.write_resource("graph.json".into(), graph)?,
+    ];
     let mut cameras = Vec::new();
     for (index, inspect) in recipe.inspect.iter().enumerate() {
         let source = inputs
@@ -342,13 +353,12 @@ pub fn publish_burst(
             }
             let dir = corridor_prefix(index, segment);
             let image = format!("{dir}/image.{extension}");
-            add_file(&mut files, image.clone(), bytes)?;
+            files.push(stage.write_resource(image.clone(), bytes)?);
             let corridor = format!("{dir}/corridor.json");
-            add_file(
-                &mut files,
+            files.push(stage.write_resource(
                 corridor.clone(),
                 json_bytes(&corridor_data(&recipe, inspect, segment, frame))?,
-            )?;
+            )?);
             corridors.push(CorridorManifest {
                 segment,
                 image,
@@ -361,7 +371,7 @@ pub fn publish_burst(
         let calibration_bytes = source_bytes(source.calibration)?;
         json_object(&calibration_bytes, &format!("{label} 标定"))?;
         let calibration = format!("{prefix}/calibration.json");
-        add_file(&mut files, calibration.clone(), calibration_bytes)?;
+        files.push(stage.write_resource(calibration.clone(), calibration_bytes)?);
         cameras.push(CameraManifest {
             index,
             camera: inspect.camera.clone(),
@@ -370,63 +380,22 @@ pub fn publish_burst(
             corridors,
         });
     }
-    let bundle_id = new_bundle_id()?;
+    files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
     let manifest = ReleaseManifest {
         schema_version: RELEASE_SCHEMA_BURST,
         recipe_id: recipe.id.clone(),
         recipe_revision: recipe.revision_id.clone(),
         recipe_version: recipe.version,
-        bundle_id: bundle_id.clone(),
+        bundle_id,
         versions: input.versions,
         validation_site: input.validation_site,
         recipe: "recipe.json".into(),
         graph: "graph.json".into(),
         shots: Vec::new(),
         cameras,
-        files: files
-            .iter()
-            .map(|(path, bytes)| FileEntry {
-                path: path.clone(),
-                bytes: bytes.len() as u64,
-            })
-            .collect(),
+        files,
     };
-    write_bundle(releases_root, &recipe.id, &bundle_id, &files, &manifest)
-}
-
-/// 先写进同目录的临时目录、按加载规则核对一遍，再原子改名成发布包目录；已有的发布包不会被改写。
-fn write_bundle(
-    releases_root: &Path,
-    recipe_id: &str,
-    bundle_id: &str,
-    files: &BTreeMap<String, Vec<u8>>,
-    manifest: &ReleaseManifest,
-) -> Result<ReleaseBundle, String> {
-    let manifest_bytes = json_bytes(manifest)?;
-    let root = absolute_path(releases_root)?;
-    ensure_directory(&root)?;
-    let recipe_root = root.join(recipe_id);
-    ensure_directory(&recipe_root)?;
-    let target = recipe_root.join(bundle_id);
-    if path_exists(&target)? {
-        return Err("发布 ID 已存在，已有发布包不会被改写".into());
-    }
-    let stage = Staging::new(&recipe_root)?;
-    for (name, bytes) in files {
-        let path = resource_path(&stage.path, name)?;
-        ensure_directory(path.parent().ok_or("发布资源没有父目录")?)?;
-        write_new(&path, bytes)?;
-    }
-    write_new(&stage.path.join("manifest.json"), &manifest_bytes)?;
-    load_directory(&stage.path, recipe_id, bundle_id)?;
-    if path_exists(&target)? {
-        return Err("发布 ID 已存在，已有发布包不会被改写".into());
-    }
-    match fs::rename(&stage.path, &target) {
-        Ok(()) => load(&root, recipe_id, bundle_id),
-        Err(_) if path_exists(&target)? => Err("发布 ID 已存在，已有发布包不会被改写".into()),
-        Err(e) => Err(format!("原子发布目录 {} 失败：{e}", target.display())),
-    }
+    stage.finish(&manifest)
 }
 
 pub fn load(
@@ -659,18 +628,6 @@ pub(crate) fn read_resource_file(path: &Path) -> Result<Vec<u8>, String> {
 
 fn json_bytes(value: &impl Serialize) -> Result<Vec<u8>, String> {
     serde_json::to_vec(value).map_err(|e| format!("发布资源序列化失败：{e}"))
-}
-
-fn add_file(
-    files: &mut BTreeMap<String, Vec<u8>>,
-    path: String,
-    bytes: Vec<u8>,
-) -> Result<(), String> {
-    validate_relative(&path)?;
-    if files.insert(path.clone(), bytes).is_some() {
-        return Err(format!("发布资源路径重复：{path}"));
-    }
-    Ok(())
 }
 
 struct ReleaseFiles<'a> {
@@ -968,7 +925,7 @@ impl Staging {
             .map_err(|e| e.to_string())?
             .as_nanos();
         let path = parent.join(format!(
-            ".pending-{}-{time}-{}",
+            "{RELEASE_STAGING_PREFIX}{}-{time}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -977,6 +934,31 @@ impl Staging {
             path,
             parent: parent.to_path_buf(),
         })
+    }
+
+    fn write_resource(&self, name: String, bytes: Vec<u8>) -> Result<FileEntry, String> {
+        let path = resource_path(&self.path, &name)?;
+        ensure_directory(path.parent().ok_or("发布资源没有父目录")?)?;
+        write_new(&path, &bytes)?;
+        Ok(FileEntry {
+            path: name,
+            bytes: bytes.len() as u64,
+        })
+    }
+
+    /// 清单最后写入。重新加载暂存包校验通过后才原子改名。
+    fn finish(self, manifest: &ReleaseManifest) -> Result<ReleaseBundle, String> {
+        let target = self.parent.join(&manifest.bundle_id);
+        write_new(&self.path.join("manifest.json"), &json_bytes(manifest)?)?;
+        load_directory(&self.path, &manifest.recipe_id, &manifest.bundle_id)?;
+        if path_exists(&target)? {
+            return Err("发布 ID 已存在，已有发布包不会被改写".into());
+        }
+        match fs::rename(&self.path, &target) {
+            Ok(()) => load_directory(&target, &manifest.recipe_id, &manifest.bundle_id),
+            Err(_) if path_exists(&target)? => Err("发布 ID 已存在，已有发布包不会被改写".into()),
+            Err(e) => Err(format!("原子发布目录 {} 失败：{e}", target.display())),
+        }
     }
 }
 
@@ -987,7 +969,7 @@ impl Drop for Staging {
                 .path
                 .file_name()
                 .and_then(|p| p.to_str())
-                .is_some_and(|p| p.starts_with(".pending-"))
+                .is_some_and(|p| p.starts_with(RELEASE_STAGING_PREFIX))
             && reject_links(&self.path, false).is_ok()
             && inventory(&self.path, &self.path, &mut BTreeMap::new()).is_ok()
         {
@@ -1023,13 +1005,13 @@ mod tests {
 
     /// 按配方发布：每台相机给它检测的各段一张 1000×700 的渐变示教帧。
     fn publish_recipe(root: &Path, recipe: RecipeDoc) -> Result<ReleaseBundle, String> {
-        publish_recipe_with_image(root, recipe, image_bytes)
+        publish_recipe_with_source(root, recipe, || ResourceSource::Bytes(image_bytes()))
     }
 
-    fn publish_recipe_with_image(
+    fn publish_recipe_with_source(
         root: &Path,
         recipe: RecipeDoc,
-        image: impl Fn() -> Vec<u8>,
+        image: impl Fn() -> ResourceSource,
     ) -> Result<ReleaseBundle, String> {
         let built = recipe.build()?;
         let cameras = recipe
@@ -1042,7 +1024,7 @@ mod tests {
                     .into_iter()
                     .map(|segment| CorridorInput {
                         segment,
-                        image: ResourceSource::Bytes(image()),
+                        image: image(),
                         image_id: format!("capture-1-0-{}", i.camera),
                         expected_size: None,
                     })
@@ -1099,7 +1081,9 @@ mod tests {
             (narrow_short, Some("像素数据不足")),
             (pnm(1, 61, 1, rg), Some("至少 2×2")),
         ] {
-            let outcome = publish_recipe_with_image(&root.0, recipe.clone(), || bytes.clone());
+            let outcome = publish_recipe_with_source(&root.0, recipe.clone(), || {
+                ResourceSource::Bytes(bytes.clone())
+            });
             if let Some(reason) = failure {
                 assert!(outcome.unwrap_err().contains(reason));
             } else {
@@ -1109,6 +1093,50 @@ mod tests {
                 assert_eq!(fs::read(&resource.corridors[0].image).unwrap(), bytes);
             }
         }
+    }
+
+    #[test]
+    fn failure_after_staging_images_leaves_only_the_existing_release() {
+        let root =
+            TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
+        let existing = publish_burst_bundle(&root.0);
+        let valid = root.0.join("source.pgm");
+        let truncated = root.0.join("truncated.pgm");
+        fs::write(&valid, image_bytes()).unwrap();
+        fs::write(&truncated, b"P5\n1000 700\n255\n").unwrap();
+        let index = std::cell::Cell::new(0);
+        let failed = publish_recipe_with_source(&root.0, existing.recipe.clone(), || {
+            let next = index.get() + 1;
+            index.set(next);
+            ResourceSource::File(if next == 3 {
+                truncated.clone()
+            } else {
+                valid.clone()
+            })
+        });
+        assert!(failed.is_err());
+        let directories = fs::read_dir(root.0.join(&existing.recipe.id))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(directories, [existing.id.clone()]);
+        assert_eq!(
+            load(&root.0, &existing.recipe.id, &existing.id)
+                .unwrap()
+                .manifest,
+            existing.manifest
+        );
+
+        let recovered = publish_recipe_with_source(&root.0, existing.recipe.clone(), || {
+            ResourceSource::File(valid.clone())
+        })
+        .unwrap();
+        assert_eq!(
+            load(&root.0, &recovered.recipe.id, &recovered.id)
+                .unwrap()
+                .manifest,
+            recovered.manifest
+        );
     }
 
     /// 改写包内一个资源，并把清单里它的大小同步改掉（只留下按配方重算才查得出的不一致）。

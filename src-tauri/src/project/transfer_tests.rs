@@ -26,6 +26,33 @@ impl Drop for TempDir {
     }
 }
 
+#[test]
+fn export_walk_includes_published_resources_and_skips_release_staging() {
+    let root = TempDir::new("release-staging");
+    let ready = root.0.join("release-1");
+    let pending = root.0.join(".pending-1");
+    std::fs::create_dir(&ready).unwrap();
+    std::fs::create_dir(&pending).unwrap();
+    std::fs::write(ready.join("manifest.json"), b"{}").unwrap();
+    std::fs::write(pending.join("image.pgm"), b"partially written").unwrap();
+
+    let mut entries = Vec::new();
+    walk(
+        &root.0,
+        "project/vision/releases/A",
+        &mut entries,
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        entries,
+        [(
+            "project/vision/releases/A/release-1/manifest.json".into(),
+            ready.join("manifest.json")
+        )]
+    );
+}
+
 /// 本机记录库，当前项目为 `project`。
 fn local_store(data: &Path, project: &str) -> Store {
     Store::open_for(&super::super::records::database(data), project).unwrap()

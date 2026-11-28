@@ -157,13 +157,20 @@ pub(crate) fn walk(
         .iter()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
+    let release_recipe = relative
+        .strip_prefix("project/vision/releases/")
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'));
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
+        let child = format!("{relative}/{name}");
+        if release_recipe && name.starts_with(crate::release::RELEASE_STAGING_PREFIX) {
+            notes.push(format!("{child} 是发布暂存目录，未导出"));
+            continue;
+        }
         let path = entry.path();
         let kind = std::fs::symlink_metadata(&path)
             .map_err(|e| e.to_string())?
             .file_type();
-        let child = format!("{relative}/{name}");
         if kind.is_symlink() {
             notes.push(format!("{child} 是链接，未导出"));
         } else if kind.is_dir() {
