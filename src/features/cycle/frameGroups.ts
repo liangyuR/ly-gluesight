@@ -11,6 +11,13 @@ export function firstGroupAtOrAfter(groups: readonly FrameGroupView[], seq: numb
   return low;
 }
 
+export function findFrameGroup(groups: readonly FrameGroupView[], seq: number): FrameGroupView | null {
+  const dense = groups[seq - 1];
+  if (dense?.seq === seq) return dense;
+  const group = groups[firstGroupAtOrAfter(groups, seq)];
+  return group?.seq === seq ? group : null;
+}
+
 export function countSkippedGroups(groups: readonly FrameGroupView[], regions?: readonly RegionResult[] | null) {
   const skipped = regions?.filter(result => result.region.kind.type === "skipped") ?? [];
   skipped.sort((left, right) => left.region.firstSeq - right.region.firstSeq);

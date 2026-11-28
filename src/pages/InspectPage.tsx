@@ -11,6 +11,7 @@ import ContextHelp from "../features/cycle/components/ContextHelp";
 import { MaintenanceToggle } from "../features/cycle/components/MaintenanceMode";
 import PartResult from "../features/cycle/components/PartResult";
 import PreviousEvidence, { usePreviousEvidence } from "../features/cycle/components/PreviousEvidence";
+import { findFrameGroup } from "../features/cycle/frameGroups";
 import { errorText } from "../lib/errors";
 import {
   cycleApi,
@@ -59,9 +60,10 @@ export default function InspectPage() {
   const burstJudgement = result?.burst ?? null;
   const burstSegments = layout && (!recipeRevision || layout.revisionId === recipeRevision) ? layout.pathSegments : noSegments;
   const burstScope = `${part?.cycleId ?? "idle"}:${part?.bundleId ?? ""}:${part?.recipeRevision ?? ""}`;
-  const latestSeq = burst?.groups.reduce<number | null>((latest, group) => latest == null || group.seq > latest ? group.seq : latest, null) ?? null;
-  const burstManual = seqSelection?.scope === burstScope && !!burst?.groups.some(group => group.seq === seqSelection.seq);
-  const burstSeq = burstManual ? seqSelection!.seq : latestSeq;
+  const manualGroup = burst && seqSelection?.scope === burstScope ? findFrameGroup(burst.groups, seqSelection.seq) : null;
+  const selectedGroup = manualGroup ?? burst?.groups.at(-1) ?? null;
+  const burstManual = manualGroup !== null;
+  const burstSeq = selectedGroup?.seq ?? null;
   const { readiness, status: readinessStatus, error: readinessError } = useReadiness(`${phase}:${snapshot?.fault ?? ""}:${snapshot?.activeRecipeId ?? ""}:${snapshot?.productSource ?? ""}:${snapshot?.alarms.length ?? 0}`);
 
   useEffect(() => {
@@ -71,7 +73,7 @@ export default function InspectPage() {
 
   const resumeFollowing = () => setSeqSelection(null);
   const selectGroup = (seq: number, camera?: number) => {
-    if (!burst?.groups.some(group => group.seq === seq)) return false;
+    if (!burst || !findFrameGroup(burst.groups, seq)) return false;
     setSeqSelection({ scope: burstScope, seq, camera });
     setView("image");
     return true;
@@ -168,7 +170,7 @@ export default function InspectPage() {
             </div>
             {view === "part"
               ? <CameraSegmentOverview cameras={burst?.cameras ?? summary?.cameras ?? []} segments={burstSegments} regions={burstJudgement?.regions} />
-              : <BurstRuntimeFrame part={part} seq={burstSeq} regions={partResult?.burst?.regions} focusedCamera={burstManual ? seqSelection?.camera : undefined} />}
+              : <BurstRuntimeFrame part={part} group={selectedGroup} regions={partResult?.burst?.regions} focusedCamera={burstManual ? seqSelection?.camera : undefined} />}
           </Card>
 
           <Card>
@@ -202,7 +204,7 @@ export default function InspectPage() {
         </aside>
       </div>
 
-      {diagnostics && <InspectionDiagnostics group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={part} regions={partResult?.burst?.regions} selectedSeq={burstSeq} />}
+      {diagnostics && <InspectionDiagnostics group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={part} regions={partResult?.burst?.regions} selectedGroup={selectedGroup} />}
       {pendingRecipe && (
         <Dialog
           open

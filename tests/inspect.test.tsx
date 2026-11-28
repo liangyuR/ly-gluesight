@@ -258,6 +258,36 @@ describe("在线检测段配方", () => {
     expect(screen.queryByRole("button", { name: "返回当前帧组" })).not.toBeInTheDocument();
   });
 
+  it("同件更新移除手选帧组 → 原图和采集详情都恢复跟随最新组", async () => {
+    const part = state.part!;
+    const groups = part.burst.groups.filter(({ seq }) => [5, 8, 12].includes(seq));
+    state = { ...state, part: { ...part, burst: { ...part.burst, groups } } };
+    const user = userEvent.setup();
+    const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    await user.click(screen.getByRole("button", { name: "帧组 5 · 不完整" }));
+    expect(within(screen.getByRole("region", { name: "CAM-2 帧组 5" })).getByText("缺帧", { selector: ".wp-image-empty strong" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "返回当前帧组" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: /^采集详情/ }));
+    const capture = () => within(screen.getByRole("region", { name: "采集与测量" }));
+    const camera = (name: RegExp) => within(capture().getByRole("row", { name }));
+    expect(capture().getByRole("heading", { name: "帧组 5" })).toBeVisible();
+    expect(camera(/CAM-1/).getByText("1005")).toBeVisible();
+    expect(camera(/CAM-2/).getByText("缺帧")).toBeVisible();
+
+    state = { ...state, part: { ...part, burst: { ...part.burst, groups: groups.filter(({ seq }) => seq !== 5) } } };
+    page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(capture().getByRole("heading", { name: "帧组 12" })).toBeVisible();
+    expect(camera(/CAM-2/).getByText("2012")).toBeVisible();
+
+    await user.keyboard("{Escape}");
+    const latest = () => within(screen.getByRole("region", { name: "CAM-2 帧组 12" }));
+    expect(await latest().findByRole("img", { name: "CAM-2 · 帧组 12" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "返回当前帧组" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "查看首个帧组 5" }));
+    expect(latest().getByRole("img", { name: "CAM-2 · 帧组 12" })).toBeVisible();
+  });
+
   it("一台相机的叠图尚未返回时连续翻帧 → 只补查末帧且其他相机继续显示量测证据", async () => {
     const old = deferred<CalibrationFrameView>();
     const latest = deferred<CalibrationFrameView>();

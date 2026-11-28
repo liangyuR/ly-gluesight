@@ -45,7 +45,7 @@ it("在线下界超宽且量测截断 → 保留NG结论，展示下界与可见
     widthMin: null, widthMax: null, widthMean: null, widths: [null], measurementEvidence: { version: 1, exactStations: 0, clippedStations: 1, absentStations: 0, unknownStations: 0, presentRatio: 1, maxWidthLowerBoundMm: 11,
       stations: [{ state: "clipped", widthLowerBoundMm: 11, loEdge: [10, 10], hiClipped: true, normal: [0, 1], position: [10, 12] }] },
   }) });
-  render(<BurstRuntimeFrame part={part} seq={1} />);
+  render(<BurstRuntimeFrame part={part} group={group} />);
   expect(await screen.findByLabelText("量测证据")).toHaveTextContent("最大可靠下界 ≥ 11.00 mm");
   expect(screen.getByText("NG · 胶宽超差")).toBeVisible();
   const overlay = screen.getByLabelText("截断测站");
