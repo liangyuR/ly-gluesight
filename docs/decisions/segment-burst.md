@@ -745,10 +745,14 @@
 
 工作区修改类命令沿用现有约定：参数带 `id` 与 `revision`（乐观并发），返回 `Result<WorkspaceView, String>`。整份候选保存和发布相关命令还要求同一次读取的 `instanceId`，请求必须匹配当前候选的实例与修订。导入或重建同编号的候选后，需重新读取再保存或发布。
 
+删除配方时，确认框保存候选实例与修订、生产版修订标识。没有候选或生产版时，该项用 `null` 表示。任一项变化后须刷新配方库并重新确认。旧流程候选仍只删除候选和其导入的采集轮次。
+
 | 命令 | 参数 | 返回 |
 | --- | --- | --- |
 | `recipe_plan_export` | `id` | `Result<String, String>`（PlanExport JSON 文本） |
 | `workspace_save_doc` | `id, revision, instanceId, doc: RecipeDoc` | WorkspaceView（整份候选保存，供手动保存和自动保存共用） |
+| `workspace_delete` | `id, target: { candidate: { instanceId, revision } \| null, productionRevisionId: string \| null }` | `Result<(), String>`（按确认时的候选及生产版身份删除） |
+| `recipe_delete` | `id, revisionId` | `Result<(), String>`（仅删除指定修订的生产配方） |
 | `workspace_update_segments` | `id, revision, segments: PathSegment[]` | WorkspaceView |
 | `workspace_teach_segment_corridor` | `id, revision, camera, segment, round, seq` | WorkspaceView（冻结这一段这台相机的示教帧，D-SB-42/45） |
 | `workspace_clear_segment_corridor` | `id, revision, camera, segment` | WorkspaceView（去掉这一段这台相机的走廊与示教帧，D-SB-42/45） |

@@ -1549,15 +1549,14 @@ impl RecipeStore {
         Ok(recipe)
     }
 
-    pub fn delete(&self, id: &str) -> Result<(), String> {
+    pub fn delete(&self, id: &str, revision_id: &str) -> Result<(), String> {
         let mut inner = self.inner.write().unwrap();
-        let version = inner
+        let (doc, _) = inner
             .iter()
             .find(|(d, _)| d.id == id)
-            .ok_or("配方不存在")?
-            .0
-            .version;
-        self.retire_version(id, version)?;
+            .filter(|(_, recipe)| recipe.revision_id == revision_id)
+            .ok_or("生产配方已变化，请刷新配方库后重新确认删除")?;
+        self.retire_version(id, doc.version)?;
         std::fs::remove_file(self.file(id)).map_err(|e| format!("删除配方文件失败：{e}"))?;
         inner.retain(|(d, _)| d.id != id);
         Ok(())
@@ -1594,6 +1593,34 @@ mod tests {
         let second = store.save_published(doc.clone()).unwrap();
         assert_eq!(second.revision_id, "EXPLICIT-PUBLISHED-v8");
         assert_eq!(store.save(doc, None).unwrap().version, 9);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stale_production_revision_cannot_delete_the_new_release() {
+        let dir = std::env::temp_dir().join(format!(
+            "gluesight-delete-revision-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let mut doc = samples_burst();
+        let original = store.save_published(doc.clone()).unwrap();
+        doc.version += 1;
+        let latest = store.save_published(doc).unwrap();
+        let path = store.file(&latest.id);
+        let before = std::fs::read(&path).unwrap();
+
+        assert!(store.delete(&latest.id, &original.revision_id).is_err());
+        assert_eq!(
+            store.get(&latest.id).unwrap().revision_id,
+            latest.revision_id
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        store.delete(&latest.id, &latest.revision_id).unwrap();
+        assert!(store.get(&latest.id).is_none());
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

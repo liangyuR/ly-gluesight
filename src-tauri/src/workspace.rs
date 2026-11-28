@@ -636,10 +636,10 @@ fn unloaded_hint(dir: &Path) -> String {
     format!("旧格式不兼容或文件损坏，文件已保留。请先移走候选目录 {}，再从当前生产版本重新建立候选；该目录含已发布归档，移走后需重新验证和发布才能生产", dir.display())
 }
 
-fn ensure_workspace_can_be_created(path: &Path) -> Result<(), String> {
+fn ensure_no_workspace_file(path: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("无法确认旧候选是否存在，拒绝覆盖：{error}")),
+        Err(error) => Err(format!("无法确认磁盘候选状态：{error}")),
         Ok(_) => Err(format!(
             "磁盘已有未加载的候选：{}",
             unloaded_hint(path.parent().unwrap_or(path))
@@ -660,7 +660,7 @@ fn get(app: AppHandle, id: String) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     if !items.contains_key(&id) {
-        ensure_workspace_can_be_created(&host.dir(&id).join("workspace.json"))?;
+        ensure_no_workspace_file(&host.dir(&id).join("workspace.json"))?;
         let cycle = app.state::<CycleHost>();
         let mut doc = cycle.recipes.doc(&id).ok_or("配方不存在")?;
         let production = cycle.recipe(&id).map(|r| r.revision_id.clone());
@@ -764,12 +764,51 @@ pub(crate) fn reset_for_project_import(path: &Path) -> Result<(), String> {
     )
 }
 
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CandidateDeletionTarget {
+    instance_id: u64,
+    revision: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecipeDeletionTarget {
+    candidate: Option<CandidateDeletionTarget>,
+    production_revision_id: Option<String>,
+}
+
 #[tauri::command]
-pub fn workspace_delete(app: AppHandle, id: String) -> Result<(), String> {
+pub fn workspace_delete(
+    app: AppHandle,
+    id: String,
+    target: RecipeDeletionTarget,
+) -> Result<(), String> {
     safe_id(&id)?;
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
-    if items.get(&id).is_some_and(|w| w.pending.is_some()) {
+    let workspace = items.get(&id);
+    let cycle = app.state::<CycleHost>();
+    let production = cycle.recipe(&id);
+    if target.candidate
+        != workspace.map(|w| CandidateDeletionTarget {
+            instance_id: w.instance_id,
+            revision: w.revision,
+        })
+        || target.production_revision_id.as_deref()
+            != production
+                .as_ref()
+                .map(|recipe| recipe.revision_id.as_str())
+    {
+        return Err("配方已变化，请刷新配方库后重新确认删除".into());
+    }
+    if workspace.is_none() {
+        if production.is_none() {
+            return Err("配方不存在".into());
+        }
+        ensure_no_workspace_file(&host.dir(&id).join("workspace.json"))?;
+    }
+    if workspace.is_some_and(|w| w.pending.is_some()) {
         return Err("已有待生效版本，不能删除".into());
     }
     let rounds = || {
@@ -778,7 +817,7 @@ pub fn workspace_delete(app: AppHandle, id: String) -> Result<(), String> {
             .recipe_capture()
             .delete_recipe_rounds(&id)
     };
-    if items.get(&id).is_some_and(Workspace::legacy) {
+    if workspace.is_some_and(Workspace::legacy) {
         // 旧流程候选只删候选本身与它导入的轮次（RB-5）：生产配方与发布归档照常运行，之后可从生产配方新建新流程候选
         rounds()?;
         pieces::remove_legacy_dir(&host.dir(&id))?;
@@ -786,8 +825,8 @@ pub fn workspace_delete(app: AppHandle, id: String) -> Result<(), String> {
         return Ok(());
     }
     // 生产配方的删除检查（在用、在途事务、配置门）通过后才删轮次，被拒时示教与标定原图不受影响
-    if app.state::<CycleHost>().recipe(&id).is_some() {
-        crate::recipe_api::recipe_delete(app.clone(), app.state::<CycleHost>(), id.clone())?;
+    if let Some(revision_id) = target.production_revision_id {
+        crate::recipe_api::recipe_delete(app.clone(), cycle, id.clone(), revision_id)?;
     }
     rounds()?;
     let dir = host.dir(&id);

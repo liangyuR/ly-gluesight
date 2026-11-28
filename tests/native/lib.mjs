@@ -98,9 +98,17 @@ export const FIXTURE_LABEL = "native-e2e";
  * 删除配方 id 的候选与生产配方（重跑前清理）。新流程候选随候选删除生产配方；旧流程候选只删候选本身，生产配方另删。
  */
 export async function clearRecipe(call, id) {
-  if ((await call("workspace_list")).some(w => w.doc.id === id)) await call("workspace_delete", { id });
+  const [workspaces, recipes] = await Promise.all([call("workspace_list"), call("cycle_recipes")]);
+  const workspace = workspaces.find(w => w.doc.id === id);
+  const productionRevisionId = recipes.find(r => r.id === id)?.revisionId ?? null;
+  if (workspace || productionRevisionId) {
+    const candidate = workspace ? { instanceId: workspace.instanceId, revision: workspace.revision } : null;
+    await call("workspace_delete", { id, target: { candidate, productionRevisionId } });
+  }
   // 旧流程候选删除时保留生产配方与 published/；再按无候选删一次，连同目录一起删掉，之后才能同编号新建
-  if ((await call("cycle_recipes")).some(r => r.id === id)) await call("workspace_delete", { id });
+  if (workspace && productionRevisionId && (await call("cycle_recipes")).some(r => r.id === id)) {
+    await call("workspace_delete", { id, target: { candidate: null, productionRevisionId } });
+  }
 }
 
 /**

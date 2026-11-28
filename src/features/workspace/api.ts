@@ -5,7 +5,7 @@ import type { NavigationMapData } from "./navigation/types";
 import type { RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PassSkipSuggestView, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidatePage, HistoryCandidateQuery, PackageExported, PackageImported, PackagePreview, PassLink, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
+import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidatePage, HistoryCandidateQuery, PackageExported, PackageImported, PackagePreview, PassLink, SegmentSaveImpact, Workspace, WorkspaceDeleteTarget, WorkspaceView } from "./types";
 
 let liveSeq = 0;
 
@@ -28,7 +28,7 @@ export const workspaceApi = {
   list: () => desktopCall<Workspace[]>("workspace_list"),
   get: (id: string) => desktopCall<WorkspaceView>("workspace_get", { id }),
   create: (doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_create", { doc }),
-  remove: (id: string) => desktopCall<void>("workspace_delete", { id }),
+  remove: (id: string, target: WorkspaceDeleteTarget) => desktopCall<void>("workspace_delete", { id, target }),
   saveDoc: (id: string, revision: number, instanceId: number, doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_save_doc", { id, revision, instanceId, doc }),
   image: (id: string, imageId: string) => desktopCall<ArrayBuffer>("workspace_image", { id, imageId }).then(decodeFrameImage),
   retryPublish: (id: string, revision: number, instanceId: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision, instanceId }),

@@ -62,6 +62,10 @@ export interface Workspace {
   /** 换示教件的逐笔对照（RB-11）；没有对照时缺省，发布时清空 */
   passAlignment?: PassAlignment;
 }
+export interface WorkspaceDeleteTarget {
+  candidate: Pick<Workspace, "instanceId" | "revision"> | null;
+  productionRevisionId: string | null;
+}
 /** 逐笔对照里一笔的变化：对上的两笔为不变或改动，没对上的旧笔为删除、新笔为新增。 */
 export type PassChange = "same" | "changed" | "added" | "removed";
 /** 逐笔对照的一行；笔下标从 0 起。distance 为两笔的图像距离（0 最像），人改出来的对应没有。 */
