@@ -634,17 +634,11 @@ impl Recorder {
                     .errors
                     .push("录制写入线程已停止，收尾改为同步保存并报告".into());
                 let pending = job.recording.dir.clone();
-                let mut state = WriteState::default();
-                protect_retention(
-                    &mut job,
-                    &mut state,
-                    self.cleanup.as_ref().map(|c| &c.protection),
-                );
                 let outcome = finish_recording(
                     &self.roots(),
                     job,
-                    state,
-                    self.cleanup.as_ref().map(|c| &c.release),
+                    WriteState::default(),
+                    self.cleanup.as_ref(),
                 );
                 if !pending.exists() {
                     self.active.lock().unwrap().remove(&pending);
@@ -719,25 +713,6 @@ struct WriteState {
     frame_results: HashMap<FrameKey, Result<(), String>>,
     errors: Vec<String>,
     retention_errors: Vec<String>,
-    retention_blocked: bool,
-}
-
-fn protect_retention(
-    job: &mut FinishJob,
-    state: &mut WriteState,
-    protection: Option<&PendingProtection>,
-) {
-    if let Some(protection) = protection {
-        match protection() {
-            Ok(paths) => job.in_use.extend(paths),
-            Err(error) => {
-                state.retention_blocked = true;
-                state
-                    .retention_errors
-                    .push(format!("无法确认待入库原图保护，跳过滚动清理：{error}"));
-            }
-        }
-    }
 }
 
 fn writer(
@@ -788,7 +763,7 @@ fn writer(
                 state.frame_results.insert(key, result);
                 queued.fetch_sub(1, Ordering::AcqRel);
             }
-            Msg::Finish(mut job) => {
+            Msg::Finish(job) => {
                 let mut state = cycles.remove(&job.recording.cycle_id).unwrap_or_default();
                 if let Some(cleanup) = &cleanup {
                     state.retention_errors = sweep(cleanup, &job.in_use);
@@ -797,12 +772,7 @@ fn writer(
                 // 查保护目录到滚动清理删除之间不让示教件登记新引用；通知回调前放开
                 let outcome = {
                     let _references = crate::recipe_capture::lock_references();
-                    protect_retention(
-                        &mut job,
-                        &mut state,
-                        cleanup.as_ref().map(|c| &c.protection),
-                    );
-                    finish_recording(&current(), job, state, cleanup.as_ref().map(|c| &c.release))
+                    finish_recording(&current(), job, state, cleanup.as_ref())
                 };
                 if !pending.exists() {
                     active.lock().unwrap().remove(&pending);
@@ -811,16 +781,7 @@ fn writer(
             }
             Msg::Prune { keep, max_bytes } => {
                 let _references = crate::recipe_capture::lock_references();
-                let errors = match cleanup.as_ref().map(|c| (c.protection)()).transpose() {
-                    Ok(protected) => prune(
-                        &current(),
-                        keep as usize,
-                        max_bytes,
-                        &protected.unwrap_or_default(),
-                        cleanup.as_ref().map(|c| &c.release),
-                    ),
-                    Err(error) => vec![format!("无法确认待入库原图保护，跳过滚动清理：{error}")],
-                };
+                let errors = prune(&current(), keep as usize, max_bytes, &[], cleanup.as_ref());
                 if !errors.is_empty() {
                     match &cleanup {
                         Some(cleanup) => (cleanup.warning)(&errors),
@@ -987,7 +948,7 @@ fn finish_recording(
     roots: &[PathBuf],
     job: FinishJob,
     mut state: WriteState,
-    release: Option<&RecordingRelease>,
+    cleanup: Option<&Cleanup>,
 ) -> RecordingOutcome {
     let FinishJob {
         recording: mut rec,
@@ -1094,9 +1055,7 @@ fn finish_recording(
     let mut protected = in_use;
     protected.push(actual_dir.clone());
     let mut retention_errors = state.retention_errors;
-    if !state.retention_blocked {
-        retention_errors.extend(prune(roots, keep as usize, max_bytes, &protected, release));
-    }
+    retention_errors.extend(prune(roots, keep as usize, max_bytes, &protected, cleanup));
     let mut available =
         promoted && directory.is_some() && !files.is_empty() && rec.errors.is_empty();
     meta["frames"] = serde_json::to_value(&burst.frames).unwrap();
@@ -1345,22 +1304,12 @@ fn prune(
     keep: usize,
     max_bytes: u64,
     in_use: &[PathBuf],
-    release: Option<&RecordingRelease>,
+    cleanup: Option<&Cleanup>,
 ) -> Vec<String> {
-    let mut errors = Vec::new();
-    let mut protected = Vec::new();
-    for path in in_use {
-        match path.canonicalize() {
-            Ok(path) => protected.push(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return vec![format!(
-                    "保留目录无法解析，暂停清理录制 {}：{error}",
-                    path.display()
-                )]
-            }
-        }
+    if keep >= u32::MAX as usize && max_bytes == u64::MAX {
+        return Vec::new();
     }
+    let mut errors = Vec::new();
     let mut parts = Vec::new();
     for root in roots {
         let days = match std::fs::read_dir(root) {
@@ -1410,12 +1359,13 @@ fn prune(
             }
         }
     }
-    parts.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
-    if parts.len() > 1 {
-        parts[1..].sort_by_key(|path| passed(path));
+    if parts.len() <= 1 || (parts.len() <= keep && max_bytes == u64::MAX) {
+        return errors;
     }
+    parts.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    parts[1..].sort_by_key(|path| passed(path));
     let mut total = 0u64;
-    let mut victims = Vec::new();
+    let mut candidates = Vec::new();
     for (i, path) in parts.iter().enumerate() {
         match dir_bytes(path) {
             Ok(bytes) => total = total.saturating_add(bytes),
@@ -1427,6 +1377,34 @@ fn prune(
         if i == 0 || (i < keep && total <= max_bytes) {
             continue;
         }
+        candidates.push(path);
+    }
+    if candidates.is_empty() {
+        return errors;
+    }
+    let referenced = match cleanup.map(|c| (c.protection)()).transpose() {
+        Ok(paths) => paths.unwrap_or_default(),
+        Err(error) => {
+            errors.push(format!("无法确认待入库原图保护，跳过滚动清理：{error}"));
+            return errors;
+        }
+    };
+    let mut protected = Vec::new();
+    for path in in_use.iter().chain(&referenced) {
+        match path.canonicalize() {
+            Ok(path) => protected.push(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                errors.push(format!(
+                    "保留目录无法解析，暂停清理录制 {}：{error}",
+                    path.display()
+                ));
+                return errors;
+            }
+        }
+    }
+    let mut victims = Vec::new();
+    for path in candidates {
         let canonical = match path.canonicalize() {
             Ok(path) => path,
             Err(error) => {
@@ -1444,8 +1422,8 @@ fn prune(
     if victims.is_empty() {
         return errors;
     }
-    if let Some(release) = release {
-        if let Err(error) = release(&victims) {
+    if let Some(cleanup) = cleanup {
+        if let Err(error) = (cleanup.release)(&victims) {
             errors.push(format!(
                 "历史记录的原图引用未能同步，本次不清理 {} 件旧录制：{error}",
                 victims.len()
