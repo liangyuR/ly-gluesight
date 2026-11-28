@@ -958,12 +958,16 @@ impl Staging {
     fn finish(self, manifest: &ReleaseManifest) -> Result<ReleaseBundle, String> {
         let target = self.parent.join(&manifest.bundle_id);
         write_new(&self.path.join("manifest.json"), &json_bytes(manifest)?)?;
-        load_directory(&self.path, &manifest.recipe_id, &manifest.bundle_id)?;
+        let mut bundle = load_directory(&self.path, &manifest.recipe_id, &manifest.bundle_id)?;
         if path_exists(&target)? {
             return Err("发布 ID 已存在，已有发布包不会被改写".into());
         }
         match fs::rename(&self.path, &target) {
-            Ok(()) => load_directory(&target, &manifest.recipe_id, &manifest.bundle_id),
+            Ok(()) => {
+                bundle.root = target;
+                bundle.verify()?;
+                Ok(bundle)
+            }
             Err(_) if path_exists(&target)? => Err("发布 ID 已存在，已有发布包不会被改写".into()),
             Err(e) => Err(format!("原子发布目录 {} 失败：{e}", target.display())),
         }
