@@ -1,10 +1,10 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useRef, useState, type ReactNode } from "react";
 import { Alert, Button, Dialog, List, ListItem, NumberField, Pagination, SegmentedControl, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
 import type { Verdict } from "../../cycle/types";
 import { OperationStatus, type OperationLabels } from "../../workspace/operation";
 import { formatTime, verdictGroups, verdictLabel, verdictTone } from "../meta";
 import { useRejudgeTask, type RejudgeOptions, type RejudgeScope } from "../rejudgeTask";
-import type { KindOverride, Overrides } from "../types";
+import type { KindOverride, Overrides, RejudgeResult, RejudgeResultList, RejudgeReviewState } from "../types";
 
 const order: Verdict[] = verdictGroups.flatMap((g) => g.verdicts);
 const DETAILS_PAGE_SIZE = 25;
@@ -28,13 +28,14 @@ const isNg = (v: Verdict) => v.startsWith("NG");
 const isOk = (v: Verdict) => v.startsWith("OK");
 const orDefault = (value: number | "") => (value === "" ? undefined : value);
 
-function RejudgeDetails<T>({ label, rows, total, renderRow }: {
+function RejudgeDetails<T>({ label, rows, total, page, onPageChange, renderRow }: {
   label: string;
   rows: T[];
   total: number;
+  page: number;
+  onPageChange: (page: number) => void;
   renderRow: (row: T) => ReactNode;
 }) {
-  const [page, setPage] = useState(1);
   const start = (page - 1) * DETAILS_PAGE_SIZE;
   return <Stack direction="column" align="stretch" gap={6}>
     <Text variant="label">{label}{rows.length < total && ` · 显示最近 ${rows.length} 件，共 ${total} 件`}</Text>
@@ -42,16 +43,75 @@ function RejudgeDetails<T>({ label, rows, total, renderRow }: {
       {rows.slice(start, start + DETAILS_PAGE_SIZE).map(renderRow)}
     </List>
     {rows.length > DETAILS_PAGE_SIZE && <Pagination label={`${label}分页`} total={rows.length}
-      page={page} pageSize={DETAILS_PAGE_SIZE} showPageSize={false} onPageChange={setPage} />}
+      page={page} pageSize={DETAILS_PAGE_SIZE} showPageSize={false} onPageChange={onPageChange} />}
   </Stack>;
 }
 
+function RejudgeResults({ result, taskId, review, onFocusRow, onOpenRecord }: {
+  result: RejudgeResult;
+  taskId: string;
+  review?: RejudgeReviewState;
+  onFocusRow: (label: HTMLSpanElement | null) => void;
+  onOpenRecord: (review: RejudgeReviewState) => void;
+}) {
+  const [pages, setPages] = useState(() => review?.pages ?? { skipReasons: 1, changes: 1 });
+  const setPage = (list: RejudgeResultList, page: number) => setPages(current => ({ ...current, [list]: page }));
+  const open = (list: RejudgeResultList, recordId: number) => onOpenRecord({ taskId, list, recordId, pages });
+  const focusRow = (list: RejudgeResultList, recordId: number) => review?.list === list && review.recordId === recordId ? onFocusRow : undefined;
+  const cell = (from: Verdict, to: Verdict) => result.matrix.find((m) => m.from === from && m.to === to)?.count ?? 0;
+  const released = result.matrix.filter((m) => isNg(m.from) && isOk(m.to)).reduce((a, m) => a + m.count, 0);
+  const changed = result.matrix.reduce((total, m) => total + (m.from === m.to ? 0 : m.count), 0);
+  const matrixColumns: TableColumn<Verdict>[] = [
+    { key: "from", header: "原结果 ＼ 新结果", render: (from) => <StatusBadge tone={verdictTone(from)}>{verdictLabel[from]}</StatusBadge> },
+    ...order.map((to): TableColumn<Verdict> => ({
+      key: to,
+      header: verdictLabel[to],
+      align: "center",
+      render: (from) => {
+        const n = cell(from, to);
+        const cls = n === 0 ? "zero" : from === to ? "same" : isNg(from) && isOk(to) ? "release" : "changed";
+        return <span className={`rj-cell mono ${cls}`}>{n}</span>;
+      },
+    })),
+  ];
+  return <>
+    <Stack gap={14}>
+      <span>重判 <b>{result.total}</b> 件，跳过 <b>{result.skipped}</b> 件{result.limitHit && "（超过 5000 件，只取最近 5000 件）"}</span>
+      {released > 0 && <StatusBadge tone="ng">NG→OK {released} 件：放宽后可能放过真实缺陷，请逐件复核</StatusBadge>}
+    </Stack>
+    {result.skipReasons.length > 0 && <RejudgeDetails label="跳过原因" rows={result.skipReasons} total={result.skipped}
+      page={pages.skipReasons} onPageChange={page => setPage("skipReasons", page)}
+      renderRow={item => <ListItem
+        key={item.id} title={<span className="sn" ref={focusRow("skipReasons", item.id)}>SN {item.sn}</span>}
+        description={item.reason} onClick={() => open("skipReasons", item.id)}
+      />}
+    />}
+    <Table<Verdict> caption="判定变化矩阵" rows={order} columns={matrixColumns} rowKey={(v) => v} />
+    {result.changes.length > 0 && <RejudgeDetails label="判定变化记录" rows={result.changes} total={changed}
+      page={pages.changes} onPageChange={page => setPage("changes", page)}
+      renderRow={item => (
+        <ListItem
+          key={item.id}
+          leading={<span className="mono">{formatTime(item.ts)}</span>}
+          title={<>
+            <span className="sn" ref={focusRow("changes", item.id)}>SN {item.sn}</span>{" "}
+            <StatusBadge tone={verdictTone(item.from)}>{verdictLabel[item.from]}</StatusBadge>→<StatusBadge tone={verdictTone(item.to)}>{verdictLabel[item.to]}</StatusBadge>
+          </>}
+          description={item.reason}
+          onClick={() => open("changes", item.id)}
+        />
+      )}
+    />}
+  </>;
+}
+
 /** 用存储的测量表批量重判：可选当前配方与试算参数，输出判定变化矩阵。 */
-export default function RejudgeDialog({ scope, originalScope, onUseCurrentScope, onOpenRecord, onClose }: {
+export default function RejudgeDialog({ scope, review, originalScope, onUseCurrentScope, onOpenRecord, onClose }: {
   scope: RejudgeScope;
+  review?: RejudgeReviewState;
   originalScope: boolean;
   onUseCurrentScope?: () => void;
-  onOpenRecord: (id: number) => void;
+  onOpenRecord: (review: RejudgeReviewState) => void;
   onClose: () => void;
 }) {
   const { task, operation, run } = useRejudgeTask();
@@ -62,7 +122,18 @@ export default function RejudgeDialog({ scope, originalScope, onUseCurrentScope,
   const matchingTask = scopedTask?.options === options ? scopedTask : null;
   const running = task?.status === "running";
   const showProgress = matchingTask?.status === "running" || matchingTask?.status === "cancelled";
-  const result = matchingTask?.status === "completed" ? matchingTask.result : null;
+  const completed = matchingTask?.status === "completed" ? matchingTask : null;
+  const restoredReview = review && completed?.taskId === review.taskId ? review : undefined;
+  const reviewFocus = useRef<HTMLButtonElement | null>(null);
+  const focusPositioned = useRef(false);
+  const bindReviewFocus = useCallback((label: HTMLSpanElement | null) => {
+    const button = label?.closest("button") ?? null;
+    reviewFocus.current = button;
+    if (button && !focusPositioned.current) {
+      focusPositioned.current = true;
+      button.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, []);
   const error = matchingTask?.status === "failed" ? matchingTask.error : "";
   const invalid = Object.values(overrides).some(value => typeof value === "number" && !Number.isFinite(value)) ||
     [overrides.straight, overrides.corner].some(value =>
@@ -85,29 +156,13 @@ export default function RejudgeDialog({ scope, originalScope, onUseCurrentScope,
     />
   );
 
-  const cell = (from: Verdict, to: Verdict) => result?.matrix.find((m) => m.from === from && m.to === to)?.count ?? 0;
-  const released = result ? result.matrix.filter((m) => isNg(m.from) && isOk(m.to)).reduce((a, m) => a + m.count, 0) : 0;
-  const changed = result?.matrix.reduce((total, m) => total + (m.from === m.to ? 0 : m.count), 0) ?? 0;
-  const matrixColumns: TableColumn<Verdict>[] = [
-    { key: "from", header: "原结果 ＼ 新结果", render: (from) => <StatusBadge tone={verdictTone(from)}>{verdictLabel[from]}</StatusBadge> },
-    ...order.map((to): TableColumn<Verdict> => ({
-      key: to,
-      header: verdictLabel[to],
-      align: "center",
-      render: (from) => {
-        const n = cell(from, to);
-        const cls = n === 0 ? "zero" : from === to ? "same" : isNg(from) && isOk(to) ? "release" : "changed";
-        return <span className={`rj-cell mono ${cls}`}>{n}</span>;
-      },
-    })),
-  ];
-
   return (
     <Dialog
       open
       onOpenChange={(open) => { if (!open) onClose(); }}
       title="批量重判"
       className="rj-dialog"
+      initialFocus={restoredReview ? reviewFocus : undefined}
       description="用已存储的测量表重新判定，不需要重新拍照；ERR 件和缺少测量数据的记录会跳过。试算参数只用于本次重判，不会保存到配方。"
       footer={
         <>
@@ -142,34 +197,8 @@ export default function RejudgeDialog({ scope, originalScope, onUseCurrentScope,
         {invalid&&<Alert tone="ng">试算参数需为有限数，公差与允许长度不能为负。</Alert>}
         {error && <Alert tone="ng">{error}</Alert>}
 
-        {result && (
-          <Fragment key={operation.snapshot()?.progress.taskId}>
-            <Stack gap={14}>
-              <span>重判 <b>{result.total}</b> 件，跳过 <b>{result.skipped}</b> 件{result.limitHit && "（超过 5000 件，只取最近 5000 件）"}</span>
-              {released > 0 && <StatusBadge tone="ng">NG→OK {released} 件：放宽后可能放过真实缺陷，请逐件复核</StatusBadge>}
-            </Stack>
-            {result.skipReasons.length > 0 && <RejudgeDetails label="跳过原因" rows={result.skipReasons} total={result.skipped}
-              renderRow={item => <ListItem key={item.id} title={<span className="sn">SN {item.sn}</span>} description={item.reason} onClick={() => onOpenRecord(item.id)} />}
-            />}
-            <Table<Verdict> caption="判定变化矩阵" rows={order} columns={matrixColumns} rowKey={(v) => v} />
-            {result.changes.length > 0 && (
-              <RejudgeDetails label="判定变化记录" rows={result.changes} total={changed}
-                renderRow={c => (
-                  <ListItem
-                    key={c.id}
-                    leading={<span className="mono">{formatTime(c.ts)}</span>}
-                    title={<>
-                      <span className="sn">SN {c.sn}</span>{" "}
-                      <StatusBadge tone={verdictTone(c.from)}>{verdictLabel[c.from]}</StatusBadge>→<StatusBadge tone={verdictTone(c.to)}>{verdictLabel[c.to]}</StatusBadge>
-                    </>}
-                    description={c.reason}
-                    onClick={() => onOpenRecord(c.id)}
-                  />
-                )}
-              />
-            )}
-          </Fragment>
-        )}
+        {completed && <RejudgeResults key={completed.taskId} taskId={completed.taskId} result={completed.result}
+          review={restoredReview} onFocusRow={bindReviewFocus} onOpenRecord={onOpenRecord} />}
       </Stack>
     </Dialog>
   );

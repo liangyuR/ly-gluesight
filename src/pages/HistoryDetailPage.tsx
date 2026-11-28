@@ -121,7 +121,13 @@ export default function HistoryDetailPage() {
   const actions = <HistoryRecordActions key={detail.summary.id} id={detail.summary.id} tags={detail.summary.tags ?? []}
       onBusyChange={setMutationBusy}
       onSaved={tags => { refreshPending.current = false; setDetail(current => current?.summary.id === detail.summary.id ? { ...current, summary: { ...current.summary, tags } } : current); reload(); }}
-      onDeleted={result => { refreshPending.current = false; navigate(returnPath, { replace: true, state: { ...returnState, historyNotice: { message: `已删除 ${result.deleted} 件历史记录。`, warnings: result.warnings } } }); }} />;
+      onDeleted={result => {
+        refreshPending.current = false;
+        navigate(returnPath, {
+          replace: true,
+          state: { ...returnState, rejudgeReview: undefined, historyNotice: { message: `已删除 ${result.deleted} 件历史记录。`, warnings: result.warnings } },
+        });
+      }} />;
   if (detail.burst) return <BurstHistoryDetail key={detail.summary.id} detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} partState={partState} foreignProject={foreignProject} actions={actions} {...back} />;
   return <PlainHistoryDetail detail={detail} neighbors={neighbors} onOpen={openPart} partState={partState} foreignProject={foreignProject} actions={actions} {...back} />;
 }

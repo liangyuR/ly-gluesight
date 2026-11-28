@@ -36,11 +36,21 @@ export interface HistoryListView {
   offset: number;
 }
 
+export type RejudgeResultList = "skipReasons" | "changes";
+
+export interface RejudgeReviewState {
+  taskId: string;
+  pages: Record<RejudgeResultList, number>;
+  list: RejudgeResultList;
+  recordId: number;
+}
+
 export interface HistoryListState {
   filter?: HistoryFilter;
   view?: HistoryListView;
   focusRecordId?: number;
   selection?: HistoryListSelection;
+  rejudgeReview?: RejudgeReviewState;
   historyNotice?: { message: string; warnings: string[] };
 }
 

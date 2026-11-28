@@ -1,7 +1,7 @@
 import { act, fireEvent, render as renderPage, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
-import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { expect, it, vi } from "vitest";
@@ -65,15 +65,19 @@ const rejudgeResult: RejudgeResult = {
   changes: [], skipReasons: [],
 };
 
-it("收起重判后离开页面并换筛选 → 重开同一任务，结果按原筛选导航", async () => {
+it("收起重判后离开页面并换筛选 → 详情沿用原筛选，返回保留后来筛选", async () => {
   const pending = deferred<RejudgeResult>();
   mockTextFilteredHistory(() => pending.promise);
+  function BrowserBack() {
+    const navigate = useNavigate();
+    return <button onClick={() => navigate(-1)}>浏览器返回</button>;
+  }
   const user = userEvent.setup();
   const dialog = () => within(screen.getByRole("dialog", { name: "批量重判" }));
   render(<MemoryRouter initialEntries={["/history"]}><Routes>
     <Route path="/history" element={<><Link to="/other">其他页面</Link><HistoryPage /></>} />
     <Route path="/other" element={<Link to="/history">返回历史页</Link>} />
-    <Route path="/history/:id" element={<HistoryDetailPage />} />
+    <Route path="/history/:id" element={<><HistoryDetailPage /><BrowserBack /></>} />
   </Routes></MemoryRouter>);
 
   await row(1);
@@ -119,9 +123,25 @@ it("收起重判后离开页面并换筛选 → 重开同一任务，结果按�
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("history_neighbors", {
     id: 1, query: expect.objectContaining({ sn: "SN-101" }),
   }));
+  await user.click(await screen.findByRole("button", { name: "返回重判结果" }));
+  const returned = await screen.findByRole("dialog", { name: "批量重判" });
+  expect(within(returned).getByRole("table", { name: "判定变化矩阵" })).toBeVisible();
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "批量重判" })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("历史 SN")).toHaveValue("SN-102");
+  expect(await row(2)).toBeVisible();
+  expect(screen.queryByRole("button", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument();
+
+  await user.click(await row(2));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("history_overview", { id: 2 }));
+  await user.click(screen.getByRole("button", { name: "浏览器返回" }));
+  expect(screen.getByLabelText("历史 SN")).toHaveValue("SN-102");
+  expect(screen.queryByRole("dialog", { name: "批量重判" })).not.toBeInTheDocument();
+  expect(await row(2)).toBeVisible();
+  expect(rejudgeCalls()).toEqual([["history_rejudge", originalRequest]]);
 });
 
-it("批量重判的两组长结果独立分页 → 末页可用键盘按原筛选打开正确工件", async () => {
+it("批量重判的两组长结果独立分页 → 详情返回恢复两组页码及原位置焦点", async () => {
   const records = Array.from({ length: 700 }, (_, index) => burstPartSummary(700 - index));
   const reason = "当前候选允许断胶长度变化，复核各相机的对应区域和截断测站。".repeat(6);
   const result: RejudgeResult = {
@@ -153,7 +173,8 @@ it("批量重判的两组长结果独立分页 → 末页可用键盘按原筛�
   expect(dialog.getByText("判定变化记录 · 显示最近 300 件，共 360 件")).toBeVisible();
   skippedList.scrollTop = 80;
   changedList().scrollTop = 120;
-  expect(within(dialog.getByRole("navigation", { name: "跳过原因分页" })).getByRole("button", { name: "上一页" })).toBeDisabled();
+  const skippedPages = within(dialog.getByRole("navigation", { name: "跳过原因分页" }));
+  expect(skippedPages.getByRole("button", { name: "上一页" })).toBeDisabled();
 
   const changedPages = within(dialog.getByRole("navigation", { name: "判定变化记录分页" }));
   await user.click(changedPages.getByRole("button", { name: "第 12 页" }));
@@ -162,8 +183,12 @@ it("批量重判的两组长结果独立分页 → 末页可用键盘按原筛�
   expect(changedList().scrollTop).toBe(0);
   expect(changed().queryByText(`SN ${result.changes[0].sn}`)).not.toBeInTheDocument();
   expect(changed().getAllByRole("button")).toHaveLength(25);
+  await user.click(skippedPages.getByRole("button", { name: "第 2 页" }));
+  const secondSkipped = `SN ${result.skipReasons[25].sn}`;
+  expect(within(dialog.getByRole("list", { name: "跳过原因" })).getByText(secondSkipped)).toBeVisible();
   const target = result.changes.at(-1)!;
-  const opener = changed().getByRole("button", { name: new RegExp(`SN ${target.sn}`) });
+  const openerName = new RegExp(`SN ${target.sn}`);
+  const opener = changed().getByRole("button", { name: openerName });
   expect(opener).toHaveTextContent(reason);
   opener.focus();
   await user.keyboard("{Enter}");
@@ -171,6 +196,86 @@ it("批量重判的两组长结果独立分页 → 末页可用键盘按原筛�
   expect(invoke).toHaveBeenCalledWith("history_neighbors", {
     id: target.id, query: expect.objectContaining({ sn: "SN-" }),
   });
+
+  await user.click(await screen.findByRole("button", { name: "返回重判结果" }));
+  const returned = within(await screen.findByRole("dialog", { name: "批量重判" }));
+  const returnedChanges = () => within(returned.getByRole("list", { name: "判定变化记录" }));
+  await waitFor(() => expect(returnedChanges().getByRole("button", { name: openerName })).toHaveFocus());
+  expect(returnedChanges().queryByText(`SN ${result.changes[0].sn}`)).not.toBeInTheDocument();
+  expect(within(returned.getByRole("list", { name: "跳过原因" })).getByText(secondSkipped)).toBeVisible();
+  expect(rejudgeCalls()).toHaveLength(1);
+});
+
+it("原重判任务被同筛选的新任务替换 → 旧详情返回到历史列表", async () => {
+  mockTextFilteredHistory(async () => ({
+    ...rejudgeResult,
+    changes: [{ id: 1, sn: "SN-101", ts: 0, from: "NG_GAP", to: "OK", reason: "允许长度调整", flags: null }],
+  }));
+  function BackToDetail() {
+    const go = useNavigate();
+    return <button onClick={() => go(-1)}>恢复上一个详情地址</button>;
+  }
+  const user = userEvent.setup();
+  const dialog = () => within(screen.getByRole("dialog", { name: "批量重判" }));
+  render(<MemoryRouter initialEntries={["/history"]}><Routes>
+    <Route path="/history" element={<><HistoryPage /><BackToDetail /></>} />
+    <Route path="/history/:id" element={<><HistoryDetailPage /><Link to="/history">打开历史页</Link></>} />
+  </Routes></MemoryRouter>);
+  await row(1);
+  await user.click(screen.getByRole("button", { name: "批量重判" }));
+  await user.click(dialog().getByRole("button", { name: "重判当前筛选（2 件）" }));
+  await user.click(await dialog().findByRole("button", { name: /SN SN-101/ }));
+  await user.click(await screen.findByRole("link", { name: "打开历史页" }));
+  await row(1);
+  await user.click(screen.getByRole("button", { name: "查看上次重判" }));
+  await user.click(dialog().getByRole("button", { name: "再次重判" }));
+  expect(await dialog().findByRole("table", { name: "判定变化矩阵" })).toBeVisible();
+  const calls = rejudgeCalls();
+  expect(calls).toHaveLength(2);
+  expect(calls[1][1]).toEqual({ ...calls[0][1] as object, taskId: expect.any(String) });
+  expect(calls[1][1]).not.toEqual(calls[0][1]);
+  await user.keyboard("{Escape}");
+
+  await user.click(screen.getByRole("button", { name: "恢复上一个详情地址" }));
+  await user.click(await screen.findByRole("button", { name: "返回重判结果" }));
+  expect(await row(1)).toBeVisible();
+  expect(screen.queryByRole("dialog", { name: "批量重判" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "查看上次重判" })).toBeVisible();
+  expect(rejudgeCalls()).toHaveLength(2);
+});
+
+it("在重判结果的工件详情确认删除 → 回到普通历史列表查看删除回执", async () => {
+  const records = [burstPartSummary(1)];
+  mockTextFilteredHistory(async () => ({
+    ...rejudgeResult,
+    changes: [{ id: 1, sn: "SN-101", ts: 0, from: "NG_GAP", to: "OK", reason: "允许长度调整", flags: null }],
+  }), undefined, records);
+  const existing = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "history_delete") {
+      records.pop();
+      return { deleted: 1, warnings: [] };
+    }
+    return existing(command, args);
+  });
+  const user = userEvent.setup();
+  render(<MemoryRouter initialEntries={["/history"]}><Routes>
+    <Route path="/history" element={<HistoryPage />} />
+    <Route path="/history/:id" element={<HistoryDetailPage />} />
+  </Routes></MemoryRouter>);
+  await row(1);
+  await user.click(screen.getByRole("button", { name: "批量重判" }));
+  const rejudge = within(screen.getByRole("dialog", { name: "批量重判" }));
+  await user.click(rejudge.getByRole("button", { name: "重判当前筛选（1 件）" }));
+  await user.click(await rejudge.findByRole("button", { name: /SN SN-101/ }));
+  await user.click(await screen.findByRole("button", { name: "删除历史件" }));
+  const deletion = within(screen.getByRole("dialog", { name: "删除历史件" }));
+  await user.click(deletion.getByRole("button", { name: "确认删除 1 件" }));
+
+  expect(await screen.findByText("已删除 1 件历史记录。")).toBeVisible();
+  expect(screen.queryByRole("dialog", { name: "批量重判" })).not.toBeInTheDocument();
+  expect(await screen.findByText("没有符合条件的记录")).toBeVisible();
+  expect(invoke).toHaveBeenCalledWith("history_delete", { ids: [1] });
 });
 
 it("第二次重判开始即清除旧矩阵，失败后显示错误并可重试", async () => {

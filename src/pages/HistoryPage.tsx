@@ -8,12 +8,13 @@ import { useProjectDirectory } from "../features/project/hooks";
 import { projectLabel, recordProject } from "../features/project/rules";
 import { errorText } from "../lib/errors";
 import { flagBadges } from "../features/plan/vis";
-import { commonHistoryTags, displayReason, formatTime, HistoryExportDialog, HistoryImportDialog, HistoryRecordDialog, historyApi, partVerdict, RejudgeDialog, triggerModeLabel, verdictGroups, type HistoryDeleted, type HistoryDetailState, type HistoryListState, type HistoryListView, type HistoryPackagePreview, type HistoryPage as Page, type HistoryQuery, type PartMode } from "../features/history";
+import { commonHistoryTags, displayReason, formatTime, HistoryExportDialog, HistoryImportDialog, HistoryRecordDialog, historyApi, partVerdict, RejudgeDialog, triggerModeLabel, verdictGroups, type HistoryDeleted, type HistoryDetailState, type HistoryListState, type HistoryListView, type HistoryPackagePreview, type HistoryPage as Page, type HistoryQuery, type PartMode, type RejudgeReviewState } from "../features/history";
 import { useRejudgeTask, type RejudgeScope } from "../features/history/rejudgeTask";
 
 type Item = Page["items"][number];
 type TextFilters = { sn: string; tag: string };
 type RecordAction = { action: "tags" | "delete"; ids: number[]; initialTags: string[] };
+type RejudgeDialogState = { scope: RejudgeScope; review?: RejudgeReviewState };
 
 const PAGE = 50;
 const TEXT_FILTER_DELAY_MS = 250;
@@ -78,7 +79,14 @@ export default function HistoryPage() {
   const [exported, setExported] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [revealing, setRevealing] = useState(false);
-  const [rejudge, setRejudge] = useState<RejudgeScope | null>(null);
+  const [rejudgeDialog, setRejudgeDialog] = useState<RejudgeDialogState | null>(() => {
+    const review = initial?.rejudgeReview;
+    if (review && rejudgeTask?.status === "completed" && rejudgeTask.taskId === review.taskId) {
+      return { scope: rejudgeTask.scope, review };
+    }
+    return null;
+  });
+  const rejudge = rejudgeDialog?.scope;
   const [selected, setSelected] = useState<string[]>([]);
   const [recordAction, setRecordAction] = useState<RecordAction | null>(null);
   const [notice, setNotice] = useState(initial?.historyNotice ?? null);
@@ -173,13 +181,34 @@ export default function HistoryPage() {
     setDraft(empty); applyText(empty);
     setRange(DEFAULT_RANGE); setGroups([]); setMode("all"); setRecipeId(""); setProject("");
   };
-  const openRecord = (id: number, rejudgeSource?: Pick<RejudgeScope, "query" | "view">) => {
-    const source = rejudgeSource ?? result ?? scope;
-    const listSelection = !rejudgeSource && !stale && selected.length ? { query, keys: selected } : undefined;
+  const openRecord = (id: number) => {
+    const source = result ?? scope;
+    const listSelection = !stale && selected.length ? { query, keys: selected } : undefined;
     go(`/history/${id}`, {
       state: { query: source.query, listView: source.view, listRecordId: id, listSelection } satisfies HistoryDetailState,
     });
   };
+  const reviewRecord = (source: RejudgeScope, review: RejudgeReviewState) => {
+    const returnState: HistoryListState = {
+      view,
+      selection: !stale && selected.length ? { query, keys: selected } : undefined,
+      rejudgeReview: review,
+    };
+    go(`/history/${review.recordId}`, {
+      state: {
+        query: source.query,
+        returnTo: { path: location.pathname + location.search + location.hash, label: "返回重判结果", state: returnState },
+      } satisfies HistoryDetailState,
+    });
+  };
+
+  useEffect(() => {
+    const state = location.state as HistoryListState | null;
+    if (!state?.rejudgeReview) return;
+    const { rejudgeReview, ...rest } = state;
+    const { pathname, search, hash } = location;
+    go({ pathname, search, hash }, { replace: true, state: rest });
+  }, [go, location]);
 
   useLayoutEffect(() => { currentScope.current = scope; }, [scope]);
   useLayoutEffect(() => {
@@ -479,7 +508,7 @@ export default function HistoryPage() {
               {countedTotal > 0 && <span>良率 <b>{(((counts!.ok + counts!.excursion) / countedTotal) * 100).toFixed(1)}%</b></span>}
             </div>
             <div className="hist-actions">
-              <Button leadingIcon={<Scale size={15} />} onClick={() => setRejudge(rejudgeTarget)} disabled={!rejudgeTarget}>
+              <Button leadingIcon={<Scale size={15} />} onClick={() => { if (rejudgeTarget) setRejudgeDialog({ scope: rejudgeTarget }); }} disabled={!rejudgeTarget}>
                 {rejudgeTask?.status === "running" ? "查看重判进度" : rejudgeTask ? "查看上次重判" : "批量重判"}
               </Button>
               <Button leadingIcon={<Download size={15} />} onClick={() => void exportCsv()} disabled={exporting || loading || stale || !page?.total}>
@@ -539,13 +568,14 @@ export default function HistoryPage() {
           />
         )}
       </Card>
-      {rejudge && <RejudgeDialog
+      {rejudgeDialog && <RejudgeDialog
         key={rejudgeScopeKey}
-        scope={rejudge}
+        scope={rejudgeDialog.scope}
+        review={rejudgeDialog.review}
         originalScope={originalRejudgeScope}
-        onUseCurrentScope={canUseCurrentRejudgeScope ? () => setRejudge(currentRejudgeScope) : undefined}
-        onOpenRecord={(id) => openRecord(id, rejudge)}
-        onClose={() => setRejudge(null)}
+        onUseCurrentScope={canUseCurrentRejudgeScope && currentRejudgeScope ? () => setRejudgeDialog({ scope: currentRejudgeScope }) : undefined}
+        onOpenRecord={(review) => reviewRecord(rejudgeDialog.scope, review)}
+        onClose={() => setRejudgeDialog(null)}
       />}
       {recordAction && <HistoryRecordDialog {...recordAction} onClose={() => setRecordAction(null)} onSaved={savedTags} onDeleted={deletedRecords} onBusyChange={setMutationBusy} />}
       {packageIds && <HistoryExportDialog ids={packageIds} onClose={() => setPackageIds(null)} />}

@@ -9,7 +9,7 @@ export type RejudgeOptions = Pick<RejudgeRequest, "useCurrentRecipe" | "override
 
 type RejudgeTask = { scope: RejudgeScope; options: RejudgeOptions } & (
   | { status: "running" }
-  | { status: "completed"; result: RejudgeResult }
+  | { status: "completed"; taskId: string; result: RejudgeResult }
   | { status: "cancelled" }
   | { status: "failed"; error: string }
 );
@@ -29,8 +29,11 @@ export function RejudgeTaskProvider({ children }: { children: ReactNode }) {
     pending.current = true;
     setTask({ scope, options, status: "running" });
     try {
-      const result = await operation.run(taskId => historyApi.rejudge({ query: scope.query, ids: [], ...options }, taskId));
-      setTask({ scope, options, status: "completed", result });
+      const completed = await operation.run(async taskId => ({
+        taskId,
+        result: await historyApi.rejudge({ query: scope.query, ids: [], ...options }, taskId),
+      }));
+      setTask({ scope, options, status: "completed", ...completed });
     } catch (cause) {
       if (operation.snapshot()?.progress.stage === "cancelled") setTask({ scope, options, status: "cancelled" });
       else setTask({ scope, options, status: "failed", error: errorText(cause) });
