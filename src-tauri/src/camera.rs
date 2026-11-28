@@ -470,13 +470,20 @@ fn make_preview(src: &[u8], w: usize, h: usize, channels: u8) -> Preview {
     let c = channels.max(1) as usize;
     let step = w.div_ceil(960).max(1);
     let (pw, ph) = (w / step, h / step);
-    let mut data = Vec::with_capacity(pw * ph * c);
-    for y in 0..ph {
-        let row = &src[y * step * w * c..];
-        for x in 0..pw {
-            data.extend_from_slice(&row[x * step * c..x * step * c + c]);
+    let data = match (step, c) {
+        (1, _) => src[..w * h * c].to_vec(),
+        (_, 1) => sample_preview::<1>(src, w, pw, ph, step),
+        (_, 3) => sample_preview::<3>(src, w, pw, ph, step),
+        _ => {
+            let mut data = Vec::with_capacity(pw * ph * c);
+            for row in src.chunks_exact(w * c).step_by(step).take(ph) {
+                for pixel in row.chunks_exact(c).step_by(step).take(pw) {
+                    data.extend_from_slice(pixel);
+                }
+            }
+            data
         }
-    }
+    };
     Preview {
         width: pw as u32,
         height: ph as u32,
@@ -486,6 +493,25 @@ fn make_preview(src: &[u8], w: usize, h: usize, channels: u8) -> Preview {
         data,
         charge: None,
     }
+}
+
+fn sample_preview<const C: usize>(
+    src: &[u8],
+    width: usize,
+    preview_width: usize,
+    preview_height: usize,
+    step: usize,
+) -> Vec<u8> {
+    let mut data = Vec::<[u8; C]>::with_capacity(preview_width * preview_height);
+    for row in src
+        .chunks_exact(width * C)
+        .step_by(step)
+        .take(preview_height)
+    {
+        let (pixels, _) = row.as_chunks::<C>();
+        data.extend(pixels.iter().step_by(step).take(preview_width).copied());
+    }
+    data.into_flattened()
 }
 
 impl Preview {
@@ -3391,6 +3417,38 @@ fn camera_frame_cooldown_preserves_other_cameras_and_tail_frames_across_sessions
 #[cfg(test)]
 mod gray_tests {
     use super::*;
+
+    #[test]
+    fn camera_preview_samples_only_complete_grid_cells_in_pixel_order() {
+        for (width, height, channels, step) in [
+            (960, 2, 1, 1),
+            (959, 3, 3, 1),
+            (961, 5, 1, 2),
+            (961, 5, 3, 2),
+            (1921, 8, 3, 3),
+            (1921, 2, 1, 3),
+        ] {
+            let mut input: Vec<u8> = (0..width * height * channels)
+                .map(|i| (i % 251) as u8)
+                .collect();
+            input.extend([253; 17]);
+            let (preview_width, preview_height) = (width / step, height / step);
+            let mut expected: Vec<u8> = [preview_width, preview_height, width, height, channels]
+                .into_iter()
+                .flat_map(|v| (v as u32).to_le_bytes())
+                .collect();
+            for y in 0..preview_height {
+                for x in 0..preview_width {
+                    let pixel = (y * step * width + x * step) * channels;
+                    expected.extend_from_slice(&input[pixel..pixel + channels]);
+                }
+            }
+            assert_eq!(
+                make_preview(&input, width, height, channels as u8).bytes(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn sdk_frame_length_must_cover_width_height_and_pixel_size() {
