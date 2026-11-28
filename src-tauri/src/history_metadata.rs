@@ -1,16 +1,24 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
-pub(super) fn decode(bytes: &[u8]) -> serde_json::Result<Value> {
+pub(crate) fn part_metadata(bytes: &[u8]) -> serde_json::Result<Value> {
+    decode(bytes, Projection::Part)
+}
+
+pub(crate) fn capture_round(bytes: &[u8]) -> serde_json::Result<Value> {
+    decode(bytes, Projection::Round)
+}
+
+fn decode(bytes: &[u8], projection: Projection) -> serde_json::Result<Value> {
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
-    let projected = Projection::Part
+    let projected = projection
         .deserialize(&mut decoder)
-        .and_then(|part| decoder.end().map(|()| part));
-    // 解析失败时沿用完整解码的错误位置和文案。
+        .and_then(|value| decoder.end().map(|()| value));
+    // 完整解码保留 serde_json 的保留对象键语义和原有报错位置。
     projected.or_else(|_| serde_json::from_slice(bytes))
 }
 
@@ -20,6 +28,7 @@ struct Key<'a>(#[serde(borrow)] Cow<'a, str>);
 
 enum Projection {
     Part,
+    Round,
     Frames,
     Frame,
     Discard,
@@ -43,6 +52,12 @@ impl<'de> Visitor<'de> for Projection {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
         let mut fields = Map::new();
         while let Some(Key(key)) = map.next_key::<Key<'de>>()? {
+            if matches!(
+                key.as_ref(),
+                "$serde_json::private::RawValue" | "$serde_json::private::Number"
+            ) {
+                return Err(A::Error::custom("reserved JSON object key"));
+            }
             let value = match (&self, key.as_ref()) {
                 (Self::Part, "frames") => map.next_value_seed(Self::Frames)?,
                 (
@@ -54,7 +69,8 @@ impl<'de> Visitor<'de> for Projection {
                     Self::Frame,
                     "camera" | "seq" | "ts" | "available" | "manual" | "file" | "cameraId"
                     | "frameCounter" | "width" | "height" | "session",
-                ) => map.next_value()?,
+                )
+                | (Self::Round, "origin") => map.next_value()?,
                 _ => {
                     map.next_value_seed(Self::Discard)?;
                     continue;

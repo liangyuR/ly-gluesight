@@ -14,9 +14,6 @@ use crate::store::{
     HistoryQuery, PartMode, PartSummary, RecordSource, RecordingEvidence, RecordingState,
 };
 
-#[path = "history_part_metadata.rs"]
-mod part_metadata;
-
 /// 每页最多核对的历史件数（最新在前）：逐件要读录制的 part.json。
 const PAGE_LIMIT: u32 = 200;
 /// 一次最多导入的件数。
@@ -116,7 +113,8 @@ fn read_part(root: &Path, recording: &RecordingEvidence) -> Result<(PathBuf, Val
     crate::image_file::checked_source_path(&path)
         .map_err(|_| "录制元数据 part.json 缺失或不可读".to_string())?;
     let bytes = std::fs::read(&path).map_err(|e| format!("录制元数据读取失败：{e}"))?;
-    let value = part_metadata::decode(&bytes).map_err(|e| format!("录制元数据损坏：{e}"))?;
+    let value = crate::history_metadata::part_metadata(&bytes)
+        .map_err(|e| format!("录制元数据损坏：{e}"))?;
     Ok((checked, value))
 }
 

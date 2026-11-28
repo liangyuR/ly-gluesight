@@ -19,6 +19,7 @@ mod gate;
 mod handshake;
 mod history;
 mod history_fixture;
+mod history_metadata;
 mod history_package;
 mod image_file;
 mod inspection;

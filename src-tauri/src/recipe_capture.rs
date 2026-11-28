@@ -324,7 +324,7 @@ pub fn history_cycles(root: &Path) -> Result<std::collections::BTreeSet<String>,
             continue;
         }
         let text = crate::fsio::read_text(&path).map_err(|e| format!("{}：{e}", path.display()))?;
-        let Ok(round) = serde_json::from_str::<serde_json::Value>(&text) else {
+        let Ok(round) = crate::history_metadata::capture_round(text.as_bytes()) else {
             continue;
         };
         if round
