@@ -86,6 +86,7 @@ describe("候选工作台的主流程保护", () => {
 
   it("保存失败保留走廊草稿，重试成功后才显示已保存；草稿并入这台相机这一段的走廊整份提交",async()=>{
     const {result}=await openBurst();
+    const { revision, instanceId } = result.current.data!.workspace;
     const draft={corridor:[[10,10],[40,10]] as [number,number][],mmPerPx:.1,window:null};
     vi.mocked(workspaceApi.saveDoc).mockRejectedValueOnce(new Error("磁盘不可写"));
     vi.useFakeTimers();
@@ -95,21 +96,52 @@ describe("候选工作台的主流程保护", () => {
     expect(result.current.corridorDrafts["CAM-2#1"]).toEqual(draft);
     const base=burstView().workspace.doc;
     const merged={...base,inspect:base.inspect!.map(item=>item.camera==="CAM-2"?{...item,segments:[{segment:1,corridor:draft.corridor}]}:item)};
-    expect(workspaceApi.saveDoc).toHaveBeenLastCalledWith("A",3,merged);
+    expect(workspaceApi.saveDoc).toHaveBeenLastCalledWith("A", revision, instanceId, merged);
     const next=burstView();next.workspace.revision=4;next.workspace.doc=merged;
     vi.mocked(workspaceApi.saveDoc).mockResolvedValue(next);
     act(()=>result.current.retrySave());
     await act(()=>vi.advanceTimersByTimeAsync(900));
+    expect(workspaceApi.saveDoc).toHaveBeenLastCalledWith("A", revision, instanceId, merged);
     expect(result.current.saveState).toBe("saved");
     expect(result.current.frameDirty).toBe(false);
   });
 
+  it("自动保存返回不同实例 → 保留草稿，同号候选重新打开后可保存相同修改", async () => {
+    const { result } = await openBurst();
+    const { revision, instanceId } = result.current.data!.workspace;
+    const draft = { corridor: [[10, 10], [40, 10]] as [number, number][], mmPerPx: .1, window: null };
+    const reopened = burstView();
+    reopened.workspace.instanceId = instanceId + 1;
+    const save = vi.mocked(workspaceApi.saveDoc).mockImplementation(async (_, sentRevision, _sentInstanceId, doc) => {
+      const next = structuredClone(reopened);
+      next.workspace.revision = sentRevision + 1;
+      next.workspace.doc = doc;
+      return next;
+    });
+    vi.useFakeTimers();
+    act(() => result.current.setCorridorDraft("CAM-2#1", draft));
+    await act(() => vi.advanceTimersByTimeAsync(900));
+    expect(result.current.saveState).toBe("failed");
+    expect(result.current.data?.workspace.instanceId).toBe(instanceId);
+    expect(result.current.corridorDrafts["CAM-2#1"]).toEqual(draft);
+
+    vi.mocked(workspaceApi.get).mockResolvedValueOnce(reopened);
+    await act(() => result.current.select("A"));
+    act(() => result.current.setCorridorDraft("CAM-2#1", draft));
+    await act(() => vi.advanceTimersByTimeAsync(900));
+
+    expect(save).toHaveBeenLastCalledWith("A", revision, reopened.workspace.instanceId, expect.any(Object));
+    expect(result.current.data?.workspace.doc.inspect![1].segments![0].corridor).toEqual(draft.corridor);
+    expect(result.current.saveState).toBe("saved");
+  });
+
   it("夹有站数不足的走廊草稿 → 按输入顺序保存其余草稿并保留不足的段", async () => {
     const { result } = await openBurst();
+    const instanceId = result.current.data!.workspace.instanceId;
     const first = { corridor: [[10, 10], [40, 10]] as [number, number][], mmPerPx: .1, window: null };
     const short = { ...first, corridor: [[10, 10], [20, 10]] as [number, number][] };
     const third = { ...first, corridor: [[10, 10], [55, 10]] as [number, number][] };
-    const save = vi.mocked(workspaceApi.saveDoc).mockImplementation(async (_, revision, doc) => {
+    const save = vi.mocked(workspaceApi.saveDoc).mockImplementation(async (_, revision, _sentInstanceId, doc) => {
       const next = burstView();
       next.workspace.revision = revision + 1;
       next.workspace.doc = doc;
@@ -127,9 +159,9 @@ describe("候选工作台的主流程保护", () => {
     await act(() => vi.advanceTimersByTimeAsync(900));
     await act(() => vi.advanceTimersByTimeAsync(900));
     const unchanged = [[10, 30], [90, 30]];
-    expect(save.mock.calls.map(([, revision, doc]) => [revision, doc.inspect![0].segments!.map(segment => segment.corridor)])).toEqual([
-      [3, [unchanged, unchanged, third.corridor]],
-      [4, [first.corridor, unchanged, third.corridor]],
+    expect(save.mock.calls.map(([, revision, sentInstanceId, doc]) => [revision, sentInstanceId, doc.inspect![0].segments!.map(segment => segment.corridor)])).toEqual([
+      [3, instanceId, [unchanged, unchanged, third.corridor]],
+      [4, instanceId, [first.corridor, unchanged, third.corridor]],
     ]);
     expect(result.current.corridorDrafts).toEqual({ "CAM-1#2": short });
     expect(result.current.frameDirty).toBe(true);

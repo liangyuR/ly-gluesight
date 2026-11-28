@@ -333,7 +333,10 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
   const snapByColor = selectionTool === "brush" && colorFrame && measure === "color";
 
   /** 把这一段的走廊草稿并入候选配方并整份保存（段走廊没有单独的草稿命令）。 */
-  const commit = (message: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => perform(() => workspaceApi.saveDoc(doc.id, data.workspace.revision, withCorridor(data.workspace.doc, key, t)), message);
+  const commit = (message: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => {
+    const { revision, instanceId } = data.workspace;
+    return perform(() => workspaceApi.saveDoc(doc.id, revision, instanceId, withCorridor(savedDoc, key, t)), message);
+  };
   const extract = async () => {
     if (!canEdit || !frame || pending.current) return;
     if (!roiValid || !roi || !spacingValid) { setRegionMode(true); setExtractionHint("请沿胶路刷过至少 8 px，并设置有效的笔刷宽度和走廊点间距。"); return; }

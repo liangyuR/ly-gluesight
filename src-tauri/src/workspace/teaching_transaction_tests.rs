@@ -285,6 +285,41 @@ fn changed_revision_or_instance_rejects_prepared_teaching_without_writing() {
 }
 
 #[test]
+fn stale_recipe_save_cannot_overwrite_a_replacement_with_the_same_revision() {
+    let fixture = Fixture::new();
+    let original = &fixture.workspace;
+    let id = &original.doc.id;
+    let mut replacement = original.clone();
+    replacement.instance_id += 1;
+    replacement.doc.name = "替换后的候选".into();
+    fixture.host.save(&replacement).unwrap();
+    fixture
+        .host
+        .items
+        .lock()
+        .unwrap()
+        .insert(id.clone(), replacement.clone());
+    let before = fixture.state();
+    let mut draft = original.doc.clone();
+    draft.name = "待保存的走廊草稿".into();
+
+    assert!(fixture
+        .host
+        .save_doc(id, original.revision, original.instance_id, draft.clone())
+        .is_err());
+    assert_eq!(fixture.state(), before);
+
+    let saved = fixture
+        .host
+        .save_doc(id, replacement.revision, replacement.instance_id, draft)
+        .unwrap();
+    assert_eq!(saved.revision, replacement.revision + 1);
+    let persisted: Workspace = serde_json::from_slice(&fixture.state().0).unwrap();
+    assert_eq!(persisted.doc.name, saved.doc.name);
+    assert_eq!(persisted.instance_id, replacement.instance_id);
+}
+
+#[test]
 fn measurement_options_and_new_frame_commit_together_without_retaining_the_old_color_model() {
     use crate::recipe::MeasureMode::{Color, Gray};
     for (sector, expected) in [
@@ -301,7 +336,12 @@ fn measurement_options_and_new_frame_commit_together_without_retaining_the_old_c
         let id = doc.id.clone();
         let base = fixture
             .host
-            .save_doc(&id, fixture.workspace.revision, doc)
+            .save_doc(
+                &id,
+                fixture.workspace.revision,
+                fixture.workspace.instance_id,
+                doc,
+            )
             .unwrap();
         let saved = Fixture::prepare(&base, "replacement", 2, true)
             .with_measurement_options(Some(Gray), sector)
@@ -556,7 +596,10 @@ fn saving_a_corridor_without_color_model_keeps_color_segments_pending_fit_and_le
         let mut doc = w.doc.clone();
         doc.inspect[0].segments[0].corridor = vec![[12.0, 50.0], [90.0, 50.0]];
         doc.inspect[0].segments[0].color_model = None;
-        let saved = fixture.host.save_doc(&w.doc.id, w.revision, doc).unwrap();
+        let saved = fixture
+            .host
+            .save_doc(&w.doc.id, w.revision, w.instance_id, doc)
+            .unwrap();
         assert_eq!(
             saved.doc.inspect[0].segment_corridor(1).unwrap().measure,
             expected,

@@ -239,15 +239,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const saveDoc = useCallback((draft?: RecipeDoc) => {
     const current = draft ?? doc;
     if (!current || !data) return Promise.resolve(null);
-    return act(() => workspaceApi.saveDoc(current.id, data.workspace.revision, current), "候选配置已保存，生产版本保持不变");
+    const { revision, instanceId } = data.workspace;
+    return act(() => workspaceApi.saveDoc(current.id, revision, instanceId, current), "候选配置已保存，生产版本保持不变");
   }, [doc, data, act]);
 
   // 自动保存不经 act：不锁编辑、不重读配方列表；保存期间的新改动在结果回来后保留，再保存一次
   useEffect(() => {
     if (!data || !doc || busy || saving || !desktopAvailable()) return;
+    const { revision, instanceId } = data.workspace;
     const corridor = pendingCorridor;
     if (!dirty && !corridor) { setUrgent(false); setSaveState(frameDirty ? "pending" : "saved"); return; }
-    const makeSignature = () => JSON.stringify([doc, corridor, saveRetry]);
+    const makeSignature = () => JSON.stringify([instanceId, revision, doc, corridor, saveRetry]);
     const signature = failedSave.current ? makeSignature() : undefined;
     if (failedSave.current === signature) return;
     setSaveState("pending");
@@ -260,9 +262,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const current = () => id === selected.current && serial === requestSerial.current;
       savingRef.current = true; setSaving(true); setSaveState("saving");
       try {
-        const next = await workspaceApi.saveDoc(id, data.workspace.revision, sent);
+        const next = await workspaceApi.saveDoc(id, revision, instanceId, sent);
         if (!current()) return;
-        if (next.workspace.doc.id !== id) throw new Error("候选响应与当前配方不一致，请重试保存");
+        if (next.workspace.doc.id !== id || next.workspace.instanceId !== instanceId) {
+          throw new Error("保存响应与正在编辑的候选不一致，请重试保存");
+        }
         failedSave.current = "";
         // 保存期间又改了配方：留住本地改动；只存走廊时本地配方还没有这条走廊，补进去，下一轮一起保存
         const edited = !equal(latestDoc.current, doc);

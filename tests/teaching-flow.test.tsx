@@ -329,6 +329,7 @@ it("按点距重排遇到等距拐点 → 保留先出现的点，并按新的�
   const candidate = corridorCandidate(inspect => {
     inspect.segments = [{ segment: 1, corridor: [[10, 10], [30, 11], [34, 11], [70, 10]] }];
   });
+  candidate.workspace.instanceId = 37;
   mockSite(candidate, { workspace_save_doc: savingDoc(candidate) });
   renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
   const image = await screen.findByRole("img", { name: CAM2 });
@@ -338,10 +339,12 @@ it("按点距重排遇到等距拐点 → 保留先出现的点，并按新的�
 
   const expected = [[10, 10], [20, 10.5], [30, 11], [43.3, 10.7], [56.7, 10.3], [70, 10]];
   expect(image.querySelector('[aria-label="中线叠加"] polyline')).toHaveAttribute("points", expected.map(point => point.join(",")).join(" "));
-  act(() => { vi.advanceTimersByTime(900); });
+  fireEvent.click(screen.getByRole("button", { name: "保存走廊" }));
   expect(await screen.findByText("草稿已保存")).toBeVisible();
-  const saves = calls("workspace_save_doc") as { doc: WorkspaceView["workspace"]["doc"] }[];
-  expect(saves.map(save => save.doc.inspect![1].segments)).toEqual([[{ segment: 1, corridor: expected }]]);
+  const saves = calls("workspace_save_doc") as { id: string; revision: number; instanceId: number; doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(saves.map(({ id, revision, instanceId, doc }) => ({ id, revision, instanceId, segments: doc.inspect![1].segments }))).toEqual([{
+    id: "A", revision: 3, instanceId: 37, segments: [{ segment: 1, corridor: expected }],
+  }]);
 });
 
 it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在这一段的示教帧上提取一次", async () => {
@@ -366,8 +369,8 @@ it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引�
   await user.click(screen.getByRole("button", { name: "自动提取走廊" }));
   expect(await screen.findByLabelText("中线点 5")).toBeVisible();
   expect(screen.queryByLabelText("刷选胶路区域")).not.toBeInTheDocument();
-  const [saved] = calls("workspace_save_doc") as { id: string; revision: number; doc: WorkspaceView["workspace"]["doc"] }[];
-  expect([saved.id, saved.revision, saved.doc.inspect![1]]).toEqual(["A", 3, { ...candidate.workspace.doc.inspect![1], segments: [{ segment: 1, corridor: [[10, 10]] }] }]);
+  const [saved] = calls("workspace_save_doc") as { id: string; revision: number; instanceId: number; doc: WorkspaceView["workspace"]["doc"] }[];
+  expect([saved.id, saved.revision, saved.instanceId, saved.doc.inspect![1]]).toEqual(["A", 3, candidate.workspace.instanceId, { ...candidate.workspace.doc.inspect![1], segments: [{ segment: 1, corridor: [[10, 10]] }] }]);
   // 按相机 id 在这一段冻结的示教帧上提取（workspace_extract_corridor）
   expect(calls("workspace_extract_corridor")).toEqual([{ id: "A", revision: 4, camera: "CAM-2", imageId: FRAME2, roi: [0, 0, 100, 60],
     guide: { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 60 }, pointSpacingPx: 10 }]);

@@ -805,9 +805,10 @@ pub async fn workspace_save_doc(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
     doc: RecipeDoc,
 ) -> Result<WorkspaceView, String> {
-    tauri::async_runtime::spawn_blocking(move || save_doc(app, id, revision, doc))
+    tauri::async_runtime::spawn_blocking(move || save_doc(app, id, revision, instance_id, doc))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -816,9 +817,12 @@ fn save_doc(
     app: AppHandle,
     id: String,
     revision: u64,
+    instance_id: u64,
     doc: RecipeDoc,
 ) -> Result<WorkspaceView, String> {
-    let w = app.state::<WorkspaceHost>().save_doc(&id, revision, doc)?;
+    let w = app
+        .state::<WorkspaceHost>()
+        .save_doc(&id, revision, instance_id, doc)?;
     view(&app, w)
 }
 
@@ -828,14 +832,17 @@ impl WorkspaceHost {
         &self,
         id: &str,
         revision: u64,
+        instance_id: u64,
         mut doc: RecipeDoc,
     ) -> Result<Workspace, String> {
         if doc.id != id {
             return Err("编辑候选配置时不能改变配方编号；请在配方库复制".into());
         }
         let mut items = self.items.lock().unwrap();
-        let mut w = items.get(id).ok_or("候选配置不存在")?.clone();
+        let w = items.get(id).ok_or("候选配置不存在")?;
+        w.expect_instance(instance_id)?;
         w.expect(revision)?;
+        let mut w = w.clone();
         burst::keep_color_measure(&w, &mut doc);
         update_doc(&mut w, doc)?;
         self.save(&w)?;
