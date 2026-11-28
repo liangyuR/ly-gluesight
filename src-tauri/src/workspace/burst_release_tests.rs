@@ -150,7 +150,7 @@ fn publish_checks_report_graph_errors_for_each_affected_camera_before_measuring(
     let mut w = taught(&[Straight, Corner], DEVICE);
     calibrate(&mut w, 30);
     let valid = burst_checks(&w, Ok(()), || {
-        graph_and_trial_checks(&w, &w.doc.build().unwrap(), |_, _| Vec::new())
+        graph_and_trial_checks(&w, &w.doc.build().unwrap(), |_, _| Vec::new()).0
     });
     assert!(check(&valid, "测量图").passed);
 
@@ -173,6 +173,7 @@ fn publish_checks_report_graph_errors_for_each_affected_camera_before_measuring(
         graph_and_trial_checks(&w, &w.doc.build().unwrap(), |_, _| {
             panic!("建图失败时不应进行试测")
         })
+        .0
     });
 
     let blocker = publish_blocker(&checks).unwrap();
@@ -196,6 +197,55 @@ fn publish_checks_report_graph_errors_for_each_affected_camera_before_measuring(
             "{blocker:?}"
         );
     }
+}
+
+#[test]
+fn prepared_teaching_freezes_the_same_graph_as_the_formal_recipe() {
+    let mut w = taught(&[Straight, Corner], DEVICE);
+    calibrate(&mut w, 30);
+    w.doc.stage = RecipeStage::Collect;
+    w.doc.segments[0].id = Some("s1".into());
+    w.doc.segments[0].heading = Some(crate::plan::HeadingSettings::default());
+    for inspect in &mut w.doc.inspect {
+        inspect.mm_per_px = Some(0.25);
+        for segment in &mut inspect.segments {
+            segment.corridor = vec![[80.0, 100.0], [240.0, 100.0]];
+        }
+    }
+    let camera = &mut w.doc.inspect[0];
+    for segment in &mut camera.segments {
+        segment.color_model = Some(r#"{"version":1}"#.into());
+    }
+    camera.segments[0].mix_check = Some(crate::recipe::MixCheck {
+        model: Some(json!({"datasetKind": "synthetic"})),
+        model_id: Some("mix-reference-1".into()),
+        camera_serial: Some("cam1-test".into()),
+        background_rects: vec![[80, 30, 100, 8]],
+        max_length_mm: 2.0,
+        max_area_mm2: 4.0,
+        drift_length_mm: 5.0,
+    });
+    for frame in w
+        .camera_teaching
+        .iter_mut()
+        .filter(|frame| frame.camera == "cam1")
+    {
+        frame.frame.camera_tag = json!({"imageMode":"color"});
+    }
+
+    let (checks, prepared) = graph_and_trial_checks(&w, &w.doc.build().unwrap(), |_, _| Vec::new());
+    assert!(publish_blocker(&checks).is_none(), "{checks:?}");
+    let frozen = prepared.unwrap().frozen_graph();
+    assert!(frozen["graphs"][0]["template"] == "corridor_color");
+    assert!(frozen["headings"][0]["template"] == "heading_color");
+    assert!(frozen["mix"][0]["retryParams"].is_object());
+
+    let formal = formal_release_doc(&w, w.doc.version + 1)
+        .unwrap()
+        .build()
+        .unwrap();
+    let rebuilt = crate::production::burst_graphs(&formal, &[[1000, 700]; 3]).unwrap();
+    assert_eq!(frozen, rebuilt);
 }
 
 #[test]
@@ -250,7 +300,7 @@ fn publish_preflight_rechecks_current_teaching_files_after_a_successful_result()
             graph_and_trial_checks(&w, &recipe, |_, frames| {
                 teaching_image_checks(
                     &recipe,
-                    &frames,
+                    frames,
                     &mut cache,
                     |frame| crate::release::read_resource_file(&path_of(frame)),
                     |(_, segment), frame, image| {
@@ -267,6 +317,7 @@ fn publish_preflight_rechecks_current_teaching_files_after_a_successful_result()
                     },
                 )
             })
+            .0
         })
     };
     let valid = preflight();

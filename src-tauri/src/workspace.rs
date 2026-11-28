@@ -983,13 +983,14 @@ pub fn workspace_publish(
         return Err("旧拍照点配方已停用，请创建段配方".into());
     }
     // D-SB-46：发布时当场核对发布前检查
-    let validated = burst_release::publish_checks(&app, w)?;
+    let (validated, teaching) = burst_release::publish_checks(&app, w)?;
     if let Some(failed) = burst_release::publish_blocker(&validated.checks) {
         return Err(format!("不能发布：{}：{}", failed.name, failed.detail));
     }
     let recipes = &app.state::<CycleHost>().recipes;
     let release_doc = formal_release_doc(w, recipes.release_version(&w.doc)?)?;
-    let bundle = burst_release::freeze_bundle(&app, &host, &release_doc, &w.camera_teaching)?;
+    let teaching = teaching.ok_or("不能发布：缺少已检查的示教帧和测量图")?;
+    let bundle = burst_release::freeze_bundle(&app, &host, &release_doc, teaching)?;
     let navigation = navigation::prepare_navigation_release(
         &crate::storage::project(&app),
         w,

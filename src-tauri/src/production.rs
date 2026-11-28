@@ -26,7 +26,10 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
             sizes.len()
         ));
     }
-    let set = vision::CorridorSet::build(recipe, sizes)?;
+    Ok(frozen_graphs(&vision::CorridorSet::build(recipe, sizes)?))
+}
+
+pub(crate) fn frozen_graphs(set: &vision::CorridorSet) -> Value {
     // 灰度图沿用原来的形状（不记模板 id），胶色图记下用的是哪张模板
     let entry = |template: &vision::template::Template, mut v: Value| {
         if template.id.ends_with("_color") {
@@ -72,7 +75,7 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
         doc["mix"] = json!(mixes);
     }
     doc["templates"] = templates;
-    Ok(doc)
+    doc
 }
 
 pub struct Prepared {
