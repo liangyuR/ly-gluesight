@@ -21,6 +21,8 @@ const FORMAT_V2: u8 = 2;
 /// 一轮的帧组序号上限：ΣN_exp 不超过 PLC Int，防止异常记录生成海量帧组。
 pub const MAX_SEQ: u64 = crate::plan::MAX_EXPECTED_TOTAL as u64;
 const FRAMES_FILE: &str = "frames.jsonl";
+const ROUND_INDEX_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
+const ROUND_INDEX_CACHE_MAX_HEADER_BYTES: usize = 1024 * 1024;
 
 /// 某台相机（本轮相机下标）缺某个帧组的帧。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -276,26 +278,34 @@ fn apply(round: &mut CaptureRoundV2, summary: Summary) {
 
 pub struct BurstFrameIndex {
     dir: PathBuf,
-    round: CaptureRoundV2,
-    saved: BTreeMap<String, BTreeSet<u64>>,
+    validated: Arc<ValidatedRoundIndex>,
     lookup: RecordingLookup,
     /// 来源历史件的录制目录，第一次要读录制原图时解析
     recording: std::sync::OnceLock<Result<PathBuf, String>>,
 }
 
-struct ValidatedFrameLines {
-    lines: Vec<FrameLine>,
-    saved: Vec<BTreeSet<u64>>,
+struct ValidatedRoundIndex {
+    round: CaptureRoundV2,
+    saved: BTreeMap<String, BTreeSet<u64>>,
+}
+
+pub(super) struct CachedRoundIndex {
+    dir: PathBuf,
+    round_path: PathBuf,
+    frames_path: PathBuf,
+    round_bytes: Box<[u8]>,
+    frames_bytes: Box<[u8]>,
+    validated: Arc<ValidatedRoundIndex>,
 }
 
 impl BurstFrameIndex {
     pub fn round(&self) -> &CaptureRoundV2 {
-        &self.round
+        &self.validated.round
     }
 
     fn recording(&self) -> Result<&Path, String> {
         let cycle = self
-            .round
+            .round()
             .history_cycle()
             .ok_or("示教件原图不在本轮目录，轮次也没有来源历史件")?;
         self.recording
@@ -306,6 +316,7 @@ impl BurstFrameIndex {
 
     fn check_saved(&self, camera_id: &str, seq: u64) -> Result<(), String> {
         let saved = self
+            .validated
             .saved
             .get(camera_id)
             .ok_or_else(|| format!("采集轮次没有相机 {camera_id}"))?;
@@ -318,7 +329,7 @@ impl BurstFrameIndex {
     /// 本轮目录里的原图（旧轮次）；不在时为 None。
     fn local(&self, camera_id: &str, seq: u64) -> Option<PathBuf> {
         let path = self.dir.join(camera_id).join(frame_file(seq));
-        (!self.round.references_recording() && path.is_file()).then_some(path)
+        (!self.round().references_recording() && path.is_file()).then_some(path)
     }
 
     /// 某台相机第 seq 帧原图的路径：format 4 在来源历史件的录制目录里；旧轮次在本轮目录，本轮目录缺图时改读录制原图。
@@ -353,7 +364,7 @@ impl BurstFrameIndex {
 
     /// 有帧的原图读不到时给出原因（录制已清理、记录不在本机等）；只查文件在不在，不读图。
     pub fn unavailable(&self) -> Option<String> {
-        for (camera_id, seqs) in &self.saved {
+        for (camera_id, seqs) in &self.validated.saved {
             for &seq in seqs {
                 if self.local(camera_id, seq).is_some() {
                     continue;
@@ -402,8 +413,8 @@ impl RecipeCaptureHost {
 
     /// 一轮的笔结构（D-SB-62）：按帧记录里每帧的时间戳重算。
     pub fn burst_passes(&self, round_id: &str) -> Result<Vec<u32>, String> {
-        let (round, frames) = self.load_burst(round_id, true)?;
-        let lines = frames.map(|frames| frames.lines).unwrap_or_default();
+        let (round, lines) = self.load_burst(round_id, true)?;
+        let lines = lines.unwrap_or_default();
         Ok(crate::passes::from_times(
             lines
                 .iter()
@@ -428,14 +439,57 @@ impl RecipeCaptureHost {
     }
 
     pub fn burst_frame_index(&self, round_id: &str) -> Result<BurstFrameIndex, String> {
-        let (dir, text) = self.read_round_text(round_id)?;
-        let (round, frames) = Self::load_burst_text(round_id, &dir, &text, true)?;
-        let frames = frames.ok_or("采集帧记录不存在")?;
-        let saved = round.camera_ids().into_iter().zip(frames.saved).collect();
+        let (dir, round_path) = self.checked_round_path(round_id)?;
+        let round_bytes = std::fs::read(&round_path).map_err(|e| e.to_string())?;
+        let cached = self.cached_index.lock().unwrap().clone();
+        let cached = cached.filter(|entry| {
+            entry.dir == dir
+                && entry.round_path == round_path
+                && entry.validated.round.round_id == round_id
+                && entry.round_bytes.as_ref() == round_bytes.as_slice()
+        });
+        let parsed_round = if cached.is_none() {
+            Some(parse_round(metadata_text(&round_bytes)?)?)
+        } else {
+            None
+        };
+        let frames_path = checked_frames_path(&dir)?;
+        let frames_bytes = std::fs::read(&frames_path).map_err(|e| e.to_string())?;
+        let validated = if let Some(entry) = cached.filter(|entry| {
+            entry.frames_path == frames_path
+                && entry.frames_bytes.as_ref() == frames_bytes.as_slice()
+        }) {
+            Arc::clone(&entry.validated)
+        } else {
+            let round = match parsed_round {
+                Some(round) => round,
+                None => parse_round(metadata_text(&round_bytes)?)?,
+            };
+            let lines = parse_frame_lines(metadata_text(&frames_bytes)?)?;
+            let saved =
+                validate_record(round_id, &round, Some(&lines))?.ok_or("采集帧记录不存在")?;
+            let saved = round.camera_ids().into_iter().zip(saved).collect();
+            let validated = Arc::new(ValidatedRoundIndex { round, saved });
+            if round_bytes.len() <= ROUND_INDEX_CACHE_MAX_HEADER_BYTES
+                && round_bytes.len().saturating_add(frames_bytes.len())
+                    <= ROUND_INDEX_CACHE_MAX_BYTES
+            {
+                let entry = Arc::new(CachedRoundIndex {
+                    dir: dir.clone(),
+                    round_path,
+                    frames_path,
+                    round_bytes: round_bytes.into_boxed_slice(),
+                    frames_bytes: frames_bytes.into_boxed_slice(),
+                    validated: Arc::clone(&validated),
+                });
+                let previous = self.cached_index.lock().unwrap().replace(entry);
+                drop(previous);
+            }
+            validated
+        };
         Ok(BurstFrameIndex {
             dir,
-            round,
-            saved,
+            validated,
             lookup: self.recordings.clone(),
             recording: std::sync::OnceLock::new(),
         })
@@ -458,15 +512,15 @@ impl RecipeCaptureHost {
             return Err("缩略图起始帧组须从 1 起，每批须为 1–32 组".into());
         }
         let index = self.burst_frame_index(round_id)?;
-        if !index.saved.contains_key(camera_id) {
+        if !index.validated.saved.contains_key(camera_id) {
             return Err(format!("采集轮次没有相机 {camera_id}"));
         }
-        if start_seq > index.round.group_count {
+        if start_seq > index.round().group_count {
             return Err("缩略图起始帧组超出本件范围".into());
         }
         let end = start_seq
             .saturating_add(u64::from(count) - 1)
-            .min(index.round.group_count);
+            .min(index.round().group_count);
         let frames: Vec<Option<FrameImage>> = (start_seq..=end)
             .map(|seq| {
                 index
@@ -488,7 +542,7 @@ impl RecipeCaptureHost {
         &self,
         round_id: &str,
         deep: bool,
-    ) -> Result<(CaptureRoundV2, Option<ValidatedFrameLines>), String> {
+    ) -> Result<(CaptureRoundV2, Option<Vec<FrameLine>>), String> {
         let (dir, text) = self.read_round_text(round_id)?;
         Self::load_burst_text(round_id, &dir, &text, deep)
     }
@@ -508,13 +562,18 @@ impl RecipeCaptureHost {
     }
 
     fn read_round_text(&self, round_id: &str) -> Result<(PathBuf, String), String> {
+        let (dir, path) = self.checked_round_path(round_id)?;
+        let text = crate::fsio::read_text(&path).map_err(|e| e.to_string())?;
+        Ok((dir, text))
+    }
+
+    fn checked_round_path(&self, round_id: &str) -> Result<(PathBuf, PathBuf), String> {
         let dir = self.safe_round_path(round_id)?;
         let path = std::fs::canonicalize(dir.join("round.json")).map_err(|e| e.to_string())?;
         if !path.starts_with(&dir) {
             return Err("采集记录路径越出本轮目录".into());
         }
-        let text = crate::fsio::read_text(&path).map_err(|e| e.to_string())?;
-        Ok((dir, text))
+        Ok((dir, path))
     }
 
     fn load_burst_text(
@@ -522,33 +581,42 @@ impl RecipeCaptureHost {
         dir: &Path,
         text: &str,
         deep: bool,
-    ) -> Result<(CaptureRoundV2, Option<ValidatedFrameLines>), String> {
-        let round: CaptureRoundV2 =
-            serde_json::from_str(text).map_err(|e| format!("采集记录无法读取：{e}"))?;
+    ) -> Result<(CaptureRoundV2, Option<Vec<FrameLine>>), String> {
+        let round = parse_round(text)?;
         let lines = if deep {
-            let path = std::fs::canonicalize(dir.join(FRAMES_FILE))
-                .map_err(|e| format!("采集帧记录不存在：{e}"))?;
-            if !path.starts_with(dir) {
-                return Err("采集帧记录路径越出本轮目录".into());
-            }
-            let text = crate::fsio::read_text(&path).map_err(|e| e.to_string())?;
-            Some(
-                text.lines()
-                    .map(|line| {
-                        serde_json::from_str::<FrameLine>(line)
-                            .map_err(|e| format!("采集帧记录无法读取：{e}"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
+            let text =
+                crate::fsio::read_text(&checked_frames_path(dir)?).map_err(|e| e.to_string())?;
+            Some(parse_frame_lines(&text)?)
         } else {
             None
         };
-        let saved = validate_record(round_id, &round, lines.as_deref())?;
-        let frames = lines
-            .zip(saved)
-            .map(|(lines, saved)| ValidatedFrameLines { lines, saved });
-        Ok((round, frames))
+        let _ = validate_record(round_id, &round, lines.as_deref())?;
+        Ok((round, lines))
     }
+}
+
+fn checked_frames_path(dir: &Path) -> Result<PathBuf, String> {
+    let path = std::fs::canonicalize(dir.join(FRAMES_FILE))
+        .map_err(|e| format!("采集帧记录不存在：{e}"))?;
+    if !path.starts_with(dir) {
+        return Err("采集帧记录路径越出本轮目录".into());
+    }
+    Ok(path)
+}
+
+fn metadata_text(bytes: &[u8]) -> Result<&str, String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+    Ok(text.strip_prefix('\u{feff}').unwrap_or(text))
+}
+
+fn parse_round(text: &str) -> Result<CaptureRoundV2, String> {
+    serde_json::from_str(text).map_err(|e| format!("采集记录无法读取：{e}"))
+}
+
+fn parse_frame_lines(text: &str) -> Result<Vec<FrameLine>, String> {
+    text.lines()
+        .map(|line| serde_json::from_str(line).map_err(|e| format!("采集帧记录无法读取：{e}")))
+        .collect()
 }
 
 /// 核对新轮次记录：身份、相机、统计自洽、各状态应有的字段；给了 frames.jsonl 时逐行核对路径、相机、seq 与帧计数，

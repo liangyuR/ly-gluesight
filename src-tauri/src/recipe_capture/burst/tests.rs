@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde_json::{json, Value};
 
@@ -247,18 +247,30 @@ fn old_history_round_without_local_images_reads_the_source_recording() {
         }
     }
     let found = recording.clone();
+    let available = Arc::new(AtomicBool::new(true));
+    let lookup = Arc::clone(&available);
     let host = RecipeCaptureHost::open(
         root.clone(),
-        Arc::new(move |cycle| Ok((cycle == "cycle-a").then(|| found.clone()))),
+        Arc::new(move |cycle| {
+            Ok((lookup.load(Ordering::Relaxed) && cycle == "cycle-a").then(|| found.clone()))
+        }),
     )
     .unwrap();
     assert_eq!(host.images_unavailable(ROUND).unwrap(), None);
     let image = crate::image_file::load(&host.burst_frame_path(ROUND, "cam2", 2).unwrap()).unwrap();
     assert_eq!(image.pixels, vec![2u8; 4]);
 
-    let elsewhere = RecipeCaptureHost::open(root.clone(), no_recordings()).unwrap();
-    assert!(elsewhere.images_unavailable(ROUND).unwrap().is_some());
-    assert!(elsewhere.burst_frame_path(ROUND, "cam2", 2).is_err());
+    let pgm = recording.join(recording_file("cam2", 2));
+    let encoded = crate::image_file::gsr::encode(&std::fs::read(&pgm).unwrap()).unwrap();
+    std::fs::write(pgm.with_extension("gsr"), encoded).unwrap();
+    std::fs::remove_file(pgm).unwrap();
+    let restored =
+        crate::image_file::load(&host.burst_frame_path(ROUND, "cam2", 2).unwrap()).unwrap();
+    assert_eq!(restored.pixels, image.pixels);
+
+    available.store(false, Ordering::Relaxed);
+    assert!(host.images_unavailable(ROUND).unwrap().is_some());
+    assert!(host.burst_frame_path(ROUND, "cam2", 2).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -312,6 +324,54 @@ fn frame_read_after_image_cleanup_rejects_the_missing_image() {
     std::fs::remove_file(path).unwrap();
     assert!(host.burst_frame_path(ROUND, "cam2", 2).is_err());
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn frame_index_rechecks_equal_length_metadata_edits_after_reading_the_round() {
+    for (name, from, to, padding) in [
+        ("round.json", "capture-1-0", "capture-9-0", 0),
+        (
+            FRAMES_FILE,
+            r#""frameCounter":102"#,
+            r#""frameCounter":103"#,
+            0,
+        ),
+        (
+            FRAMES_FILE,
+            r#""frameCounter":102"#,
+            r#""frameCounter":103"#,
+            ROUND_INDEX_CACHE_MAX_BYTES,
+        ),
+    ] {
+        let root = root();
+        let round = patched(
+            &complete_round(&root),
+            json!({"origin": {"kind": "prepared", "label": "元数据变更"}}),
+        );
+        write_round(&root, &round);
+        let file = root.join(ROUND).join(name);
+        let mut original = std::fs::read_to_string(&file).unwrap();
+        if padding > 0 {
+            original.insert_str(original.find('\n').unwrap(), &" ".repeat(padding));
+            std::fs::write(&file, &original).unwrap();
+        }
+        let modified = file.metadata().unwrap().modified().unwrap();
+        let host = RecipeCaptureHost::open(root, no_recordings()).unwrap();
+        assert!(host.burst_frame_path(ROUND, "cam2", 2).is_ok());
+
+        let changed = original.replacen(from, to, 1);
+        assert_ne!(changed, original);
+        assert_eq!(changed.len(), original.len());
+        std::fs::write(&file, changed).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(file.metadata().unwrap().modified().unwrap(), modified);
+        assert!(host.burst_frame_path(ROUND, "cam2", 2).is_err());
+    }
 }
 
 #[test]

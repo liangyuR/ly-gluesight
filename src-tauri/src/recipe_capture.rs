@@ -137,6 +137,7 @@ pub type RecordingLookup = Arc<dyn Fn(&str) -> Result<Option<PathBuf>, String> +
 pub struct RecipeCaptureHost {
     root: PathBuf,
     recordings: RecordingLookup,
+    cached_index: std::sync::Mutex<Option<Arc<burst::CachedRoundIndex>>>,
 }
 
 /// 一轮段配方采集轮次（序列化为 CaptureRoundV2 的形状）。
@@ -211,7 +212,11 @@ impl RecipeCaptureHost {
                 Err(_) => backup_broken(&path)?,
             }
         }
-        Ok(Arc::new(Self { root, recordings }))
+        Ok(Arc::new(Self {
+            root,
+            recordings,
+            cached_index: Default::default(),
+        }))
     }
 
     /// 按轮次 ID 读一轮，经记录核对；旧拍照点配方的采集轮次已停用，按无效记录报错。
