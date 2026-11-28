@@ -347,9 +347,63 @@ pub(super) fn graph_and_trial_checks<'a>(
 }
 
 #[derive(Clone)]
-pub(super) struct CachedTeachingFrame {
+struct CachedTeachingFrame {
     fingerprint: [u8; 32],
     trial: Option<TeachTrial>,
+}
+
+type TeachingFrames = HashMap<(usize, u32), CachedTeachingFrame>;
+
+#[derive(Clone, PartialEq, Eq)]
+struct TeachingTrialKey {
+    candidate: (u64, u64),
+    engine: Option<String>,
+}
+
+#[derive(Default)]
+pub(super) struct TeachingTrialCache(Mutex<HashMap<String, (TeachingTrialKey, TeachingFrames)>>);
+
+impl TeachingTrialCache {
+    pub(super) fn check(
+        &self,
+        w: &Workspace,
+        engine: Option<&str>,
+        recipe: &Recipe,
+        teaching: &[Vec<&CameraTeaching>],
+        read: impl FnMut(&CameraTeaching) -> Result<Vec<u8>, String>,
+        measure: impl FnMut((usize, u32), &CameraTeaching, FrameImage) -> Option<TeachTrial>,
+    ) -> Vec<Check> {
+        let key = TeachingTrialKey {
+            candidate: (w.instance_id, w.revision),
+            engine: engine.map(str::to_owned),
+        };
+        let mut cached = {
+            let mut entries = self.0.lock().unwrap();
+            let (current, frames) = entries
+                .entry(w.doc.id.clone())
+                .or_insert_with(|| (key.clone(), TeachingFrames::new()));
+            if current.candidate > key.candidate {
+                TeachingFrames::new()
+            } else {
+                if *current != key {
+                    *current = key.clone();
+                    frames.clear();
+                }
+                frames.clone()
+            }
+        };
+        let checks = teaching_image_checks(recipe, teaching, &mut cached, read, measure);
+        if let Some((_, frames)) = self
+            .0
+            .lock()
+            .unwrap()
+            .get_mut(&w.doc.id)
+            .filter(|(current, _)| *current == key)
+        {
+            *frames = cached;
+        }
+        checks
+    }
 }
 
 /// 每次读取实际文件。候选、核心库和文件内容都相同时，复用该帧的解码校验与试测结果。
@@ -359,29 +413,16 @@ fn measurement_checks<'a>(
     recipe: &Recipe,
     engine: Option<&vision::Engine>,
 ) -> (Vec<Check>, Option<PreparedTeaching<'a>>) {
-    type Key = (u64, u64, Option<String>);
-    type Frames = HashMap<(usize, u32), CachedTeachingFrame>;
-    static CACHE: LazyLock<Mutex<HashMap<String, (Key, Frames)>>> = LazyLock::new(Default::default);
-    let key: Key = (
-        w.instance_id,
-        w.revision,
-        engine.map(|engine| engine.identity.clone()),
-    );
-    let mut cached = CACHE
-        .lock()
-        .unwrap()
-        .get(&w.doc.id)
-        .filter(|(k, _)| *k == key)
-        .map(|(_, v)| v.clone())
-        .unwrap_or_default();
+    static CACHE: LazyLock<TeachingTrialCache> = LazyLock::new(Default::default);
     graph_and_trial_checks(w, recipe, |graphs, teaching| {
         let host = app.state::<WorkspaceHost>();
         let run = engine
             .map(|_| vision::unique_run_id(&format!("publish-trial-{}-{}", recipe.id, w.revision)));
-        let checks = teaching_image_checks(
+        CACHE.check(
+            w,
+            engine.map(|engine| engine.identity.as_str()),
             recipe,
             teaching,
-            &mut cached,
             |frame| {
                 let path = image_file(&host, &recipe.id, &frame.frame.id)?;
                 crate::release::read_resource_file(&path)
@@ -413,19 +454,14 @@ fn measurement_checks<'a>(
                     incomplete,
                 })
             },
-        );
-        CACHE
-            .lock()
-            .unwrap()
-            .insert(w.doc.id.clone(), (key, cached));
-        checks
+        )
     })
 }
 
-pub(super) fn teaching_image_checks(
+fn teaching_image_checks(
     recipe: &Recipe,
     teaching: &[Vec<&CameraTeaching>],
-    cached: &mut HashMap<(usize, u32), CachedTeachingFrame>,
+    cached: &mut TeachingFrames,
     mut read: impl FnMut(&CameraTeaching) -> Result<Vec<u8>, String>,
     mut measure: impl FnMut((usize, u32), &CameraTeaching, FrameImage) -> Option<TeachTrial>,
 ) -> Vec<Check> {

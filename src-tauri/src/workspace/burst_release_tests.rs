@@ -1,6 +1,6 @@
 use super::burst::CameraTeaching;
 use super::burst_release::{
-    burst_checks, graph_and_trial_checks, publish_blocker, teaching_image_checks, TeachTrial,
+    burst_checks, graph_and_trial_checks, publish_blocker, TeachTrial, TeachingTrialCache,
 };
 use super::burst_tests::{burst_workspace, DEVICE};
 use super::*;
@@ -294,14 +294,15 @@ fn publish_preflight_rechecks_current_teaching_files_after_a_successful_result()
         camera: "cam2".into(),
         segment: Some(2),
     }];
-    let mut cache = HashMap::new();
-    let mut preflight = || {
+    let cache = TeachingTrialCache::default();
+    let preflight = || {
         burst_checks(&w, Ok(()), || {
             graph_and_trial_checks(&w, &recipe, |_, frames| {
-                teaching_image_checks(
+                cache.check(
+                    &w,
+                    Some("test-engine"),
                     &recipe,
                     frames,
-                    &mut cache,
                     |frame| crate::release::read_resource_file(&path_of(frame)),
                     |(_, segment), frame, image| {
                         Some(TeachTrial {
@@ -360,4 +361,81 @@ fn publish_preflight_rechecks_current_teaching_files_after_a_successful_result()
     assert!(check(&checks, "示教帧试测")
         .detail
         .contains("试测读取了替换后的图像"));
+}
+
+#[test]
+fn late_publish_preflight_preserves_a_newer_successful_trial() {
+    fn preflight(
+        cache: &TeachingTrialCache,
+        w: &Workspace,
+        read: impl FnMut(&CameraTeaching) -> Result<Vec<u8>, String>,
+        measure: impl FnMut((usize, u32), &CameraTeaching, FrameImage) -> Option<TeachTrial>,
+    ) -> Vec<Check> {
+        let recipe = w.doc.build().unwrap();
+        graph_and_trial_checks(w, &recipe, |_, frames| {
+            cache.check(w, Some("test-engine"), &recipe, frames, read, measure)
+        })
+        .0
+    }
+
+    let root = super::tests::ImportTestDir::new();
+    let mut old = taught(&[Straight], DEVICE);
+    calibrate(&mut old, 15);
+    let mut current = old.clone();
+    let path_of = |frame: &CameraTeaching| root.0.join(format!("{}.pgm", frame.frame.id));
+    let mut pgm = crate::image_file::pnm_header(1000, 700, 1, None).into_bytes();
+    pgm.resize(pgm.len() + 1000 * 700, 0x19);
+    for frame in &old.camera_teaching {
+        std::fs::write(path_of(frame), &pgm).unwrap();
+    }
+    let read = |frame: &CameraTeaching| crate::release::read_resource_file(&path_of(frame));
+    let measure = |(_, segment), frame: &CameraTeaching, image: FrameImage| {
+        assert_eq!(image.pixels.last(), Some(&0x19));
+        Some(TeachTrial {
+            segment,
+            camera: frame.camera.clone(),
+            outcome: Ok(()),
+            incomplete: false,
+        })
+    };
+
+    for (previous, latest) in [((1, 1), (1, 2)), ((1, 10), (2, 1))] {
+        (old.instance_id, old.revision) = previous;
+        (current.instance_id, current.revision) = latest;
+        let cache = TeachingTrialCache::default();
+        let mut start_current = true;
+        let old_checks = preflight(
+            &cache,
+            &old,
+            |frame| {
+                if std::mem::take(&mut start_current) {
+                    let result = preflight(&cache, &current, read, measure);
+                    assert!(publish_blocker(&result).is_none(), "{latest:?}: {result:?}");
+                    assert!(check(&result, "示教帧试测").passed);
+                }
+                read(frame)
+            },
+            measure,
+        );
+        assert!(check(&old_checks, "示教帧试测").passed);
+
+        let mut cameras_read = Vec::new();
+        let result = preflight(
+            &cache,
+            &current,
+            |frame| {
+                cameras_read.push(frame.camera.clone());
+                read(frame)
+            },
+            |_, frame, _| {
+                panic!(
+                    "{previous:?} → {latest:?}: {} 试测结果被旧预检覆盖",
+                    frame.camera
+                )
+            },
+        );
+        assert_eq!(cameras_read, current.doc.plan_cameras());
+        assert!(publish_blocker(&result).is_none(), "{latest:?}: {result:?}");
+        assert!(check(&result, "示教帧试测").passed);
+    }
 }
