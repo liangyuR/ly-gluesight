@@ -328,6 +328,43 @@ impl VerdictCounts {
     }
 }
 
+const HISTORY_VERDICTS: [Verdict; 7] = [
+    Verdict::Ok,
+    Verdict::OkWithExcursion,
+    Verdict::NgPosition,
+    Verdict::NgWidth,
+    Verdict::NgAbsolute,
+    Verdict::NgGap,
+    Verdict::ErrInspect,
+];
+
+// 这组已知可解码的字面值属于局部索引定义。扩展结论枚举时仍可复用该索引。
+const VERDICT_TEXT_CHECK: &str = "COALESCE(verdict NOT IN (\
+    'OK', 'OK_WITH_EXCURSION', 'NG_POSITION', 'NG_WIDTH', 'NG_ABSOLUTE', 'NG_GAP', 'ERR_INSPECT'), 1)";
+
+struct VerdictHistogram {
+    total: u64,
+    exact: [u64; HISTORY_VERDICTS.len()],
+}
+
+impl VerdictHistogram {
+    fn summarize(&self, selected: &[Verdict]) -> (u64, VerdictCounts) {
+        let mut total = 0;
+        let mut counts = VerdictCounts::default();
+        for (verdict, count) in HISTORY_VERDICTS.into_iter().zip(self.exact) {
+            if selected.is_empty() || selected.contains(&verdict) {
+                counts.add(verdict, count);
+                total += count;
+            }
+        }
+        if selected.is_empty() {
+            counts.err += self.total - total;
+            total = self.total;
+        }
+        (total, counts)
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryPage {
@@ -957,7 +994,7 @@ impl Store {
         } else {
             None
         };
-        conn.execute_batch(
+        conn.execute_batch(&format!(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
              BEGIN IMMEDIATE;
@@ -1037,6 +1074,8 @@ impl Store {
              DROP INDEX IF EXISTS parts_project_ts;
              CREATE INDEX IF NOT EXISTS parts_project_source_ts_id_verdict
                  ON parts(project_id, source, ts, id, verdict);
+             CREATE INDEX IF NOT EXISTS parts_unvalidated_verdict ON parts(verdict)
+                 WHERE {VERDICT_TEXT_CHECK};
              DROP INDEX IF EXISTS parts_sn;
              CREATE INDEX IF NOT EXISTS parts_sn_project_ts
                  ON parts(sn, project_id, ts) WHERE sn <> '';
@@ -1100,8 +1139,8 @@ impl Store {
              CREATE INDEX IF NOT EXISTS part_frames_pending_path ON part_frames(part_id)
                  WHERE raw_file IS NOT NULL AND instr(lower(raw_file),'_pending')>0;
              PRAGMA user_version = 11;
-             COMMIT;",
-        )
+             COMMIT;"
+        ))
         .map_err(db_err)?;
         add_part_tags(&conn)?;
         retired::migrate(&mut conn)?;
@@ -1760,27 +1799,44 @@ impl Store {
         Ok(())
     }
 
-    fn for_each_verdict_count(
+    fn count_verdicts(
         conn: &Connection,
         filter: &str,
         args: &[SqlValue],
-        mut add: impl FnMut(String, u64),
-    ) -> Result<(), String> {
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT verdict, COUNT(*) FROM parts{filter} GROUP BY verdict"
-            ))
+    ) -> Result<VerdictHistogram, String> {
+        let columns = HISTORY_VERDICTS
+            .map(|_| "COUNT(*) FILTER (WHERE verdict = ?)")
+            .join(", ");
+        let verdict_args = HISTORY_VERDICTS.map(|v| SqlValue::Text(verdict_str(v)));
+        let histogram = conn
+            .query_row(
+                &format!("SELECT COUNT(*), {columns} FROM parts{filter}"),
+                params_from_iter(verdict_args.iter().chain(args)),
+                |row| {
+                    let mut exact = [0; HISTORY_VERDICTS.len()];
+                    for (index, count) in exact.iter_mut().enumerate() {
+                        *count = row.get::<_, i64>(index + 1)? as u64;
+                    }
+                    let total = row.get::<_, i64>(0)? as u64;
+                    Ok(VerdictHistogram { total, exact })
+                },
+            )
             .map_err(db_err)?;
-        let rows = stmt
-            .query_map(params_from_iter(args.iter()), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
-            })
-            .map_err(db_err)?;
-        for row in rows {
-            let (verdict, count) = row.map_err(db_err)?;
-            add(verdict, count);
+        if histogram.total > histogram.exact.iter().sum() {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT DISTINCT verdict FROM parts INDEXED BY parts_unvalidated_verdict{filter} \
+                     AND ({VERDICT_TEXT_CHECK})"
+                ))
+                .map_err(db_err)?;
+            let unknown = stmt
+                .query_map(params_from_iter(args.iter()), |row| row.get::<_, String>(0))
+                .map_err(db_err)?;
+            for verdict in unknown {
+                verdict.map_err(db_err)?;
+            }
         }
-        Ok(())
+        Ok(histogram)
     }
 
     pub fn query(&self, q: &HistoryQuery) -> Result<HistoryPage, String> {
@@ -1798,24 +1854,14 @@ impl Store {
             )
         });
         let (count_filter, count_args) = facets_filter.as_ref().unwrap_or(&page_filter);
-        let selected: Vec<_> = if with_facets {
-            q.verdicts.iter().copied().map(verdict_str).collect()
+        let histogram = Self::count_verdicts(&snapshot, count_filter, count_args)?;
+        let selected = if with_facets {
+            q.verdicts.as_slice()
         } else {
-            Vec::new()
+            &[]
         };
-        let mut verdict_facets = with_facets.then(VerdictCounts::default);
-        let mut counts = VerdictCounts::default();
-        let mut total = 0;
-        Self::for_each_verdict_count(&snapshot, count_filter, count_args, |stored_verdict, n| {
-            let verdict = parse_verdict(&stored_verdict);
-            if let Some(facets) = &mut verdict_facets {
-                facets.add(verdict, n);
-            }
-            if !with_facets || selected.contains(&stored_verdict) {
-                counts.add(verdict, n);
-                total += n;
-            }
-        })?;
+        let (total, counts) = histogram.summarize(selected);
+        let verdict_facets = with_facets.then(|| histogram.summarize(&[]).1);
         let (filter, args) = page_filter;
         let limit = if q.limit == 0 { 50 } else { q.limit.min(500) };
         let sql = format!("SELECT {SUMMARY_COLS} FROM parts{filter} ORDER BY ts DESC, id DESC LIMIT {limit} OFFSET {}", q.offset);
@@ -2623,10 +2669,11 @@ impl Store {
             },
             "",
         );
-        let mut counts = VerdictCounts::default();
-        Self::for_each_verdict_count(&self.conn.lock().unwrap(), &filter, &args, |verdict, n| {
-            counts.add(parse_verdict(&verdict), n);
-        })?;
+        let mut conn = self.conn.lock().unwrap();
+        let snapshot = conn.transaction().map_err(db_err)?;
+        let histogram = Self::count_verdicts(&snapshot, &filter, &args)?;
+        snapshot.commit().map_err(db_err)?;
+        let (_, counts) = histogram.summarize(&[]);
         Ok(counts)
     }
 

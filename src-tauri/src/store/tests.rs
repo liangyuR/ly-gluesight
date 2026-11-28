@@ -820,6 +820,8 @@ fn verdict_filter_keeps_page_and_total_exact_with_legacy_verdicts_in_facets() {
         .unwrap();
     drop(store);
     let conn = Connection::open(db.path()).unwrap();
+    conn.execute("DROP INDEX parts_unvalidated_verdict", [])
+        .unwrap();
     for (id, verdict) in ids.iter().zip([
         "ERR_INSPECT",
         "ERR_INSPECT",
@@ -838,7 +840,7 @@ fn verdict_filter_keeps_page_and_total_exact_with_legacy_verdicts_in_facets() {
     let store = Store::open(&db.path()).unwrap();
     let page = store
         .query(&HistoryQuery {
-            verdicts: vec![Verdict::ErrInspect],
+            verdicts: vec![Verdict::ErrInspect, Verdict::ErrInspect],
             include_verdict_facets: true,
             tag: Some("待复核".into()),
             offset: 1,
@@ -866,6 +868,32 @@ fn verdict_filter_keeps_page_and_total_exact_with_legacy_verdicts_in_facets() {
             ..Default::default()
         })
     );
+}
+
+#[test]
+fn history_counts_rejects_an_unreadable_verdict_outside_the_requested_page() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let id = store
+        .insert(&burst_part(&recipe, "non-text-verdict", &judgement, &burst))
+        .unwrap();
+    let conn = Connection::open(db.path()).unwrap();
+    for invalid in ["X'4552525f494e5350454354'", "CAST(X'80' AS TEXT)"] {
+        conn.execute(
+            &format!("UPDATE parts SET verdict={invalid} WHERE id=?1"),
+            [id],
+        )
+        .unwrap();
+        assert!(store
+            .query(&HistoryQuery {
+                offset: 1,
+                ..Default::default()
+            })
+            .is_err());
+    }
 }
 
 #[test]
