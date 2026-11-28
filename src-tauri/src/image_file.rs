@@ -265,7 +265,7 @@ pub fn pnm_header(width: u32, height: u32, channels: u8, bayer: Option<BayerPatt
     }
 }
 
-fn decode_pnm(bytes: &[u8], info: PnmInfo) -> Result<FrameImage, String> {
+fn pnm_pixels(bytes: &[u8], info: PnmInfo) -> Result<&[u8], String> {
     let need = info.file_len() as usize - info.data_offset;
     let data = bytes
         .get(info.data_offset..info.data_offset + need)
@@ -275,6 +275,14 @@ fn decode_pnm(bytes: &[u8], info: PnmInfo) -> Result<FrameImage, String> {
                 info.width, info.height
             )
         })?;
+    if info.bayer.is_some() {
+        crate::frame::validate_bayer_dimensions(info.width as usize, info.height as usize)?;
+    }
+    Ok(data)
+}
+
+fn decode_pnm(bytes: &[u8], info: PnmInfo) -> Result<FrameImage, String> {
+    let data = pnm_pixels(bytes, info)?;
     Ok(match (info.bayer, info.file_channels) {
         (Some(pattern), _) => {
             let mut rgb = Vec::new();
@@ -324,6 +332,15 @@ pub fn decode(bytes: &[u8]) -> Result<FrameImage, String> {
         .into_luma8();
     let (width, height) = img.dimensions();
     Ok(FrameImage::new(width, height, img.into_raw()))
+}
+
+pub(crate) fn validated_image_size(bytes: &[u8]) -> Result<[u32; 2], String> {
+    if let Some(info) = pnm_info(bytes) {
+        pnm_pixels(bytes, info)?;
+        return Ok([info.width, info.height]);
+    }
+    let image = decode(bytes)?;
+    Ok([image.width, image.height])
 }
 
 /// 按内容识别格式解码，规则同 [`load_color`]。

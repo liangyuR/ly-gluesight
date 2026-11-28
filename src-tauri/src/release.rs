@@ -346,11 +346,10 @@ pub fn publish_burst(
                 ));
             }
             let bytes = source_bytes(source.image)?;
-            let (image, extension) =
-                decode_teaching_image(&bytes, inspect, segment, source.expected_size)
-                    .map_err(|error| format!("{label} 第 {segment} 段：{error}"))?;
-            let frame = [image.width, image.height];
-            drop(image);
+            let segment_label = format!("{label} 第 {segment} 段");
+            let (frame, extension) = image_details(&bytes, &segment_label)?;
+            check_teaching_size(inspect, segment, frame, source.expected_size)
+                .map_err(|error| format!("{segment_label}：{error}"))?;
             if *size.get_or_insert(frame) != frame {
                 return Err(format!("{label} 各段示教帧尺寸不同"));
             }
@@ -615,16 +614,16 @@ fn camera_resources(
     Ok(referenced)
 }
 
-/// 原图尺寸与扩展名（按 `image_file::decode` 解码核对）。`label` 是报错主语（如“相机 camA”）。
+/// 校验原图的尺寸、完整像素和扩展名。`label` 是报错主语（如“相机 camA”）。
 fn image_details(bytes: &[u8], label: &str) -> Result<([u32; 2], &'static str), String> {
-    let (image, extension) = decode_release_image(bytes, label)?;
-    Ok(([image.width, image.height], extension))
+    let extension = image_extension(bytes, label)?;
+    let size = crate::image_file::validated_image_size(bytes)
+        .map_err(|e| format!("{label} 原图解码失败：{e}"))?;
+    check_image_size(size, label)?;
+    Ok((size, extension))
 }
 
-fn decode_release_image(
-    bytes: &[u8],
-    label: &str,
-) -> Result<(crate::frame::FrameImage, &'static str), String> {
+fn image_extension(bytes: &[u8], label: &str) -> Result<&'static str, String> {
     let format = image::guess_format(bytes).map_err(|e| format!("{label} 原图格式无效：{e}"))?;
     let extension = match format {
         image::ImageFormat::Pnm => "pgm",
@@ -634,12 +633,14 @@ fn decode_release_image(
         image::ImageFormat::Tiff => "tiff",
         _ => return Err(format!("{label} 原图格式不支持")),
     };
-    let image =
-        crate::image_file::decode(bytes).map_err(|e| format!("{label} 原图解码失败：{e}"))?;
-    if image.width == 0 || image.height == 0 {
+    Ok(extension)
+}
+
+fn check_image_size(size: [u32; 2], label: &str) -> Result<(), String> {
+    if size.contains(&0) {
         return Err(format!("{label} 原图尺寸无效"));
     }
-    Ok((image, extension))
+    Ok(())
 }
 
 pub(crate) fn decode_teaching_image(
@@ -648,16 +649,27 @@ pub(crate) fn decode_teaching_image(
     segment: u32,
     expected_size: Option<[u32; 2]>,
 ) -> Result<(crate::frame::FrameImage, &'static str), String> {
-    let (image, extension) = decode_release_image(bytes, "示教帧")?;
+    let extension = image_extension(bytes, "示教帧")?;
+    let image = crate::image_file::decode(bytes).map_err(|e| format!("示教帧原图解码失败：{e}"))?;
     let actual = [image.width, image.height];
+    check_image_size(actual, "示教帧")?;
+    check_teaching_size(inspect, segment, actual, expected_size)?;
+    Ok((image, extension))
+}
+
+fn check_teaching_size(
+    inspect: &CameraInspect,
+    segment: u32,
+    actual: [u32; 2],
+    expected_size: Option<[u32; 2]>,
+) -> Result<(), String> {
     if let Some(expected) = expected_size.filter(|size| *size != actual) {
         return Err(format!(
             "示教帧实际为 {}×{}，与冻结时的 {}×{} 不同",
             actual[0], actual[1], expected[0], expected[1]
         ));
     }
-    check_corridor(inspect, segment, actual)?;
-    Ok((image, extension))
+    check_corridor(inspect, segment, actual)
 }
 
 fn validate_versions(versions: &Versions) -> Result<(), String> {
@@ -1017,6 +1029,14 @@ mod tests {
 
     /// 按配方发布：每台相机给它检测的各段一张 1000×700 的渐变示教帧。
     fn publish_recipe(root: &Path, recipe: RecipeDoc) -> Result<ReleaseBundle, String> {
+        publish_recipe_with_image(root, recipe, image_bytes)
+    }
+
+    fn publish_recipe_with_image(
+        root: &Path,
+        recipe: RecipeDoc,
+        image: impl Fn() -> Vec<u8>,
+    ) -> Result<ReleaseBundle, String> {
         let built = recipe.build()?;
         let cameras = recipe
             .inspect
@@ -1028,7 +1048,7 @@ mod tests {
                     .into_iter()
                     .map(|segment| CorridorInput {
                         segment,
-                        image: ResourceSource::Bytes(image_bytes()),
+                        image: ResourceSource::Bytes(image()),
                         image_id: format!("capture-1-0-{}", i.camera),
                         expected_size: None,
                     })
@@ -1048,6 +1068,53 @@ mod tests {
                 cameras,
             },
         )
+    }
+
+    #[test]
+    fn publication_checks_full_pnm_pixels_and_bayer_dimensions() {
+        let root =
+            TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
+        let mut recipe = crate::recipe::samples_burst();
+        for inspect in &mut recipe.inspect {
+            inspect.segments[0].corridor = vec![[0.0, 10.0], [0.0, 50.0]];
+        }
+        let pnm = |width, height, channels, bayer| {
+            let mut bytes =
+                crate::image_file::pnm_header(width, height, channels, bayer).into_bytes();
+            bytes.resize(
+                bytes.len() + (width * height) as usize * usize::from(channels),
+                0x19,
+            );
+            bytes
+        };
+        let rg = Some(crate::frame::BayerPattern::Rg);
+        let mut trailing = pnm(5, 61, 1, rg);
+        trailing.extend_from_slice(b"trailing");
+        let mut short = pnm(5, 61, 1, rg);
+        short.pop();
+        let mut narrow_short = pnm(1, 61, 1, rg);
+        narrow_short.pop();
+        let mut sixteen_bit = b"P5\n5 61\n65535\n".to_vec();
+        sixteen_bit.extend([0x40; 5 * 61 * 2]);
+
+        for (bytes, failure) in [
+            (pnm(5, 61, 3, None), None),
+            (trailing, None),
+            (sixteen_bit, None),
+            (short, Some("像素数据不足")),
+            (narrow_short, Some("像素数据不足")),
+            (pnm(1, 61, 1, rg), Some("至少 2×2")),
+        ] {
+            let outcome = publish_recipe_with_image(&root.0, recipe.clone(), || bytes.clone());
+            if let Some(reason) = failure {
+                assert!(outcome.unwrap_err().contains(reason));
+            } else {
+                let bundle = outcome.unwrap();
+                let resource = bundle.camera(0).unwrap();
+                assert_eq!(resource.size, [5, 61]);
+                assert_eq!(fs::read(&resource.corridors[0].image).unwrap(), bytes);
+            }
+        }
     }
 
     /// 改写包内一个资源，并把清单里它的大小同步改掉（只留下按配方重算才查得出的不一致）。

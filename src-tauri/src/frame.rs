@@ -373,6 +373,13 @@ impl Drop for PoolCharge {
     }
 }
 
+pub(crate) fn validate_bayer_dimensions(w: usize, h: usize) -> Result<(), String> {
+    if w < 2 || h < 2 {
+        return Err(format!("Bayer 图像至少 2×2（实际 {w}×{h}）"));
+    }
+    Ok(())
+}
+
 /// 8 位 Bayer 马赛克双线性去马赛克成 RGB（交错、行紧排）：本像素的颜色取原值，缺的两色取 3×3 邻域里同色像素的均值
 /// （四舍五入）——内部即标准双线性（G 取上下左右、R/B 取对角或同行同列的两个），边界只用图内的邻居。
 pub fn bayer8_rgb_into(
@@ -382,9 +389,7 @@ pub fn bayer8_rgb_into(
     src: &[u8],
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
-    if w < 2 || h < 2 {
-        return Err(format!("Bayer 图像至少 2×2（实际 {w}×{h}）"));
-    }
+    validate_bayer_dimensions(w, h)?;
     let n = w * h;
     if src.len() < n {
         return Err(format!(
@@ -458,9 +463,7 @@ pub fn bayer8_rgb_into(
 /// (min(x, w-2), min(y, h-2)) 的 2×2 块，输出 (四个之和 + 2) / 4。任一 2×2 块都是一 R 两 G 一 B，
 /// 所以等于 (R + 2G + B) / 4，与相位无关；末行末列往回退一格，块仍是完整的 Bayer 四格。
 pub fn bayer8_gray_into(w: usize, h: usize, src: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
-    if w < 2 || h < 2 {
-        return Err(format!("Bayer 图像至少 2×2（实际 {w}×{h}）"));
-    }
+    validate_bayer_dimensions(w, h)?;
     let n = w * h;
     if src.len() < n {
         return Err(format!(
