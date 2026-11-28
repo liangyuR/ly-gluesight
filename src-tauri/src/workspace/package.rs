@@ -213,6 +213,7 @@ pub(crate) fn export_candidate(
         target,
         entries,
         |files| PackageManifest { files, ..manifest },
+        || operation.check(),
         || operation.advance(FrameState::Measured),
         || operation.saving(),
     )

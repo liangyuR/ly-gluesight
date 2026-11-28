@@ -602,6 +602,7 @@ fn cancel_after_last_file_keeps_previous_target_and_reports_cancelled() {
             &target,
             vec![("project/a.txt".into(), source.clone())],
             |files| files,
+            || operation.check(),
             || {
                 operation.check()?;
                 operations.cancel("t");
@@ -613,7 +614,76 @@ fn cancel_after_last_file_keeps_previous_target_and_reports_cancelled() {
 
     assert!(result.unwrap_err().starts_with("OPERATION_CANCELLED"));
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous");
-    assert!(!temp.0.join("out.zip.tmp").exists());
+    assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 2);
+}
+
+#[test]
+fn failed_zip_replacement_keeps_the_previous_target() {
+    let temp = TempDir::new("failed-zip-replacement");
+    let source = temp.0.join("source.txt");
+    let target = temp.0.join("out.zip");
+    std::fs::write(&source, b"new package data").unwrap();
+    std::fs::write(&target, b"previous package").unwrap();
+
+    let result = write_zip_with(
+        &target,
+        vec![("source.txt".into(), source)],
+        |files| files,
+        || Ok(()),
+        || Ok(()),
+        || {
+            let staging = std::fs::read_dir(&temp.0)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path.is_dir())
+                .unwrap();
+            std::fs::remove_file(staging.join("archive.zip")).unwrap();
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"previous package");
+    assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 2);
+}
+
+#[test]
+fn exports_to_the_same_target_keep_independent_staged_archives() {
+    let temp = TempDir::new("same-zip-target");
+    let first = temp.0.join("first.txt");
+    let second = temp.0.join("second.txt");
+    let target = temp.0.join("out.zip");
+    std::fs::write(&first, b"first export").unwrap();
+    std::fs::write(&second, b"second export").unwrap();
+
+    write_zip_with(
+        &target,
+        vec![("first.txt".into(), first)],
+        |files| files,
+        || Ok(()),
+        || Ok(()),
+        || {
+            write_zip(&target, vec![("second.txt".into(), second)], |files| files)?;
+            let mut zip = open_zip(&target, "测试包").unwrap();
+            let mut data = Vec::new();
+            zip.by_name("second.txt")
+                .unwrap()
+                .read_to_end(&mut data)
+                .unwrap();
+            assert_eq!(data, b"second export");
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    let mut zip = open_zip(&target, "测试包").unwrap();
+    let mut data = Vec::new();
+    zip.by_name("first.txt")
+        .unwrap()
+        .read_to_end(&mut data)
+        .unwrap();
+    assert_eq!(data, b"first export");
+    assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 3);
 }
 
 #[test]

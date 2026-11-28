@@ -291,6 +291,7 @@ pub fn export_package(
         target,
         entries,
         |files| PackageManifest { files, ..manifest },
+        || operation.check(),
         || operation.advance(FrameState::Measured),
         || operation.saving(),
     )
