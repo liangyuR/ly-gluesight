@@ -647,15 +647,44 @@ impl From<&Frame> for CameraFrameMetadata {
 struct RecentFrames {
     arrivals: VecDeque<Instant>,
     pending: Option<CameraFrameMetadata>,
+    last_sent: Option<(u64, Instant)>,
+}
+
+const FRAME_EVENT_INTERVAL: Duration = Duration::from_millis(100);
+
+#[derive(Debug, PartialEq, Eq)]
+enum FrameEventPlan {
+    Empty,
+    Ready(CameraFrameMetadata),
+    Waiting(Instant),
 }
 
 impl RecentFrames {
     fn remember(&mut self, frame: CameraFrameMetadata, session: u64) -> bool {
-        frame.session == session && self.pending.replace(frame).is_none()
+        frame.session == session
+            && self
+                .pending
+                .replace(frame)
+                .is_none_or(|previous| previous.session != session)
     }
 
-    fn take(&mut self, session: u64) -> Option<CameraFrameMetadata> {
-        self.pending.take().filter(|frame| frame.session == session)
+    fn take_ready(&mut self, session: u64, now: Instant) -> FrameEventPlan {
+        let Some(frame) = self.pending.filter(|frame| frame.session == session) else {
+            self.pending = None;
+            return FrameEventPlan::Empty;
+        };
+        if let Some((_, sent_at)) = self
+            .last_sent
+            .filter(|(sent_session, _)| *sent_session == session)
+        {
+            let deadline = sent_at + FRAME_EVENT_INTERVAL;
+            if now < deadline {
+                return FrameEventPlan::Waiting(deadline);
+            }
+        }
+        self.pending = None;
+        self.last_sent = Some((session, now));
+        FrameEventPlan::Ready(frame)
     }
 }
 
@@ -852,14 +881,21 @@ impl Shared {
         active
     }
 
-    fn publish_frame_event(&self) {
-        let frame = {
+    fn publish_frame_event(&self) -> Option<Instant> {
+        if self.is_retired() {
+            return None;
+        }
+        let plan = {
             let mut recent = self.recent.lock().unwrap();
-            recent.take(self.session.load(Ordering::SeqCst))
+            recent.take_ready(self.session.load(Ordering::SeqCst), Instant::now())
         };
-        let Some(frame) = frame else { return };
+        let frame = match plan {
+            FrameEventPlan::Empty => return None,
+            FrameEventPlan::Waiting(deadline) => return Some(deadline),
+            FrameEventPlan::Ready(frame) => frame,
+        };
         if self.is_retired() || frame.session != self.session.load(Ordering::SeqCst) {
-            return;
+            return None;
         }
         let _ = self.rig.app.emit(
             "camera://frame",
@@ -868,6 +904,7 @@ impl Shared {
                 camera_id: &self.camera_id,
             },
         );
+        None
     }
 
     fn fps(&self) -> f32 {
@@ -2452,18 +2489,26 @@ impl CameraRig {
         let frame_events = Arc::clone(&cycle.camera.rig.frame_events);
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
+            let mut deadline = None;
             loop {
-                frame_events.notified().await;
+                if let Some(next) = deadline {
+                    tokio::select! {
+                        _ = frame_events.notified() => {},
+                        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(next)) => {},
+                    }
+                } else {
+                    frame_events.notified().await;
+                }
                 let slots = {
                     let Some(cycle) = app.try_state::<CycleHost>() else {
                         break;
                     };
                     cycle.camera.slots()
                 };
-                for slot in slots {
-                    slot.shared.publish_frame_event();
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                deadline = slots
+                    .into_iter()
+                    .filter_map(|slot| slot.shared.publish_frame_event())
+                    .min();
             }
         });
     }
@@ -3171,7 +3216,7 @@ fn retired_camera_group_cannot_change_the_new_groups_gate_evidence() {
 
 #[cfg(test)]
 #[test]
-fn camera_frame_notifications_keep_each_cameras_last_frame_once_and_discard_old_sessions() {
+fn camera_frame_cooldown_preserves_other_cameras_and_tail_frames_across_sessions() {
     let frame = |cam, session, frame_counter| CameraFrameMetadata {
         cam,
         session,
@@ -3182,23 +3227,47 @@ fn camera_frame_notifications_keep_each_cameras_last_frame_once_and_discard_old_
         ts: 17,
         dev_ts: Some(19),
     };
+    let now = Instant::now();
+    let at = |millis| now + Duration::from_millis(millis);
     let mut left = RecentFrames::default();
     let mut right = RecentFrames::default();
     assert!(left.remember(frame(0, 1, 1), 1));
-    assert!(!left.remember(frame(0, 1, 2), 1));
-    assert!(right.remember(frame(1, 3, 5), 3));
+    assert_eq!(
+        left.take_ready(1, now),
+        FrameEventPlan::Ready(frame(0, 1, 1))
+    );
+    assert_eq!(left.take_ready(1, now), FrameEventPlan::Empty);
+
+    assert!(left.remember(frame(0, 1, 2), 1));
     assert!(!left.remember(frame(0, 1, 3), 1));
-    assert_eq!(left.take(1), Some(frame(0, 1, 3)));
-    assert_eq!(right.take(3), Some(frame(1, 3, 5)));
-    assert_eq!(left.take(1), None);
-    assert_eq!(right.take(3), None);
+    assert_eq!(left.take_ready(1, at(10)), FrameEventPlan::Waiting(at(100)));
+    assert!(right.remember(frame(1, 3, 5), 3));
+    assert_eq!(
+        right.take_ready(3, at(20)),
+        FrameEventPlan::Ready(frame(1, 3, 5))
+    );
+    assert_eq!(right.take_ready(3, at(20)), FrameEventPlan::Empty);
+    assert_eq!(left.take_ready(1, at(99)), FrameEventPlan::Waiting(at(100)));
+    assert_eq!(
+        left.take_ready(1, at(100)),
+        FrameEventPlan::Ready(frame(0, 1, 3))
+    );
+    assert_eq!(left.take_ready(1, at(100)), FrameEventPlan::Empty);
 
     assert!(left.remember(frame(0, 1, 4), 1));
-    assert_eq!(left.take(4), None);
+    assert_eq!(
+        left.take_ready(1, at(110)),
+        FrameEventPlan::Waiting(at(200))
+    );
     assert!(left.remember(frame(0, 4, 1), 4));
     assert!(!left.remember(frame(0, 1, 5), 4));
-    assert_eq!(left.take(4), Some(frame(0, 4, 1)));
-    assert_eq!(left.take(4), None);
+    assert_eq!(
+        left.take_ready(4, at(120)),
+        FrameEventPlan::Ready(frame(0, 4, 1))
+    );
+    assert_eq!(left.take_ready(4, at(120)), FrameEventPlan::Empty);
+    assert!(left.remember(frame(0, 4, 2), 4));
+    assert_eq!(left.take_ready(5, at(130)), FrameEventPlan::Empty);
 }
 
 #[cfg(test)]
